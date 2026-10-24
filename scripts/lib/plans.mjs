@@ -6,6 +6,7 @@ import { paths } from './paths.mjs';
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
 const SLUG_MAX = 40;
+const ZONE_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 export function assertPlanId(id) {
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
@@ -37,6 +38,7 @@ function slugify(text) {
 
 export function makePlanId(zoneName, slug, now) {
   const zoneShort = String(zoneName).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!zoneShort) throw new CfError('invalid_zone', `Invalid zone name: ${JSON.stringify(zoneName)}`);
   const stamp = isoSeconds(now).replace(/[-:]/g, '').replace('T', '-').replace('Z', '');
   return [zoneShort, stamp, slugify(slug)].filter(Boolean).join('-');
 }
@@ -50,6 +52,9 @@ function resolveOps(ops, zoneId) {
 }
 
 export function createPlan(cwd, { zone_id, zone_name, summary, risk, ops, slug }, now = new Date()) {
+  if (typeof zone_id !== 'string' || !ZONE_ID_PATTERN.test(zone_id)) {
+    throw new CfError('invalid_zone', `Invalid zone id: ${JSON.stringify(zone_id)}`);
+  }
   const id = assertPlanId(makePlanId(zone_name, slug, now));
   const resolved = resolveOps(ops, zone_id);
   const plan = {

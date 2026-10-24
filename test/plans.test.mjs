@@ -15,6 +15,7 @@ import {
 import { CfError } from '../scripts/lib/errors.mjs';
 
 const NOW = new Date('2026-10-24T14:30:00Z');
+const ZID = '0123456789abcdef0123456789abcdef';
 
 function tempDir(t) {
   const dir = mkdtempSync(join(tmpdir(), 'claudeflare-plans-'));
@@ -24,7 +25,7 @@ function tempDir(t) {
 
 function samplePlan(overrides = {}) {
   return {
-    zone_id: 'zone123',
+    zone_id: ZID,
     zone_name: 'example.com',
     summary: 'Set SSL mode to Full (strict)',
     risk: '526 if origin cert is invalid',
@@ -79,8 +80,8 @@ test('createPlan resolves {zone_id} and sets ops_hash = hashOps(resolved ops)', 
   assert.equal(plan.status, 'draft');
   assert.equal(plan.created_at, '2026-10-24T14:30:00Z');
   assert.deepEqual(plan.ops, [
-    { method: 'PATCH', path: '/zones/zone123/settings/ssl', body: { value: 'strict' } },
-    { method: 'GET', path: '/zones/zone123/x/zone123' },
+    { method: 'PATCH', path: `/zones/${ZID}/settings/ssl`, body: { value: 'strict' } },
+    { method: 'GET', path: `/zones/${ZID}/x/${ZID}` },
   ]);
   assert.equal(plan.ops_hash, hashOps(plan.ops));
   const file = join(paths(cwd).plans, `${plan.id}.json`);
@@ -124,4 +125,30 @@ test('readPlan rejects ids with path separators or ..', (t) => {
     assert.throws(() => updatePlan(cwd, bad, {}), (e) => e instanceof CfError && e.code === 'invalid_id');
   }
   assert.ok(!existsSync(paths(cwd).root));
+});
+
+test('paths rejects unsafe zone names for snapshots and reports', () => {
+  const p = paths('/work');
+  const isInvalid = (e) => e instanceof CfError && e.code === 'invalid_zone';
+  for (const bad of ['..', '../etc', 'a/b', 'a\\b', 'ex..ample.com', '', 'a b', undefined]) {
+    assert.throws(() => p.snapshots(bad), isInvalid, String(bad));
+    assert.throws(() => p.reports(bad), isInvalid, String(bad));
+  }
+  assert.equal(p.snapshots('Sub-1.Example.com'), join('/work', '.claudeflare', 'snapshots', 'Sub-1.Example.com'));
+});
+
+test('createPlan rejects zone_id that is not 32 lowercase hex chars', (t) => {
+  const cwd = tempDir(t);
+  const isInvalid = (e) => e instanceof CfError && e.code === 'invalid_zone';
+  for (const bad of ['zone123', '', undefined, ZID.toUpperCase(), `${ZID}0`, '../x']) {
+    assert.throws(() => createPlan(cwd, samplePlan({ zone_id: bad }), NOW), isInvalid, String(bad));
+  }
+  assert.ok(!existsSync(paths(cwd).root));
+});
+
+test('makePlanId and createPlan reject a zone name with no alphanumerics', (t) => {
+  const cwd = tempDir(t);
+  const isInvalid = (e) => e instanceof CfError && e.code === 'invalid_zone';
+  assert.throws(() => makePlanId('...', 'x', NOW), isInvalid);
+  assert.throws(() => createPlan(cwd, samplePlan({ zone_name: '-.-' }), NOW), isInvalid);
 });
