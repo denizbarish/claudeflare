@@ -166,15 +166,18 @@ test('cli apply without approval is refused with not_approved', async (t) => {
   assert.equal(hits, 0);
 });
 
-test('cli report writes the audit file and prints its path', async (t) => {
+test('cli report writes the audit file and prints { file, overall, domains }', async (t) => {
   const cwd = tempDir(t, 'claudeflare-cli-');
   const findings = [{ id: 'ssl.mode.flexible', domain: 'ssl', severity: 'critical', title: 'SSL mode is Flexible' }];
   writeFileSync(join(cwd, 'findings.json'), JSON.stringify(findings));
   const res = await run(cwd, ['report', '--file', 'findings.json', '--zone', 'example.com']);
   assert.equal(res.code, 0, res.stderr);
-  const file = res.stdout.trim();
-  assert.match(file, /\.claudeflare[/\\]reports[/\\]example\.com[/\\]\d{8}-\d{6}-audit\.md$/);
-  assert.match(readFileSync(file, 'utf8'), /Overall score: 75\/100/);
+  const out = JSON.parse(res.stdout);
+  assert.deepEqual(Object.keys(out), ['file', 'overall', 'domains']);
+  assert.match(out.file, /\.claudeflare[/\\]reports[/\\]example\.com[/\\]\d{8}-\d{6}-audit\.md$/);
+  assert.equal(out.overall, 75);
+  assert.deepEqual(out.domains, { ssl: 75 });
+  assert.match(readFileSync(out.file, 'utf8'), /Overall score: 75\/100/);
 });
 
 const SSL_DRAFT = {
@@ -281,7 +284,23 @@ test('cli apply with a failing op exits 1 with apply_failed and prints the plan'
   const out = JSON.parse(res.stdout);
   assert.equal(out.status, 'partially_applied');
   assert.equal(out.error.op_index, 1);
-  assert.equal(JSON.parse(res.stderr).error.code, 'apply_failed');
+  const { error } = JSON.parse(res.stderr);
+  assert.equal(error.code, 'apply_failed');
+  assert.equal(error.hint, `Run claudeflare rollback ${plan.id} to revert the ops that succeeded`);
+});
+
+test('cli apply whose first op fails says no write was made and does not suggest rollback', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const base = await settingsStub(t, ['ssl']);
+  const plan = await newPlan(cwd);
+  approveInCwd(cwd, plan.id);
+  const res = await run(cwd, ['apply', plan.id], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stdout).status, 'failed');
+  const { error } = JSON.parse(res.stderr);
+  assert.equal(error.code, 'apply_failed');
+  assert.match(error.hint, /no write was made/);
+  assert.doesNotMatch(error.hint, /rollback/);
 });
 
 test('cli report accepts { domains, findings } and scores clean domains', async (t) => {
@@ -293,7 +312,39 @@ test('cli report accepts { domains, findings } and scores clean domains', async 
   writeFileSync(join(cwd, 'audit.json'), JSON.stringify(audit));
   const res = await run(cwd, ['report', '--file', 'audit.json', '--zone', 'example.com']);
   assert.equal(res.code, 0, res.stderr);
-  const md = readFileSync(res.stdout.trim(), 'utf8');
+  const out = JSON.parse(res.stdout);
+  assert.equal(out.overall, 92);
+  assert.deepEqual(out.domains, { cache: 100, dns: 100, ssl: 75 });
+  const md = readFileSync(out.file, 'utf8');
   assert.match(md, /Overall score: 92\/100/);
   assert.match(md, /\| dns \| 100 \|/);
+});
+
+test('cli plan new rejects ops outside the zone, Page Rule creates, placeholders and odd methods', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const OTHER = 'fedcba9876543210fedcba9876543210';
+  const bad = [
+    { method: 'POST', path: '/accounts/abc/rulesets' },
+    { method: 'PATCH', path: `/zones/${OTHER}/settings/ssl` },
+    { method: 'PATCH', path: '/zones/{zone_id}' },
+    { method: 'PATCH', path: '/zones/{zone_id}/../../accounts/abc/settings' },
+    { method: 'PATCH', path: '/zones/{zone_id}/%2e%2e/x' },
+    { method: 'POST', path: '/zones/{zone_id}/pagerules' },
+    { method: 'PATCH', path: '/zones/{zone_id}/rulesets/{ruleset_id}/rules/abc' },
+    { method: 'PATCH', path: '/zones/{zone_id}/rulesets/RULESET_ID/rules/abc' },
+    { method: 'patch', path: '/zones/{zone_id}/settings/ssl' },
+    { method: 'OPTIONS', path: '/zones/{zone_id}/settings/ssl' },
+    { method: 'PATCH ', path: '/zones/{zone_id}/settings/ssl' },
+  ];
+  for (const op of bad) {
+    const draft = { zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [op] };
+    writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
+    const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+    assert.equal(res.code, 1, JSON.stringify(op));
+    assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op', JSON.stringify(op));
+  }
+  assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
+  const ok = { method: 'PATCH', path: '/zones/{zone_id}/settings/ssl', body: { value: 'strict' } };
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify({ zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [ok] }));
+  assert.equal((await run(cwd, ['plan', 'new', '--file', 'draft.json'])).code, 0);
 });

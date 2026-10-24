@@ -110,16 +110,16 @@ Then run:
 claudeflare report --file /tmp/claudeflare-audit-example.com.json --zone example.com
 ```
 
-It prints the path of the Markdown report under `.claudeflare/reports/<zone>/`.
+It writes the Markdown report under `.claudeflare/reports/<zone>/` and prints JSON: `{ "file": "<report path>", "overall": <score>, "domains": { "<domain>": <score>, ... } }`. Use these scores in the summary; do not recompute them.
 
 ## 8. Summarize in chat
 
 In the user's language:
 
-- overall score and the score per domain,
+- overall score and the score per domain (from the `claudeflare report` output),
 - critical and high findings first, one line each (title, current, recommended),
 - findings that need a higher plan, with the best option on the current plan,
-- the report path,
+- the report path (`file`),
 - domains skipped or not audited, and why.
 
 Then ask which findings to fix. Selected findings with a non-empty `fix` become plans through the cf-core change protocol. Group compatible fixes into one plan, and split where cf-core's plan limits require it (same DNS record or rule twice, more than one rule delete per ruleset, same phase entrypoint twice). Findings with an empty `fix` get step-by-step instructions instead.

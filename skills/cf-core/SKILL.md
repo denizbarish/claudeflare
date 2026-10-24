@@ -169,6 +169,7 @@ This only creates a new draft rollback plan from the snapshot's inverse ops; it 
 ## 6. Plans and local state
 
 - `claudeflare plan list` lists plans; `claudeflare plan show <id>` prints one plan.
+- `claudeflare report --file <audit.json> --zone <zone>` writes the audit report and prints `{ "file", "overall", "domains" }` (cf-audit section 7).
 - Read plans only through these commands. Files under `.claudeflare/` and `~/.config/claudeflare/` are off-limits to file and shell tools; the guard denies access. Do not try other paths to them.
 
 ## 7. Errors

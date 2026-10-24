@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CfError } from './errors.mjs';
-import { paths } from './paths.mjs';
+import { assertZoneName, paths } from './paths.mjs';
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
 const SLUG_MAX = 40;
@@ -55,6 +55,7 @@ export function createPlan(cwd, { zone_id, zone_name, summary, risk, ops, slug }
   if (typeof zone_id !== 'string' || !ZONE_ID_PATTERN.test(zone_id)) {
     throw new CfError('invalid_zone', `Invalid zone id: ${JSON.stringify(zone_id)}`);
   }
+  assertZoneName(zone_name);
   const id = assertPlanId(makePlanId(zone_name, slug, now));
   const resolved = resolveOps(ops, zone_id);
   const plan = {

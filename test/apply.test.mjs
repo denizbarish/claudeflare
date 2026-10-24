@@ -261,3 +261,21 @@ test('rollback slug is slugified from the original slug', async (t) => {
   assert.equal(rollback.slug, `rollback-${'x'.repeat(31)}`);
   assert.ok(rollback.id.endsWith(rollback.slug));
 });
+
+test('applyPlan refuses a second rollback draft once the source was rolled back', async (t) => {
+  const { cwd, plan } = setup(t, [OPS[0]]);
+  approve(cwd, plan);
+  await applyPlan(cwd, fakeClient({ ...readRoutes(), [`PATCH ${S}/ssl`]: { id: 'ssl', value: 'strict' } }), plan.id, T0);
+  const t1 = new Date(T0.getTime() + 60_000);
+  const t2 = new Date(T0.getTime() + 120_000);
+  const first = createRollbackPlan(cwd, plan.id, t1);
+  const second = createRollbackPlan(cwd, plan.id, t2);
+  const routes = { [`GET ${S}/ssl`]: { id: 'ssl', value: 'strict' }, [`PATCH ${S}/ssl`]: { id: 'ssl', value: 'flexible' } };
+  writeApproval(cwd, { plan_id: first.id, session_id: 's1' }, t2);
+  assert.equal((await applyPlan(cwd, fakeClient(routes), first.id, t2)).status, 'applied');
+  writeApproval(cwd, { plan_id: second.id, session_id: 's1' }, t2);
+  const client = fakeClient(routes);
+  await assert.rejects(applyPlan(cwd, client, second.id, t2), (err) => err instanceof CfError && err.code === 'rollback_stale');
+  assert.equal(client.calls.length, 0);
+  assert.equal(readPlan(cwd, second.id).status, 'draft');
+});

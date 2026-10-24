@@ -2,6 +2,7 @@ import { CfError, mapError } from './errors.mjs';
 
 const DEFAULT_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const BASE_BACKOFF_MS = 1000;
+const MAX_WAIT_MS = 60_000;
 
 export function redact(text, token) {
   if (!token) return text;
@@ -23,9 +24,9 @@ function retryDelay(response, attempt) {
   const header = response.headers.get('Retry-After');
   const seconds = Number(header);
   if (header !== null && header.trim() !== '' && Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
+    return Math.min(seconds * 1000, MAX_WAIT_MS);
   }
-  return BASE_BACKOFF_MS * 2 ** attempt;
+  return Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_WAIT_MS);
 }
 
 async function readJson(response) {

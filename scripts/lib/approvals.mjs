@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CfError } from './errors.mjs';
 import { paths } from './paths.mjs';
@@ -10,16 +10,18 @@ const DEFAULT_TTL_SECONDS = 1800;
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAC_PATTERN = /^[0-9a-f]{64}$/;
 
-function computeMac(key, { plan_id, ops_hash, approved_at, session_id }) {
+// The project directory is part of the MAC, so an approval copied into
+// another project with an identical plan file does not verify there.
+function computeMac(key, { plan_id, ops_hash, approved_at, session_id }, cwd) {
   return createHmac('sha256', key)
-    .update(JSON.stringify([plan_id, ops_hash, approved_at, session_id]))
+    .update(JSON.stringify([plan_id, ops_hash, approved_at, session_id, realpathSync(cwd)]))
     .digest('hex');
 }
 
-function hasValidMac(approval) {
+function hasValidMac(approval, cwd) {
   const key = getApprovalKey({ create: false });
   if (!key || typeof approval.mac !== 'string' || !MAC_PATTERN.test(approval.mac)) return false;
-  const expected = Buffer.from(computeMac(key, approval), 'hex');
+  const expected = Buffer.from(computeMac(key, approval, cwd), 'hex');
   const actual = Buffer.from(approval.mac, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
@@ -62,7 +64,7 @@ export function writeApproval(cwd, { plan_id, session_id }, now = new Date()) {
     approved_at: now.toISOString(),
     session_id,
   };
-  approval.mac = computeMac(getApprovalKey({ create: true }), approval);
+  approval.mac = computeMac(getApprovalKey({ create: true }), approval, cwd);
   mkdirSync(paths(cwd).approvals, { recursive: true });
   writeFileSync(file, `${JSON.stringify(approval, null, 2)}\n`);
   return approval;
@@ -74,7 +76,7 @@ export function checkApproval(cwd, plan_id, now = new Date(), { plan: givenPlan 
   assertPlanId(plan_id);
   const approval = readApproval(cwd, plan_id);
   if (!approval || approval.plan_id !== plan_id) return { ok: false, reason: 'missing' };
-  if (!hasValidMac(approval)) return { ok: false, reason: 'bad_signature' };
+  if (!hasValidMac(approval, cwd)) return { ok: false, reason: 'bad_signature' };
   const ageMs = now.getTime() - new Date(approval.approved_at).getTime();
   if (!Number.isFinite(ageMs) || ageMs > ttlSeconds() * 1000 || ageMs < -MAX_CLOCK_SKEW_MS) {
     return { ok: false, reason: 'expired' };

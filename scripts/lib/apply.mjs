@@ -100,11 +100,28 @@ function consumeQuietly(cwd, id) {
   }
 }
 
+// A rollback plan is only valid while its source is still applied or partially
+// applied; once another rollback ran, its inverse ops are stale.
+function assertRollbackSourceCurrent(cwd, plan) {
+  let source = null;
+  try {
+    source = readPlan(cwd, plan.rollback_of);
+  } catch (err) {
+    if (!(err instanceof CfError)) throw err;
+  }
+  if (!source || !ROLLBACK_SOURCE_STATUSES.has(source.status)) {
+    throw new CfError('rollback_stale', `Rollback plan ${plan.id} is stale: source plan ${plan.rollback_of} has status ${source?.status ?? 'missing'}`, {
+      hint: 'Read the current state and create a fresh plan if a change is still needed',
+    });
+  }
+}
+
 // The plan is read exactly once; that object is approval-checked and executed.
 export async function applyPlan(cwd, client, id, now = new Date()) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
-  if (!plan.rollback_of) validatePlanOps(plan.ops);
+  if (plan.rollback_of) assertRollbackSourceCurrent(cwd, plan);
+  else validatePlanOps(plan.ops);
   assertApproved(cwd, plan, now);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);

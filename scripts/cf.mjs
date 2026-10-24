@@ -1,5 +1,5 @@
-// claudeflare CLI: the only path for Cloudflare writes. Prints JSON on stdout
-// (report prints a file path); errors go to stderr as { error: { code, message, hint } }.
+// claudeflare CLI: the only path for Cloudflare writes. Prints JSON on stdout;
+// errors go to stderr as { error: { code, message, hint } }.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -7,7 +7,7 @@ import { createClient, redact } from './lib/api.mjs';
 import { CfError } from './lib/errors.mjs';
 import { paths } from './lib/paths.mjs';
 import { createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
-import { validatePlanOps } from './lib/resources.mjs';
+import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
 import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
 import { scoreDomains } from './lib/score.mjs';
@@ -116,6 +116,7 @@ function planNew(cwd, flags) {
   assertDraftOps(draft?.ops);
   const zoneId = String(draft.zone_id);
   const resolved = draft.ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(zoneId) }));
+  validateOpTargets(resolved, zoneId);
   validatePlanOps(resolved);
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
@@ -161,19 +162,20 @@ function report(cwd, flags) {
   const dir = paths(cwd).reports(zone);
   const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, '').replace(/[-:]/g, '').replace('T', '-');
   const file = join(dir, `${stamp}-audit.md`);
-  const markdown = renderReport(zone, findings, scoreDomains(findings, domains));
+  const scores = scoreDomains(findings, domains);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(file, markdown);
-  return file;
+  writeFileSync(file, renderReport(zone, findings, scores));
+  return { file, overall: scores.overall, domains: scores.domains };
 }
 
 async function applyCommand(cwd, positional) {
   const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'));
   printJson(result);
   if (result.status !== 'applied') {
-    throw new CfError('apply_failed', `Plan ${result.id} ${result.status}: ${result.error?.message}`, {
-      hint: `Run claudeflare rollback ${result.id} to revert the ops that succeeded`,
-    });
+    const hint = result.status === 'partially_applied'
+      ? `Run claudeflare rollback ${result.id} to revert the ops that succeeded`
+      : 'The first op failed, so no write was made; fix the cause and create a new plan';
+    throw new CfError('apply_failed', `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
   }
 }
 
@@ -188,7 +190,7 @@ async function main(argv) {
     case 'snapshot': return printJson(await snapshot(cwd, positional));
     case 'apply': return applyCommand(cwd, positional);
     case 'rollback': return printJson(createRollbackPlan(cwd, arg(positional, 1, 'id')));
-    case 'report': return process.stdout.write(`${report(cwd, flags)}\n`);
+    case 'report': return printJson(report(cwd, flags));
     default: throw usage(command ? `Unknown command: ${command}` : 'Missing command');
   }
 }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac, randomBytes } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../scripts/lib/paths.mjs';
@@ -46,15 +46,15 @@ function setup(t) {
   return { cwd, plan };
 }
 
-function sign(key, a) {
+function sign(key, a, cwd) {
   return createHmac('sha256', key)
-    .update(JSON.stringify([a.plan_id, a.ops_hash, a.approved_at, a.session_id]))
+    .update(JSON.stringify([a.plan_id, a.ops_hash, a.approved_at, a.session_id, realpathSync(cwd)]))
     .digest('hex');
 }
 
 function rewriteApproval(cwd, approval, changes, key = getApprovalKey({ create: false })) {
   const next = { ...approval, ...changes };
-  next.mac = sign(key, next);
+  next.mac = sign(key, next, cwd);
   writeFileSync(approvalFile(cwd, approval.plan_id), JSON.stringify(next, null, 2));
 }
 
@@ -69,7 +69,7 @@ test('writeApproval stores plan_id, ops_hash, approved_at, session_id', (t) => {
     ops_hash: plan.ops_hash,
     approved_at: T0.toISOString(),
     session_id: 'sess-1',
-    mac: sign(getApprovalKey({ create: false }), approval),
+    mac: sign(getApprovalKey({ create: false }), approval, cwd),
   });
   assert.match(approval.mac, /^[0-9a-f]{64}$/);
   assert.equal(readFileSync(approvalFile(cwd, plan.id), 'utf8'), `${JSON.stringify(approval, null, 2)}\n`);
@@ -233,4 +233,31 @@ test('checkApproval verifies a passed plan object instead of re-reading disk', (
     ok: false,
     reason: 'plan_missing',
   });
+});
+
+test('approval key of the wrong length counts as missing', (t) => {
+  const { cwd, plan } = setup(t);
+  writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, T0);
+  const file = join(process.env.CLAUDEFLARE_KEY_DIR, 'approval.key');
+  for (const bad of [Buffer.alloc(0), randomBytes(31), randomBytes(33)]) {
+    writeFileSync(file, bad);
+    assert.equal(getApprovalKey({ create: false }), null);
+    assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: false, reason: 'bad_signature' });
+    assert.throws(
+      () => writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, T0),
+      (err) => err instanceof CfError && err.code === 'bad_key' && err.hint.includes(`Delete ${file}`),
+    );
+    assert.equal(readFileSync(file).length, bad.length, 'key file left untouched');
+  }
+});
+
+test('an approval written in one directory does not verify in another with the same plan', (t) => {
+  const { cwd, plan } = setup(t);
+  writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, T0);
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+  const other = mkdtempSync(join(tmpdir(), 'claudeflare-approvals-other-'));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  cpSync(paths(cwd).root, paths(other).root, { recursive: true });
+  assert.deepEqual(readPlan(other, plan.id), plan);
+  assert.deepEqual(checkApproval(other, plan.id, T0), { ok: false, reason: 'bad_signature' });
 });

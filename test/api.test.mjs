@@ -174,3 +174,17 @@ test('redact replaces every token occurrence and is a no-op for empty token', ()
   assert.equal(redact(`a ${TOKEN} b ${TOKEN}`, TOKEN), 'a [REDACTED] b [REDACTED]');
   assert.equal(redact('unchanged', ''), 'unchanged');
 });
+
+test('429 waits are capped at 60 seconds for Retry-After and backoff', async () => {
+  const header = mockFetch([rateLimited({ 'Retry-After': '3600' }), ok('done')]);
+  const first = fakeSleep();
+  const client = createClient({ token: TOKEN, baseUrl: BASE, fetchImpl: header.fetchImpl, sleep: first.sleep });
+  assert.equal(await client.request('GET', '/zones'), 'done');
+  assert.deepEqual(first.waits, [60000]);
+
+  const backoff = mockFetch([rateLimited()]);
+  const second = fakeSleep();
+  const capped = createClient({ token: TOKEN, baseUrl: BASE, fetchImpl: backoff.fetchImpl, sleep: second.sleep, maxRetries: 7 });
+  await assert.rejects(capped.request('GET', '/zones'), (err) => err.code === 'rate_limit');
+  assert.deepEqual(second.waits, [1000, 2000, 4000, 8000, 16000, 32000, 60000]);
+});

@@ -152,3 +152,16 @@ test('makePlanId and createPlan reject a zone name with no alphanumerics', (t) =
   assert.throws(() => makePlanId('...', 'x', NOW), isInvalid);
   assert.throws(() => createPlan(cwd, samplePlan({ zone_name: '-.-' }), NOW), isInvalid);
 });
+
+test('createPlan validates zone_name like paths() before writing anything', (t) => {
+  const cwd = tempDir(t);
+  const isInvalid = (e) => e instanceof CfError && e.code === 'invalid_zone';
+  const missing = samplePlan();
+  delete missing.zone_name;
+  assert.throws(() => createPlan(cwd, missing, NOW), isInvalid, 'missing');
+  for (const bad of ['.', '..', 'a/b', 'ex..ample.com', '']) {
+    assert.throws(() => createPlan(cwd, samplePlan({ zone_name: bad }), NOW), isInvalid, bad);
+  }
+  assert.ok(!existsSync(paths(cwd).root));
+  assert.equal(createPlan(cwd, samplePlan({ zone_name: 'Sub-1.Example.com' }), NOW).zone_name, 'Sub-1.Example.com');
+});

@@ -11,6 +11,8 @@ import { inspectCode } from './lib/inspect-code.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
+const CANONICAL_REASON =
+  'This execute code is not in the canonical read form. Use the async wrapper with literal method "GET" and literal path, as in skills/cf-core section 3.';
 const STATE_REASON = 'claudeflare state files are managed by the claudeflare CLI and hooks only.';
 
 const MCP_EXECUTE = /^mcp__.*cloudflare.*__execute$/;
@@ -43,11 +45,21 @@ function isAllowedCall({ method, path }) {
   return method === 'POST' && GRAPHQL_PATHS.has(path);
 }
 
+// A quoted write method anywhere in the code, read or not.
+const WRITE_METHOD_LITERAL = /['"`](?:POST|PUT|PATCH|DELETE)['"`]/i;
+
+// The reason only steers the model; the decision is the same deny either way.
+function writeDetected(code, calls) {
+  return calls.some((call) => !isAllowedCall(call) && call.method.toUpperCase() !== 'GET') ||
+    WRITE_METHOD_LITERAL.test(code);
+}
+
 function decideExecute(toolInput) {
-  if (typeof toolInput.code !== 'string') return deny(PROTOCOL_REASON);
+  if (typeof toolInput.code !== 'string') return deny(CANONICAL_REASON);
   const { calls, determinable } = inspectCode(toolInput.code);
   // Allowlist: code must make at least one readable call, and only allowed ones.
-  return determinable && calls.length > 0 && calls.every(isAllowedCall) ? null : deny(PROTOCOL_REASON);
+  if (determinable && calls.length > 0 && calls.every(isAllowedCall)) return null;
+  return deny(writeDetected(toolInput.code, calls) ? PROTOCOL_REASON : CANONICAL_REASON);
 }
 
 // Approval state protection

@@ -17,6 +17,7 @@ const ZID = '0123456789abcdef0123456789abcdef';
 const T0 = new Date('2026-10-24T14:30:00Z');
 const PLAN_ID = 'examplecom-20261024-143000-ssl-strict';
 const PROTOCOL = 'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
+const CANONICAL = 'This execute code is not in the canonical read form. Use the async wrapper with literal method "GET" and literal path, as in skills/cf-core section 3.';
 const STATE = 'claudeflare state files are managed by the claudeflare CLI and hooks only.';
 
 function setup(t, { plan = true } = {}) {
@@ -147,11 +148,11 @@ test('guard denies execute with method "DELETE"', (t) => {
 });
 
 test('guard denies execute with method: m (non-literal)', (t) => {
-  assertDeny(guard(setup(t), fixture('execute-method-variable')), PROTOCOL);
+  assertDeny(guard(setup(t), fixture('execute-method-variable')), CANONICAL);
 });
 
 test('guard denies execute with omitted method', (t) => {
-  assertDeny(guard(setup(t), fixture('execute-method-omitted')), PROTOCOL);
+  assertDeny(guard(setup(t), fixture('execute-method-omitted')), CANONICAL);
 });
 
 test('guard denies execute with template literal method `${x}`', (t) => {
@@ -163,7 +164,7 @@ test('guard denies execute when a later call writes or code is not a string', (t
   const mixed = "await cloudflare.request({ method: 'GET', path: '/zones' });\nawait cloudflare.request({ method: 'PUT', path: '/zones/a' });";
   assertDeny(guard(ctx, execute(mixed)), PROTOCOL);
   assertDeny(guard(ctx, execute("cloudflare.request({ method: 'POST', path: '/zones/a/purge_cache' })")), PROTOCOL);
-  assertDeny(guard(ctx, { tool_name: 'mcp__cloudflare__execute', tool_input: {} }), PROTOCOL);
+  assertDeny(guard(ctx, { tool_name: 'mcp__cloudflare__execute', tool_input: {} }), CANONICAL);
 });
 
 // guard.mjs: claudeflare apply
@@ -369,7 +370,7 @@ test('guard denies execute bypasses: computed key, escaped identifier, fetch.cal
 });
 
 test('guard denies execute code with zero calls', (t) => {
-  assertDeny(guard(setup(t), execute('return 1+1')), PROTOCOL);
+  assertDeny(guard(setup(t), execute('return 1+1')), CANONICAL);
 });
 
 test('guard allows a plain GET call with a comment', (t) => {
@@ -480,10 +481,29 @@ test('guard denies wrapper and return shapes outside the grammar', (t) => {
     `async () => { ${get} return a.result; }; ${get}`,
     `async () = > { ${get} return a.result; }`,
     "async () => { await cloudflare.request({ method: 'get', path: '/zones' }); }",
-    "async () => { await cloudflare.request({ method: 'poſt', path: '/client/v4/graphql' }); }",
     "await cloudflare.request({ method: 'get', path: '/zones' });",
   ]) {
+    assertDeny(guard(ctx, execute(code)), CANONICAL);
+  }
+  const post = "async () => { await cloudflare.request({ method: 'poſt', path: '/client/v4/graphql' }); }";
+  assertDeny(guard(ctx, execute(post)), PROTOCOL);
+});
+
+test('guard execute deny reason: protocol for a write, canonical for unreadable code', (t) => {
+  const ctx = setup(t);
+  for (const code of [
+    "async () => { const r = await cloudflare.request({ method: 'PATCH', path: '/zones/a/settings/ssl' }); return r.result; }",
+    "async () => { await cloudflare.request({ method: 'POST', path: '/zones/a/purge_cache' }); }",
+    "return fetch('https://api.cloudflare.com/client/v4/zones/a', { method: 'delete' });",
+  ]) {
     assertDeny(guard(ctx, execute(code)), PROTOCOL);
+  }
+  for (const code of [
+    "async () => { const p = '/zones'; return await cloudflare.request({ method: 'GET', path: p }); }",
+    "for (const z of ['a']) { await cloudflare.request({ method: 'GET', path: '/zones' }); }",
+    'return 1+1',
+  ]) {
+    assertDeny(guard(ctx, execute(code)), CANONICAL);
   }
 });
 
