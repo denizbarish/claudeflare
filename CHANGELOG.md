@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Skills: `cf-core` (discovery, channels, change protocol), `cf-audit` (scored audit and finding format), `cf-dns`, `cf-ssl`, `cf-cache`, `cf-performance`, `cf-rules`, `cf-waf`, `cf-bots-ratelimit`, `cf-incident`, and `cf-troubleshoot` with decision trees for 520 to 526, 1xxx, redirect loops, cache misses, CORS and WAF false positives.
 - `claudeflare` CLI: `init`, `get`, `plan new|show|list`, `snapshot`, `apply`, `rollback` and `report`. API client with retry and error mapping; the token is read only from `CLOUDFLARE_API_TOKEN` and redacted from errors.
 - Change protocol: draft plans bound to an ops hash, HMAC-signed single-use approvals with a 30 minute TTL, native confirmation prompt on apply, snapshot before apply, verification, and rollback plans built from the snapshot. Non-reversible ops are flagged in the risk note, and plan limits reject conflicting ops.
-- Guard hook: allowlist for MCP `execute` code (GET and GraphQL reads only), denial of `curl` writes to `api.cloudflare.com`, and protection of `.claudeflare/` state and the approval key directory.
+- Guard hook: allowlist for MCP `execute` code (at least one call, GET and GraphQL reads only), denial of `curl` writes to `api.cloudflare.com`, and protection of `.claudeflare/` state and the approval key directory.
 - Approval hook for `/claudeflare:approve <plan-id>`.
 - Audit reports with severity-weighted domain scores.
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.

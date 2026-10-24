@@ -73,7 +73,7 @@ export CLOUDFLARE_API_TOKEN="<your token>"
 
 Never paste the token into the chat. claudeflare reads it only from the environment and never writes it to disk or prints it.
 
-If a call fails with a `permission` error, the hint names the missing permission. Add it to the token and run the step again.
+If a call fails with a `permission` error, the hint includes Cloudflare's error message, which usually names the missing permission. Add it to the token and run the step again.
 
 Check the token with `/claudeflare:setup`. It calls `GET /user/tokens/verify`, which works for user tokens. An account-owned token verifies with `GET /accounts/<account_id>/tokens/verify` instead.
 

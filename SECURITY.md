@@ -12,14 +12,15 @@ Only the latest release gets security fixes.
 
 ## Scope
 
-In scope:
+In scope: the CLI and hook logic failing on the documented paths, for example:
 
-- A Cloudflare write that reaches the API without a valid, user-typed approval and the native confirmation.
-- A way for the model to create, forge or reuse an approval, or to apply a plan other than the approved one.
-- MCP `execute` code that writes and still passes the guard.
+- A forged, expired, reused or mismatched approval that `checkApproval` accepts.
+- `claudeflare apply` writing without a valid approval for that exact plan.
+- The approval hook recording an approval from anything other than a prompt that is exactly `/claudeflare:approve <plan-id>`.
+- The guard misclassifying MCP `execute` code in the canonical form, for example allowing a write.
 - The API token appearing on disk, in output or in errors.
 
 Out of scope, as described in the README threat model:
 
-- Attacks by a process that already runs as the same OS user (it can read the approval key directly).
+- Deliberate evasion by a process or shell running as the same OS user, including writes through HTTP clients other than `curl`, commands built at run time, and shell globs that reach the approval key. The Bash checks are string matches for mistakes, not a sandbox.
 - Writes through an MCP connection that was granted write scopes. Connect the Cloudflare MCP server with read-only scopes.

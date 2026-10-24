@@ -37,7 +37,7 @@ Read-only OAuth scopes are the hard guarantee that nothing writes through MCP. T
 
 ## Set up the API token (for changes)
 
-All writes go through `claudeflare apply`, which uses `CLOUDFLARE_API_TOKEN` from your environment. Audits and diagnosis through MCP need no token.
+All writes go through `claudeflare apply`, which uses `CLOUDFLARE_API_TOKEN` from your environment. Audits and diagnosis through MCP need no token. Export a write token only for the session where you apply changes (see the threat model below).
 
 1. Create a custom token with the permissions in [docs/token-template.md](docs/token-template.md). Use the read set if you only want the `claudeflare get` fallback; use the write set to apply changes.
 2. Export it in your shell profile and restart Claude Code:
@@ -100,7 +100,7 @@ Plan limits keep snapshots and rollbacks correct. One plan may not touch the sam
 
 A `PreToolUse` hook (`hooks/guard.mjs`) inspects tool calls:
 
-- **MCP `execute`:** allowed only when the code is the canonical read form: an async wrapper with literal `cloudflare.request` calls using `method: "GET"`, or `"POST"` to `/client/v4/graphql` for analytics. Any other code is denied.
+- **MCP `execute`:** allowed only when the code is the canonical read form: an async wrapper with at least one literal `cloudflare.request` call, where every call uses `method: "GET"`, or `"POST"` to `/client/v4/graphql` for analytics. Any other code, including code with no call, is denied.
 
   ```js
   async () => {
@@ -109,18 +109,25 @@ A `PreToolUse` hook (`hooks/guard.mjs`) inspects tool calls:
   }
   ```
 
-- **Bash:** denies `curl` writes to `api.cloudflare.com` (a non-GET method or a request body). Turns `claudeflare apply <id>` into a deny without a valid approval, or into the native confirmation prompt with one.
-- **State protection:** denies the agent's Write and Edit tools inside `.claudeflare/` and the key directory, denies Read, Grep and Glob on the key directory, and denies shell commands that mention `.claudeflare/` plans, approvals or snapshots, or the key.
+- **Bash:** denies `curl` writes to `api.cloudflare.com` (a non-GET method or a request body). Turns a literal `claudeflare apply <id>` into a deny without a valid approval, or into the native confirmation prompt with one. These are string checks; see the threat model for their limits.
+- **State protection:** denies the agent's Write and Edit tools inside `.claudeflare/` and the key directory, denies Read, Grep and Glob on the key directory, and denies shell commands that mention `.claudeflare/` plans, approvals or snapshots, the key directory or key file, or `approvals.mjs` and `approval-key.mjs`.
 
 ### Threat model
 
 claudeflare protects against model mistakes: a write sent the wrong way, an approval the model invents, a plan changed after approval, a stale approval reused later.
 
-It does not protect against:
+It does not protect against deliberate evasion:
 
 - **A deliberately adversarial process running as your OS user.** Such a process can read the approval key and write approval files directly. claudeflare is not a sandbox.
+- **A model that tries to get around the Bash checks**, for example after a prompt injection. The Bash checks recognize only `curl` writes to `api.cloudflare.com` and a literal `claudeflare apply`. Any other HTTP client in Bash (for example `node -e` with `fetch`, or `wget`) can send writes with `CLOUDFLARE_API_TOKEN` from the environment. A command built at run time (such as `$(echo claudeflare) apply`) skips the confirmation prompt, and a shell glob can name the key file without the literal path. The Bash and state checks are string matches that catch mistakes, not evasion. This is the same limit as above: the agent's shell runs as your OS user.
 - **Every non-user prompt.** `UserPromptSubmit` can also fire for some harness-delivered messages, not only for what you type. The approval hook records only a prompt that is exactly `/claudeflare:approve <id>`.
 - **Code the static check cannot judge.** The `execute` check is a strict allowlist, but it is defense in depth. Read-only MCP scopes are the guarantee.
+
+What you can do:
+
+- Connect the Cloudflare MCP server with read-only scopes.
+- Keep a read-only token (the read set in [docs/token-template.md](docs/token-template.md)) in your environment for audits and diagnosis.
+- Export the write token only in the shell session where you intend to apply changes, start Claude Code from that session, and unset the token afterwards.
 
 Planned hardening: store the approval key in the OS keychain, and supply a separate write token only at apply time.
 
