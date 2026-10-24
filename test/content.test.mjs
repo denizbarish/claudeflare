@@ -64,3 +64,46 @@ test('cf-core contains the strings "claudeflare plan new", "/claudeflare:approve
     assert.ok(core.includes(needle), `cf-core missing ${needle}`);
   }
 });
+
+// Asserts every heading appears as an exact `## ` line, in the given order.
+function assertHeadingsInOrder(text, headings, file) {
+  const lines = text.split('\n');
+  let last = -1;
+  for (const heading of headings) {
+    const index = lines.indexOf(heading);
+    assert.ok(index !== -1, `${file} missing heading "${heading}"`);
+    assert.ok(index > last, `${file} heading "${heading}" out of order`);
+    last = index;
+  }
+}
+
+const DOMAIN_SECTIONS = ['## Read current state', '## Checks', '## Applying changes', '## Traps'];
+
+function assertDomainSkill(folder, findingIds, sections = DOMAIN_SECTIONS) {
+  const file = `skills/${folder}/SKILL.md`;
+  const text = read(file);
+  assertHeadingsInOrder(text, sections, file);
+  for (const id of findingIds) {
+    assert.ok(text.includes(`\`${id}\``), `${file} missing finding id ${id}`);
+  }
+}
+
+const ZONE_CORE_FINDINGS = {
+  'cf-dns': ['dns.proxy.origin_exposed', 'dns.dnssec.off', 'dns.caa.missing', 'dns.records.dangling', 'dns.mx.proxied'],
+  'cf-ssl': [
+    'ssl.mode.flexible', 'ssl.mode.full_not_strict', 'ssl.always_https.off', 'ssl.min_tls.below_1_2',
+    'ssl.hsts.off', 'ssl.tls13.off', 'ssl.auto_rewrites.off',
+  ],
+  'cf-cache': [
+    'cache.rules.none_for_static', 'cache.browser_ttl.too_low', 'cache.tiered.off',
+    'cache.html.cached_with_cookies', 'cache.level.bypass',
+  ],
+  'cf-performance': ['perf.http3.off', 'perf.brotli.off', 'perf.early_hints.off', 'perf.polish.off', 'perf.rocket_loader.risky'],
+  'cf-rules': ['rules.page_rules.present', 'rules.redirect.chain', 'rules.redirect.loop_risk'],
+};
+
+for (const [folder, ids] of Object.entries(ZONE_CORE_FINDINGS)) {
+  test(`${folder} has the four domain sections in order and every finding id`, () => {
+    assertDomainSkill(folder, ids);
+  });
+}
