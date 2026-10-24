@@ -107,3 +107,25 @@ for (const [folder, ids] of Object.entries(ZONE_CORE_FINDINGS)) {
     assertDomainSkill(folder, ids);
   });
 }
+
+const SECURITY_FINDINGS = {
+  'cf-waf': [
+    'waf.managed.off', 'waf.owasp.off', 'waf.custom.admin_unprotected', 'waf.skip.too_broad',
+    'waf.security_level.essentially_off',
+  ],
+  'cf-bots-ratelimit': ['bots.fight_mode.off', 'ratelimit.login.missing', 'ratelimit.api.missing', 'turnstile.forms.missing'],
+};
+
+for (const [folder, ids] of Object.entries(SECURITY_FINDINGS)) {
+  test(`${folder} has the four domain sections in order and every finding id`, () => {
+    assertDomainSkill(folder, ids);
+  });
+}
+
+test('cf-incident has Detect, Contain, Return to normal and Report in order, incident- slugs and GraphQL detection', () => {
+  const file = 'skills/cf-incident/SKILL.md';
+  const text = read(file);
+  assertHeadingsInOrder(text, ['## Detect', '## Contain', '## Return to normal', '## Report'], file);
+  assert.ok(/"slug": "incident-[a-z0-9-]+"/.test(text), `${file} has no incident- slug example`);
+  assert.ok(text.includes('path: "/client/v4/graphql"'), `${file} has no GraphQL detection example`);
+});
