@@ -41,6 +41,8 @@ A domain skill is a checklist for one area of a zone, used by audits and by chan
 
 Behavior evals in `evals/<case>/` have a `prompt.md`, `graders/*.md` and mocks for the Cloudflare MCP server. Run them as shown in the README "Evals" section. Each run costs real money (about $3 to $12). Add an eval when you change agent behavior that unit tests cannot cover, for example the change protocol or how a diagnosis gathers evidence.
 
+In CI the `evals` job runs in a GitHub environment named `evals` (`environment: evals` in `.github/workflows/ci.yml`). Create that environment as a protected environment with required reviewers and store `ANTHROPIC_API_KEY` as an environment secret, so every paid eval run, including runs triggered by pull requests, waits for a maintainer to approve it. The job uploads only `eval-summary.json` (case names, scores and pass or fail), kept for 7 days.
+
 ## Pull requests
 
 - Keep a pull request to one change.

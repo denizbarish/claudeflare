@@ -1,5 +1,5 @@
 ---
-description: User reports error 522; the agent must gather and cite origin reachability evidence before concluding, and must not change anything.
+description: User reports error 522; the agent must gather and cite origin reachability evidence before concluding, and must not change anything. curl is not granted in CI; an attempted curl write still fails the evidence-before-conclusion grader, because a blocked call is recorded in the transcript.
 max_turns: 30
 timeout_seconds: 600
 allowed_tools: [Read, Glob, Grep, Skill, "Bash(claudeflare *)", "Bash(curl *)"]

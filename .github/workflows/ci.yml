@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,6 +24,7 @@ jobs:
   evals:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    environment: evals
     timeout-minutes: 30
     concurrency:
       group: evals-${{ github.ref }}
@@ -34,6 +38,8 @@ jobs:
         run: echo "ANTHROPIC_API_KEY secret is not set; skipping plugin evals."
       - uses: actions/checkout@v4
         if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        with:
+          persist-credentials: false
       - name: Install sandbox prerequisites
         if: ${{ env.ANTHROPIC_API_KEY != '' }}
         run: |
@@ -51,17 +57,34 @@ jobs:
           claude plugin eval
           --trust-plugin
           --scaffold
-          --allow-tools "Bash(claudeflare *)" "Bash(curl *)" Write
+          --allow-tools "Bash(claudeflare *)" Write
           --model claude-opus-5-5
           --judge-model claude-opus-5-5
           --threshold 0.8
-          --max-cost-usd 10
+          --max-cost-usd 15
           --no-publish
           --json eval-results.json
-      - name: Upload eval results
+      - name: Summarize eval results
+        if: ${{ always() && env.ANTHROPIC_API_KEY != '' && hashFiles('eval-results.json') != '' }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const data = JSON.parse(fs.readFileSync("eval-results.json", "utf8"));
+            const threshold = data.suite?.threshold;
+            const cases = (data.cases ?? []).map((c) => ({
+              name: c.name,
+              score: c.aggregates?.score ?? null,
+              pass_rate: c.aggregates?.passRate ?? null,
+              passed: typeof c.aggregates?.score === "number" && typeof threshold === "number" && c.aggregates.score >= threshold,
+            }));
+            const summary = { threshold, cost_usd: data.costUsd ?? null, partial: data.partial ?? null, aggregates: data.aggregates ?? null, cases };
+            fs.writeFileSync("eval-summary.json", JSON.stringify(summary, null, 2) + "\n");
+          '
+      - name: Upload eval summary
         if: ${{ always() && env.ANTHROPIC_API_KEY != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: eval-results
-          path: eval-results.json
+          name: eval-summary
+          path: eval-summary.json
+          retention-days: 7
           if-no-files-found: warn
