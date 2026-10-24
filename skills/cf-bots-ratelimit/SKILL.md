@@ -44,7 +44,7 @@ Live checks: find which login, signup and API paths exist with `curl -sI https:/
 |---|---|---|---|---|
 | `bots.fight_mode.off` | Free: `fight_mode` is `false`. Pro and above: `fight_mode` is `false` and Super Bot Fight Mode is not configured (`sbfm_definitely_automated` is `allow` or missing). Skip this finding when the site's main traffic is an API or mobile app that cannot pass challenges. | medium | Free: `fight_mode: true`. Pro and above: Super Bot Fight Mode with `sbfm_definitely_automated: "managed_challenge"` (or `"block"`) and `sbfm_verified_bots: "allow"` | free |
 | `ratelimit.login.missing` | A login path exists and no rate limiting rule matches it. Credential stuffing and brute force run unthrottled. | high | Rate limiting rule on the login path, counting by `ip.src` per data center, `block` | free |
-| `ratelimit.api.missing` | API paths exist (`/api/`, `/wp-json/`, `/graphql`) and no rate limiting rule matches them. | medium | Rate limiting rule on the API prefix with a limit above normal client use | free (Pro for longer periods) |
+| `ratelimit.api.missing` | API paths exist (`/api/`, `/wp-json/`, `/graphql`) and no rate limiting rule matches them. | medium | Rate limiting rule on the API prefix with a limit above normal client use (Free allows only a 10 second period and one rule in total; longer periods need Pro) | free |
 | `turnstile.forms.missing` | Login, signup, contact or checkout forms exist and no Turnstile widget lists this zone's hostname in `domains`. | medium | Turnstile widget (managed mode) on each public form, with server-side token validation | free |
 
 Plan limits for rate limiting (from the docs):
@@ -84,22 +84,25 @@ When the phase has no entrypoint (404), create it with the rule (reversible, `ph
 
 The API example uses a 60 second period and 600 second timeout, which need Pro or above; on Free use `period: 10` and `mitigation_timeout: 10`. Always include `cf.colo.id` in `characteristics`. Pick `requests_per_period` from real traffic: query `httpRequestsAdaptiveGroups` for the path (see cf-incident, Detect) and set the limit well above the busiest legitimate client.
 
-Bot Fight Mode (not reversible through `claudeflare rollback`: `bot_management` is not a snapshot kind; the risk note says so, and the inverse is the same PUT with `false`):
+Bot Fight Mode and Super Bot Fight Mode go through PUT `/zones/{zone_id}/bot_management`. Whether the PUT treats a partial body as a merge or resets omitted fields is not confirmed in the docs, so read GET `/zones/{zone_id}/bot_management` right before writing the draft and send every writable field from that result with only the target field changed. Leave out the read-only fields `using_latest_model` and `stale_zone_configuration` (and `zone_id`). Show the full before and after in the plan. Not reversible through `claudeflare rollback` (`bot_management` is not a snapshot kind; the risk note says so); the inverse is a new plan that PUTs the before values.
+
+Bot Fight Mode (example: the current config had `fight_mode: false`, the other fields are copied unchanged):
 
 ```json
-{ "method": "PUT", "path": "/zones/{zone_id}/bot_management", "body": { "fight_mode": true } }
+{ "method": "PUT", "path": "/zones/{zone_id}/bot_management", "body": { "fight_mode": true, "enable_js": true, "ai_bots_protection": "block", "crawler_protection": "disabled" } }
 ```
 
-Super Bot Fight Mode on Pro and above (also not reversible through rollback):
+Super Bot Fight Mode on Pro and above (same rule: copy all current writable fields, change only these):
 
 ```json
-{ "method": "PUT", "path": "/zones/{zone_id}/bot_management", "body": { "sbfm_definitely_automated": "managed_challenge", "sbfm_verified_bots": "allow" } }
+{ "method": "PUT", "path": "/zones/{zone_id}/bot_management", "body": { "fight_mode": false, "enable_js": true, "ai_bots_protection": "block", "sbfm_definitely_automated": "managed_challenge", "sbfm_verified_bots": "allow", "sbfm_static_resource_protection": false } }
 ```
 
 Verify by reading `/zones/{zone_id}/bot_management` and the entrypoint again.
 
 ## Traps
 
+- **A partial `bot_management` PUT may reset other bot settings.** Always build the body from a fresh GET with every writable field, never just the one field you change.
 - **Bot Fight Mode cannot be skipped.** It does not run on the Ruleset Engine, so WAF skip rules, Page Rules and allow rules do not exempt anything. If API clients, mobile apps, webhooks or monitoring get challenged, the only fixes are turning it off or moving to Super Bot Fight Mode (Pro and above), which skip rules can bypass.
 - **Bot protection challenges non-browser clients**: payment webhooks, mobile apps, RSS readers and partner integrations. Ask what non-browser traffic the zone serves before enabling it.
 - **Rate limits too low lock out real users** behind shared IPs (offices, mobile carriers, CGNAT). Base the limit on observed traffic; `managed_challenge` instead of `block` lets real users through when unsure.

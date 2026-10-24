@@ -43,8 +43,8 @@ Live checks: `curl -sI https://<host>/wp-admin/`, `curl -sI https://<host>/wp-lo
 
 | finding id | condition | severity | recommended | plan tier |
 |---|---|---|---|---|
-| `waf.managed.off` | No enabled `execute` rule in `http_request_firewall_managed` for the Cloudflare Managed Ruleset (Pro and above) or, on Free, for the Cloudflare Free Managed Ruleset. Also raise it when the rule exists but is disabled or its expression covers only part of the traffic without a reason. | high | Deploy the Cloudflare Managed Ruleset with `expression: "true"` (Free: the Free Managed Ruleset) | free (Free Managed), pro (Cloudflare Managed) |
-| `waf.owasp.off` | No enabled `execute` rule for the OWASP Core Ruleset on a Pro or higher zone. On Free, report it with `plan_tier: "pro"` and `fix: []`. | medium | Deploy OWASP Core with default paranoia level and score threshold, then watch Security Events for false positives before tightening | pro |
+| `waf.managed.off` | Pro and above: no enabled `execute` rule for the Cloudflare Managed Ruleset in `http_request_firewall_managed`, or the rule is disabled, or its expression covers only part of the traffic without a reason; set `plan_tier: "pro"` in that finding. Free: the Free Managed Ruleset is deployed by default and may not appear as an `execute` rule, so a missing rule is not evidence; raise it only when the entrypoint holds an `execute` rule for the Free Managed Ruleset with `enabled: false`, or a skip rule skips `http_request_firewall_managed` for all traffic. | high | Pro and above: deploy the Cloudflare Managed Ruleset with `expression: "true"`. Free: re-enable the Free Managed Ruleset rule | free |
+| `waf.owasp.off` | No enabled `execute` rule for the OWASP Core Ruleset on a Pro or higher zone where the Cloudflare Managed Ruleset is already deployed and stable. If the Managed Ruleset is missing, report `waf.managed.off` instead. On Free, report it with `fix: []`. Severity is low (polish): Cloudflare says OWASP offers only marginal benefit on top of the Managed Ruleset and WAF attack score. | low | Deploy OWASP Core in its own plan, starting less sensitive: PL1 (default), score threshold Low (60), action `managed_challenge`; tighten only after Security Events show no false positives | pro |
 | `waf.custom.admin_unprotected` | Admin or login paths that exist on the site (`/wp-admin`, `/wp-login.php`, `/admin`, `/administrator`) have no custom rule with `block` or `managed_challenge`, and the live check shows them open. | high | Custom rule: `managed_challenge` (or `block` with an allowlist of the user's IPs) on those paths | free |
 | `waf.skip.too_broad` | A `skip` rule in `http_request_firewall_custom` matches far more than one trusted client: expression `true`, a whole hostname, a country, a user agent alone, or a large path prefix such as `/`; or it skips `ruleset: "current"`, all managed rules (`phases` contains `http_request_firewall_managed`) or all products for such traffic. | high | Narrow the expression to the trusted source (IP list, specific path plus method, verified header) and skip only the rules that cause false positives | free |
 | `waf.security_level.essentially_off` | `security_level` is `off` or `essentially_off`. Per current docs the threat score is no longer populated, so Security Level now mostly controls Under Attack mode; the real gap is usually missing managed and custom rules. | low | `medium` (the default), and rely on managed rules for protection | free |
@@ -65,9 +65,14 @@ When the managed phase has no entrypoint (404), create it (reversible, `phase_en
 
 ```json
 { "method": "PUT", "path": "/zones/{zone_id}/rulesets/phases/http_request_firewall_managed/entrypoint", "body": { "rules": [
-  { "action": "execute", "action_parameters": { "id": "efb7b8c949ac4650a09736fc376e9aee" }, "expression": "true", "description": "Execute the Cloudflare Managed Ruleset" },
-  { "action": "execute", "action_parameters": { "id": "4814384a9e5d4991b9815dcfc25d2f1f" }, "expression": "true", "description": "Execute the Cloudflare OWASP Core Ruleset" }
+  { "action": "execute", "action_parameters": { "id": "efb7b8c949ac4650a09736fc376e9aee" }, "expression": "true", "description": "Execute the Cloudflare Managed Ruleset" }
 ] } }
+```
+
+OWASP Core goes in a separate, later plan, only after the Managed Ruleset has run for a while without false positives in Security Events. Deploy it less sensitive first: the override on rule `6179ae15870a4bb7b2d480d4843b323c` (the anomaly score rule) sets score threshold 60 (Low) and action `managed_challenge`; paranoia level stays PL1, the default (reversible, `rule_create` on the managed entrypoint). The `log` action is Enterprise only, so non-Enterprise zones start with Low sensitivity and a challenge instead of logging. Put the docs caution in the plan's risk note: "The Cloudflare OWASP Core Ruleset is prone to false positives and offers only marginal benefits when added on top of Cloudflare Managed Ruleset and WAF attack score."
+
+```json
+{ "method": "POST", "path": "/zones/{zone_id}/rulesets/RULESET_ID/rules", "body": { "action": "execute", "action_parameters": { "id": "4814384a9e5d4991b9815dcfc25d2f1f", "overrides": { "rules": [ { "id": "6179ae15870a4bb7b2d480d4843b323c", "score_threshold": 60, "action": "managed_challenge" } ] } }, "expression": "true", "description": "Execute the Cloudflare OWASP Core Ruleset (low sensitivity)" } }
 ```
 
 Protect admin paths (reversible, `rule_create` on the custom entrypoint; for WordPress keep `admin-ajax.php` reachable because public pages call it):
@@ -102,6 +107,7 @@ Verify with the live checks and by reading the entrypoint again. After deploying
 
 ## Traps
 
+- **OWASP is prone to false positives** (Cloudflare's own caution). Never deploy it in the same plan as the Managed Ruleset, never start above PL1 or with the High (25) threshold, and expect file uploads to trigger rule 949110 at High.
 - **False positives after deploying managed rules or OWASP**: APIs, webhooks, rich text editors and admin save actions are typical victims. Fix with a narrow skip rule or a managed ruleset exception for the exact path, not by disabling the ruleset.
 - **Skip rules run in order**: a skip rule only affects rules evaluated after it, and `ruleset: "current"` skips every remaining custom rule, including later block rules. Place skip rules deliberately and keep them narrow.
 - **Do not skip on spoofable data alone**: a user agent, a `Referer` or a custom header without a secret is trivial to fake.
@@ -117,6 +123,9 @@ Verify with the live checks and by reading the entrypoint again. After deploying
 - https://developers.cloudflare.com/waf/managed-rules/deploy-api/
 - https://developers.cloudflare.com/waf/managed-rules/reference/owasp-core-ruleset/
 - https://developers.cloudflare.com/waf/managed-rules/reference/owasp-core-ruleset/configure-api/
+- https://developers.cloudflare.com/waf/managed-rules/reference/owasp-core-ruleset/concepts/
+- https://developers.cloudflare.com/waf/get-started/
+- https://developers.cloudflare.com/ruleset-engine/rules-language/actions/
 - https://developers.cloudflare.com/waf/custom-rules/
 - https://developers.cloudflare.com/waf/custom-rules/skip/
 - https://developers.cloudflare.com/waf/custom-rules/skip/options/

@@ -87,7 +87,7 @@ Under Attack mode (reversible, `zone_setting`; challenges every visitor and brea
 }
 ```
 
-Temporary custom rule (reversible, `rule_create` on the `http_request_firewall_custom` entrypoint, `RULESET_ID` from the read; `phase_entrypoint_put` if it does not exist). Put "incident" and the date in `description`. Expressions by evidence:
+Temporary custom rule (reversible, `rule_create` on the `http_request_firewall_custom` entrypoint, `RULESET_ID` from the read; `phase_entrypoint_put` if it does not exist). Put "incident" and the date in `description`. Custom rules per zone are limited to 5 (Free), 20 (Pro), 100 (Business), 1,000 (Enterprise). Count the rules in the entrypoint first; if no slot is free, do not try to create one: either update an existing block or challenge rule to also cover the attack source (`rule_update`, a PATCH that repeats every field you keep, with the old expression extended by `or (...)`), or temporarily disable a low-value rule in its own `incident-` plan (`rule_update` with `enabled: false`). Both are reversible and rolled back in Return to normal. Expressions by evidence:
 
 | Target | Expression | Action |
 |---|---|---|

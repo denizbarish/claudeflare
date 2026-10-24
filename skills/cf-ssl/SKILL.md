@@ -49,7 +49,7 @@ Live checks: `curl -sI http://<host>/` (expect a 301 to `https://` when Always U
 | `ssl.mode.flexible` | `ssl` is `flexible`: Cloudflare talks to the origin over plain HTTP. | critical | `strict` once the origin serves a valid certificate; switching without one returns 526 (invalid certificate) or 525 (no TLS on the origin) | free |
 | `ssl.mode.full_not_strict` | `ssl` is `full`: origin certificate is not validated, so a self-signed or expired certificate is accepted. | high | `strict` | free |
 | `ssl.always_https.off` | `always_use_https` is `off` and the site has no Redirect Rule doing the same. | medium | `on` | free |
-| `ssl.min_tls.below_1_2` | `min_tls_version` is `1.0` or `1.1`. | medium | `1.2` | free |
+| `ssl.min_tls.below_1_2` | `min_tls_version` is `1.0` or `1.1`. Risk to state: legacy clients that only speak TLS 1.0 or 1.1 (old Android and Windows versions, embedded devices, old payment terminals, scripts on outdated OpenSSL) can no longer connect; ask the user whether such clients matter before the change. | medium | `1.2` | free |
 | `ssl.hsts.off` | `strict_transport_security.enabled` is `false` or `max_age` is `0`. Recommend only after `ssl` is `strict` and Always Use HTTPS is on. Never set `preload` unless the user explicitly asks and accepts the lock-in (see Traps). | medium | `enabled: true`, `max_age: 15552000` (6 months), `include_subdomains` only if every subdomain serves HTTPS, `preload: false` | free |
 | `ssl.tls13.off` | `tls_1_3` is `off`. | low | `on` (choose `zrt` only on user request, see Traps) | free |
 | `ssl.auto_rewrites.off` | `automatic_https_rewrites` is `off`. | low | `on` | free |
@@ -99,6 +99,7 @@ Order matters: fix the encryption mode first, verify the site loads (no 525/526)
 - **HSTS preload is a lock-in.** Preload lists are compiled into browsers; removal takes months and in the meantime every subdomain must serve HTTPS or becomes unreachable. Preload also needs `max_age` of at least 12 months and `include_subdomains`. Only on explicit user request.
 - **HSTS and dropping HTTPS.** Removing HTTPS (or setting `ssl` to `off`) while HSTS is active makes the site inaccessible for the length of `max_age`. Disable HSTS (`max_age: 0`) and wait out the old `max_age` first.
 - **`include_subdomains`** breaks any subdomain without HTTPS (internal tools, DNS-only hosts with no certificate).
+- **Raising the minimum to 1.2** cuts off legacy clients limited to TLS 1.0 or 1.1. If the user is unsure, the change is reversible: roll back if such clients report failures.
 - **Minimum TLS 1.3** blocks clients that only speak TLS 1.2; recommend `1.2` unless the user knows all clients.
 - **0-RTT (`zrt`)** allows replay of early data; only safe when the application treats early-data requests as replayable (GET only).
 - **Configuration Rules override the zone mode.** A rule with `ssl: "flexible"` for some paths keeps those paths on Flexible even after the zone is set to strict. Read `http_config_settings` before reporting the effective mode.
