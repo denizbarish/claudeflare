@@ -91,14 +91,24 @@ function decideRead(toolInput, cwd) {
   return toolTargets(toolInput, cwd).some(inKeyDir) ? deny(STATE_REASON) : null;
 }
 
-// Grep/Glob: the search root, and a Glob pattern when it is an absolute path.
+// Static directory part of an absolute glob, e.g. /a/b for /a/b/**/*.key.
+function globBase(pattern) {
+  const parts = pattern.split(/[\\/]/);
+  const firstGlob = parts.findIndex((part) => /[*?[{]/.test(part));
+  return resolve(parts.slice(0, firstGlob < 0 ? parts.length : firstGlob).join(sep) || sep);
+}
+
+// Grep/Glob: deny when a search root (path, else cwd; plus the base of an
+// absolute Glob pattern) is inside the key dir or contains it.
 function decideSearch(toolName, toolInput, cwd) {
-  const targets = [];
-  if (typeof toolInput.path === 'string' && toolInput.path !== '') targets.push(resolve(cwd, toolInput.path));
+  const hasPath = typeof toolInput.path === 'string' && toolInput.path !== '';
+  const roots = [hasPath ? resolve(cwd, toolInput.path) : resolve(cwd)];
   if (toolName === 'Glob' && typeof toolInput.pattern === 'string' && isAbsolute(toolInput.pattern)) {
-    targets.push(resolve(toolInput.pattern));
+    roots.push(globBase(toolInput.pattern));
   }
-  return targets.some(inKeyDir) ? deny(STATE_REASON) : null;
+  const dir = resolve(keyDir());
+  const hit = roots.some((root) => isInside(dir, root) || isInside(root, dir));
+  return hit ? deny(STATE_REASON) : null;
 }
 
 function touchesState(command) {

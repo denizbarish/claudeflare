@@ -281,36 +281,6 @@ test('guard exits silently on malformed stdin', (t) => {
   assert.equal(runHook(GUARD, setup(t), 'nope'), null);
 });
 
-// inspectCode
-
-test('inspectCode reads only top-level method and path literals', () => {
-  assert.deepEqual(inspectCode('const a = 1; return a;'), { calls: [], determinable: true });
-  assert.deepEqual(
-    inspectCode("cloudflare.request({ path: '/zones', body: { method: 'GET' } })"),
-    { calls: [{ method: null, path: '/zones' }], determinable: false },
-  );
-  assert.deepEqual(
-    inspectCode('cloudflare.request({ "method": "get", path: `/zones/x` /* c } */ })'),
-    // The comment's brace does not break balancing; a commented value is unreadable (null).
-    { calls: [{ method: 'get', path: null }], determinable: true },
-  );
-});
-
-test('inspectCode treats spreads, duplicates, unbalanced and non-object arguments as undeterminable', () => {
-  for (const code of [
-    "cloudflare.request({ method: 'GET', ...opts })",
-    "cloudflare.request({ method: 'GET', method: 'DELETE' })",
-    "cloudflare.request({ method: 'GET', path: '/x'",
-    'cloudflare.request(opts)',
-  ]) {
-    assert.equal(inspectCode(code).determinable, false, code);
-  }
-  assert.deepEqual(
-    inspectCode("cloudflare.request({ method: 'GET', path: '}' + x })"),
-    { calls: [{ method: 'GET', path: null }], determinable: true },
-  );
-});
-
 test('hooks.json wires approve to UserPromptSubmit and guard to PreToolUse', () => {
   const config = JSON.parse(readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8')).hooks;
   assert.equal(config.UserPromptSubmit[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/approve.mjs"');
@@ -325,33 +295,6 @@ test('guard deny wins over ask: valid apply chained with a curl DELETE is denied
   writeApproval(ctx.cwd, { plan_id: PLAN_ID, session_id: 's' });
   const cmd = `claudeflare apply ${PLAN_ID} && curl -X DELETE https://api.cloudflare.com/client/v4/zones/abc`;
   assertDeny(guard(ctx, bash(cmd)), PROTOCOL);
-});
-
-test('inspectCode fails closed on unrecognised object segments', () => {
-  for (const code of [
-    "cloudflare.request({ method: 'GET', ['method']: 'DELETE' })",
-    "cloudflare.request({ method: 'GET', 'met\\hod': 'DELETE' })",
-    "cloudflare.request({ path: '/x', get method() { return 'DELETE'; } })",
-    "cloudflare.request({ path: '/x', method() { return 'DELETE'; } })",
-  ]) {
-    assert.equal(inspectCode(code).determinable, false, code);
-  }
-});
-
-test('inspectCode fails closed on request aliases, .call and bracket access', () => {
-  for (const code of [
-    "const r = cloudflare.request; return r({ method: 'DELETE', path: '/zones/a' });",
-    "return cloudflare['request']({ method: 'DELETE', path: '/zones/a' });",
-    "return cloudflare.request.call(null, { method: 'DELETE', path: '/zones/a' });",
-    "return cloudflare.request.apply(null, [{ method: 'DELETE', path: '/zones/a' }]);",
-  ]) {
-    assert.equal(inspectCode(code).determinable, false, code);
-  }
-});
-
-test('inspectCode fails closed on fetch()', () => {
-  const code = "return fetch('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });";
-  assert.equal(inspectCode(code).determinable, false);
 });
 
 test('guard denies execute using an alias, bracket access, .call or fetch', (t) => {
@@ -369,7 +312,7 @@ test('guard denies execute using an alias, bracket access, .call or fetch', (t) 
 
 test('guard allows POST only to exact graphql paths', (t) => {
   const ctx = setup(t);
-  const post = (path) => execute(`return cloudflare.request({ method: 'POST', path: '${path}' });`);
+  const post = (path) => execute(`await cloudflare.request({ method: 'POST', path: '${path}' });`);
   assert.equal(guard(ctx, post('/client/v4/graphql')), null);
   for (const path of ['/graphql?x=1', '/graphql#x', '/zones/x/graphql']) {
     assertDeny(guard(ctx, post(path)), PROTOCOL);
@@ -430,17 +373,8 @@ test('guard denies execute code with zero calls', (t) => {
 });
 
 test('guard allows a plain GET call with a comment', (t) => {
-  const code = "// list zones for the account\nreturn cloudflare.request({ method: 'GET', path: '/zones' });";
+  const code = "// list zones for the account\nconst zones = await cloudflare.request({ method: 'GET', path: '/zones' });\nreturn zones;";
   assert.equal(guard(setup(t), execute(code)), null);
-});
-
-test('inspectCode is undeterminable for eval, Function, globalThis, self, Reflect, Proxy, import(), require()', () => {
-  const get = "cloudflare.request({ method: 'GET', path: '/zones' });";
-  for (const extra of ['eval(x)', 'new Function(x)', 'globalThis.x', 'self.x', 'Reflect.apply(a, b, c)', 'new Proxy(a, b)', "import('x')", "require('x')", 'a)[0]', 'a[0][1]']) {
-    assert.equal(inspectCode(`${extra}; ${get}`).determinable, false, extra);
-  }
-  assert.equal(inspectCode(`const x = \`\${fetch}\`; ${get}`).determinable, false, 'fetch inside template expression');
-  assert.equal(inspectCode(`const s = 'fetch eval [x]'; return [1]; ${get}`).determinable, true, 'words in strings, array literal after return');
 });
 
 test('guard denies Grep and Glob on the key dir', (t) => {
@@ -450,4 +384,56 @@ test('guard denies Grep and Glob on the key dir', (t) => {
   assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: join(ctx.keyDir, '*.key') } }), STATE);
   assert.equal(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: ctx.cwd } }), null);
   assert.equal(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: '**/*.json' } }), null);
+});
+
+// Fix round 3: strict grammar
+
+test('inspectCode accepts the grammar', () => {
+  const ok = (code, calls) => assert.deepEqual(inspectCode(code), { calls, determinable: true }, code);
+  ok("await cloudflare.request({ method: 'GET', path: '/zones' });", [{ method: 'GET', path: '/zones' }]);
+  ok(
+    "const a = await cloudflare.request({ method: 'GET', path: '/zones' })\nlet b = cloudflare.request({ \"method\": \"GET\", path: `/zones/x`, })\nreturn [a, b];",
+    [{ method: 'GET', path: '/zones' }, { method: 'GET', path: '/zones/x' }],
+  );
+  ok(
+    "/* list */ const r = await cloudflare.request({ method: 'GET', path: '/zones', query: { per_page: 50, match: 'all', ids: [1, 2], ok: true, x: null } }); // c\nreturn { r };",
+    [{ method: 'GET', path: '/zones' }],
+  );
+  ok(
+    "const g = await cloudflare.request({ method: 'POST', path: '/graphql', body: { query: '{ viewer { zones } }', variables: { tag: 'abc', limit: 10 } } });\nreturn g;",
+    [{ method: 'POST', path: '/graphql' }],
+  );
+});
+
+test('inspectCode rejects everything outside the grammar', () => {
+  const get = "cloudflare.request({ method: 'GET', path: '/zones' })";
+  for (const code of [
+    `const x = /'/; await ${get}; cloudflare.request({ method: 'DELETE', path: '/z' /' })`,
+    "const k = 'request'; await cloudflare?.[k]({ method: 'DELETE', path: '/zones/a' });",
+    "Object.entries(cloudflare).forEach(([k, f]) => f({ method: 'DELETE', path: '/zones/a' }));",
+    `for (const z of [1]) { await ${get}; }`,
+    `const f = () => ${get}; await f();`,
+    "await cloudflare.request({ method: 'GET', path: `/zones/${id}` });",
+    "await cloudflare.request({ method: 'GET', path: '/zones\\x2f' });",
+    "await cloudflare.request({ method: 'GET', path: '/zones', headers: { a: 'b' } });",
+    "await cloudflare.request({ path: '/zones' });",
+    "await cloudflare.request({ method: 'GET', method: 'DELETE' });",
+    "await cloudflare.request({ method: 'GET', ...opts });",
+    'return 1+1',
+    `await ${get}; return nope;`,
+    "const k = 'req' + 'uest'; return cloudflare[k]({ method: 'DELETE', path: '/zones/a' });",
+    "await cloudflare.requ\\u0065st({ method: 'DELETE', path: '/zones/a' });",
+    "await fetch.call(null, 'https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });",
+    "const f = fetch; await f('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });",
+  ]) {
+    assert.deepEqual(inspectCode(code), { calls: [], determinable: false }, code);
+  }
+});
+
+test('guard denies Grep on a parent of the key dir and searches with no path from a parent cwd', (t) => {
+  const ctx = setup(t);
+  const parent = join(ctx.keyDir, '..');
+  assertDeny(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: parent } }), STATE);
+  assertDeny(guard({ ...ctx, cwd: parent }, { tool_name: 'Grep', tool_input: { pattern: 'x' }, cwd: parent }), STATE);
+  assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: join(parent, '**/*.key') } }), STATE);
 });

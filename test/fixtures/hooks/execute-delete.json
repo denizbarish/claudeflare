@@ -1,1 +1,1 @@
-{"tool_name":"mcp__cloudflare__execute","tool_input":{"code":"return cloudflare.request({ method: \"DELETE\", path: \"/zones/abc/dns_records/1\" });"}}
+{"tool_name":"mcp__cloudflare__execute","tool_input":{"code":"await cloudflare.request({ method: \"DELETE\", path: \"/zones/abc/dns_records/1\" });"}}

@@ -1,243 +1,246 @@
-// Best-effort static reading of MCP "execute" code: finds every `request(` call
-// and reads `method` and `path` from its object argument, but only when they are
-// plain string literals. Anything it cannot read comes back as null, and callers
-// must treat null as "unknown" (deny), never as "safe".
+// Strict reading of MCP "execute" code. Only this grammar is accepted; anything
+// else is undeterminable (the guard denies it):
+//
+//   program    := statement* [returnStmt]
+//   statement  := [("const"|"let") IDENT "="] ["await"] call [";"]
+//   call       := "cloudflare" "." "request" "(" object ")"
+//   object     := "{" [prop ("," prop)* [","]] "}"
+//   prop       := key ":" value   (keys: method, path, query, body; each at most once)
+//   value      := STRING for method and path; literal (STRING, NUMBER, true, false,
+//                 null, or object/array of literals) for query and body
+//   returnStmt := "return" (IDENT | "[" IDENTs "]" | "{" IDENTs "}") [";"]
+//
+// Comments are skipped. Any backslash, `${`, or character outside the grammar
+// rejects the whole program.
 
-const QUOTES = new Set(["'", '"', '`']);
-const OPENERS = '{[(';
-const CLOSERS = '}])';
-const CALL = /request\s*\(/g;
-// `request` used any other way (alias, .call/.apply, bracket access) means calls
-// can escape the scan above. Checked on the raw code, strings included.
-const REQUEST_NOT_CALLED = /\brequest\b(?!\s*\()/;
-// Checked on the code outside strings and comments: constructs that can reach the
-// network or build a call the scan cannot see.
-const ESCAPING_CONSTRUCTS = [
-  /\\/, // escape sequences in identifiers, e.g. requ\u0065st
-  /\bfetch\b/,
-  /\b(?:eval|Function|globalThis|self|Reflect|Proxy)\b/,
-  /\b(?:import|require)\s*\(/,
-];
-// Computed member access: identifier[, )[ or ][ (keywords before an array literal excluded).
-const COMPUTED_ACCESS = /(?:([A-Za-z_$][\w$]*)|[)\]])\s*\[/g;
-const KEYWORDS_BEFORE_ARRAY = new Set([
-  'return', 'typeof', 'in', 'of', 'case', 'yield', 'await', 'void', 'delete', 'throw', 'new', 'else', 'do',
-]);
-const PROPERTY = /^\s*(?:([A-Za-z_$][\w$]*)|'([^'\\]*)'|"([^"\\]*)")\s*:\s*([\s\S]*?)\s*$/;
-const SHORTHAND = /^\s*([A-Za-z_$][\w$]*)\s*$/;
-const LITERAL = /^(?:'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`)$/;
+const PUNCTUATION = new Set(['{', '}', '[', ']', '(', ')', ',', ':', ';', '.', '=']);
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*/;
+const NUMBER = /^\d+(?:\.\d+)?/;
+const WHITESPACE = /^\s+/;
+const CALL_KEYS = new Set(['method', 'path', 'query', 'body']);
+const STRING_KEYS = new Set(['method', 'path']);
+const RESERVED = new Set(['const', 'let', 'await', 'return', 'true', 'false', 'null', 'cloudflare']);
 
-// Index just past the string starting at `start`, or -1 if it never closes.
-function skipString(code, start) {
+class Reject extends Error {}
+
+function reject() {
+  throw new Reject();
+}
+
+function readString(code, start) {
   const quote = code[start];
   for (let i = start + 1; i < code.length; i++) {
     const c = code[i];
-    if (c === '\\') {
-      i++;
-    } else if (c === quote) {
-      return i + 1;
-    } else if (quote === '`' && c === '$' && code[i + 1] === '{') {
-      const end = matchingClose(code, i + 1);
-      if (end < 0) return -1;
-      i = end;
-    }
+    if (c === '\\') reject();
+    if (quote !== '`' && c === '\n') reject();
+    if (quote === '`' && c === '$' && code[i + 1] === '{') reject();
+    if (c === quote) return { token: { type: 'string', value: code.slice(start + 1, i) }, end: i + 1 };
   }
-  return -1;
+  return reject();
 }
 
-// Index just past the comment starting at `start`, `start` if there is none,
-// or -1 for an unterminated block comment.
-function skipComment(code, start) {
-  if (code[start] !== '/') return start;
-  if (code[start + 1] === '/') {
-    const end = code.indexOf('\n', start);
+function skipComment(code, i) {
+  if (code.startsWith('//', i)) {
+    const end = code.indexOf('\n', i);
     return end < 0 ? code.length : end;
   }
-  if (code[start + 1] === '*') {
-    const end = code.indexOf('*/', start + 2);
-    return end < 0 ? -1 : end + 2;
+  if (code.startsWith('/*', i)) {
+    const end = code.indexOf('*/', i + 2);
+    return end < 0 ? reject() : end + 2;
   }
-  return start;
+  return i;
 }
 
-// Walks code from `open` (a bracket), calling visit(char, index, depth) for every
-// character outside strings and comments. Returns the index of the matching close
-// bracket, or -1 if the brackets do not balance.
-function walk(code, open, visit = () => {}) {
-  let depth = 0;
-  let i = open;
-  while (i < code.length) {
-    const c = code[i];
-    if (QUOTES.has(c)) {
-      i = skipString(code, i);
-      if (i < 0) return -1;
-      continue;
-    }
-    const afterComment = skipComment(code, i);
-    if (afterComment < 0) return -1;
-    if (afterComment !== i) {
-      i = afterComment;
-      continue;
-    }
-    if (OPENERS.includes(c)) depth++;
-    else if (CLOSERS.includes(c)) depth--;
-    if (depth === 0) return i;
-    visit(c, i, depth);
-    i++;
-  }
-  return -1;
-}
-
-function matchingClose(code, open) {
-  return walk(code, open);
-}
-
-// The code with string literal text and comments blanked out (template `${}`
-// expressions kept), or null if a string or comment never closes.
-function codeOutsideStrings(code) {
-  let out = '';
+function tokenize(code) {
+  const tokens = [];
   let i = 0;
   while (i < code.length) {
-    const c = code[i];
-    if (c === "'" || c === '"') {
-      const end = skipString(code, i);
-      if (end < 0) return null;
-      out += ' '.repeat(end - i);
-      i = end;
-      continue;
-    }
-    if (c === '`') {
-      const end = blankTemplate(code, i);
-      if (end === null) return null;
-      out += end.text;
-      i = end.next;
+    const rest = code.slice(i);
+    const space = WHITESPACE.exec(rest);
+    if (space) {
+      i += space[0].length;
       continue;
     }
     const afterComment = skipComment(code, i);
-    if (afterComment < 0) return null;
     if (afterComment !== i) {
-      out += ' '.repeat(afterComment - i);
       i = afterComment;
       continue;
     }
-    out += c;
+    const c = code[i];
+    if (c === "'" || c === '"' || c === '`') {
+      const { token, end } = readString(code, i);
+      tokens.push(token);
+      i = end;
+      continue;
+    }
+    const ident = IDENT.exec(rest);
+    if (ident) {
+      tokens.push({ type: 'ident', value: ident[0] });
+      i += ident[0].length;
+      continue;
+    }
+    const number = NUMBER.exec(rest);
+    if (number) {
+      tokens.push({ type: 'number', value: number[0] });
+      i += number[0].length;
+      continue;
+    }
+    if (!PUNCTUATION.has(c)) reject();
+    tokens.push({ type: 'punct', value: c });
     i++;
   }
-  return out;
+  return tokens;
 }
 
-function blankTemplate(code, start) {
-  let text = ' ';
-  for (let i = start + 1; i < code.length; i++) {
-    const c = code[i];
-    if (c === '\\') {
-      text += '  ';
-      i++;
-    } else if (c === '`') {
-      return { text: `${text} `, next: i + 1 };
-    } else if (c === '$' && code[i + 1] === '{') {
-      const end = matchingClose(code, i + 1);
-      if (end < 0) return null;
-      const inner = codeOutsideStrings(code.slice(i + 2, end));
-      if (inner === null) return null;
-      text += `  ${inner} `;
-      i = end;
+class Parser {
+  constructor(tokens) {
+    this.tokens = tokens;
+    this.pos = 0;
+    this.declared = new Set();
+    this.calls = [];
+  }
+
+  peek(offset = 0) {
+    return this.tokens[this.pos + offset];
+  }
+
+  is(type, value, offset = 0) {
+    const t = this.peek(offset);
+    return t !== undefined && t.type === type && (value === undefined || t.value === value);
+  }
+
+  expect(type, value) {
+    if (!this.is(type, value)) reject();
+    return this.tokens[this.pos++];
+  }
+
+  accept(type, value) {
+    if (!this.is(type, value)) return false;
+    this.pos++;
+    return true;
+  }
+
+  identifier() {
+    const name = this.expect('ident').value;
+    if (RESERVED.has(name)) reject();
+    return name;
+  }
+
+  program() {
+    while (this.pos < this.tokens.length) {
+      if (this.is('ident', 'return')) {
+        this.returnStatement();
+        if (this.pos !== this.tokens.length) reject();
+        break;
+      }
+      this.statement();
+    }
+    return this.calls;
+  }
+
+  statement() {
+    if (this.is('ident', 'const') || this.is('ident', 'let')) {
+      this.pos++;
+      const name = this.identifier();
+      if (this.declared.has(name)) reject();
+      this.declared.add(name);
+      this.expect('punct', '=');
+    }
+    this.accept('ident', 'await');
+    this.call();
+    this.accept('punct', ';');
+  }
+
+  call() {
+    this.expect('ident', 'cloudflare');
+    this.expect('punct', '.');
+    this.expect('ident', 'request');
+    this.expect('punct', '(');
+    const props = this.callObject();
+    this.expect('punct', ')');
+    if (props.method === undefined) reject();
+    this.calls.push({ method: props.method, path: props.path ?? null });
+  }
+
+  key() {
+    const t = this.peek();
+    if (t === undefined || (t.type !== 'ident' && t.type !== 'string')) reject();
+    this.pos++;
+    return t.value;
+  }
+
+  callObject() {
+    const props = {};
+    this.list('{', '}', () => {
+      const key = this.key();
+      if (!CALL_KEYS.has(key) || Object.hasOwn(props, key)) reject();
+      this.expect('punct', ':');
+      props[key] = STRING_KEYS.has(key) ? this.expect('string').value : this.literal();
+    });
+    return props;
+  }
+
+  // Comma-separated items between open and close, trailing comma allowed.
+  list(open, close, item) {
+    this.expect('punct', open);
+    while (!this.accept('punct', close)) {
+      item();
+      if (!this.accept('punct', ',')) {
+        this.expect('punct', close);
+        return;
+      }
+    }
+  }
+
+  literal() {
+    const t = this.peek();
+    if (t === undefined) reject();
+    if (t.type === 'string' || t.type === 'number') {
+      this.pos++;
+      return t.value;
+    }
+    if (t.type === 'ident' && (t.value === 'true' || t.value === 'false' || t.value === 'null')) {
+      this.pos++;
+      return t.value;
+    }
+    if (this.is('punct', '{')) {
+      return this.list('{', '}', () => {
+        this.key();
+        this.expect('punct', ':');
+        this.literal();
+      });
+    }
+    if (this.is('punct', '[')) return this.list('[', ']', () => this.literal());
+    return reject();
+  }
+
+  declaredIdentifier() {
+    const name = this.identifier();
+    if (!this.declared.has(name)) reject();
+  }
+
+  returnStatement() {
+    this.expect('ident', 'return');
+    if (this.is('punct', '[') || this.is('punct', '{')) {
+      const open = this.peek().value;
+      const close = open === '[' ? ']' : '}';
+      this.expect('punct', open);
+      this.declaredIdentifier();
+      while (this.accept('punct', ',')) this.declaredIdentifier();
+      this.expect('punct', close);
     } else {
-      text += ' ';
+      this.declaredIdentifier();
     }
+    this.accept('punct', ';');
   }
-  return null;
-}
-
-function hasComputedAccess(code) {
-  for (const m of code.matchAll(COMPUTED_ACCESS)) {
-    if (!m[1] || !KEYWORDS_BEFORE_ARRAY.has(m[1])) return true;
-  }
-  return false;
-}
-
-// True when the code may make calls the `request(` scan cannot see.
-function canEscapeScan(code) {
-  if (REQUEST_NOT_CALLED.test(code)) return true;
-  const outside = codeOutsideStrings(code);
-  if (outside === null) return true;
-  return ESCAPING_CONSTRUCTS.some((re) => re.test(outside)) || hasComputedAccess(outside);
-}
-
-// Top-level property segments of the object literal spanning open..close.
-function topLevelSegments(code, open, close) {
-  const segments = [];
-  let start = open + 1;
-  walk(code, open, (c, i, depth) => {
-    if (c === ',' && depth === 1) {
-      segments.push(code.slice(start, i));
-      start = i + 1;
-    }
-  });
-  segments.push(code.slice(start, close));
-  return segments.filter((s) => s.trim() !== '');
-}
-
-function literalValue(source) {
-  const m = LITERAL.exec(source);
-  return m ? (m[1] ?? m[2] ?? m[3]) : null;
-}
-
-// Reads `method` and `path` from an object literal. A spread, a duplicate key, a
-// shorthand or a non-literal value makes that field null. `recognised` is false
-// when any segment is not a plain `key: value`, shorthand or spread (computed or
-// escaped keys, getters, methods), since such a segment may set the method.
-function readCallObject(code, open, close) {
-  const values = { method: [], path: [] };
-  let hasSpread = false;
-  let recognised = true;
-  for (const segment of topLevelSegments(code, open, close)) {
-    if (segment.trim().startsWith('...')) {
-      hasSpread = true;
-      continue;
-    }
-    const prop = PROPERTY.exec(segment);
-    const key = prop ? (prop[1] ?? prop[2] ?? prop[3]) : SHORTHAND.exec(segment)?.[1];
-    if (key === undefined) {
-      recognised = false;
-      continue;
-    }
-    if (Object.hasOwn(values, key)) values[key].push(prop ? literalValue(prop[4]) : null);
-  }
-  const pick = (list) => (!hasSpread && list.length === 1 ? list[0] : null);
-  return { call: { method: pick(values.method), path: pick(values.path) }, recognised };
-}
-
-function firstArgumentStart(code, from) {
-  let i = from;
-  while (i < code.length) {
-    if (/\s/.test(code[i])) {
-      i++;
-      continue;
-    }
-    const afterComment = skipComment(code, i);
-    if (afterComment < 0) return -1;
-    if (afterComment === i) return i;
-    i = afterComment;
-  }
-  return -1;
 }
 
 export function inspectCode(source) {
-  const code = String(source);
-  const calls = [];
-  let determinable = !canEscapeScan(code);
-  for (const match of code.matchAll(CALL)) {
-    const argStart = firstArgumentStart(code, match.index + match[0].length);
-    const close = argStart >= 0 && code[argStart] === '{' ? matchingClose(code, argStart) : -1;
-    if (close < 0) {
-      calls.push({ method: null, path: null });
-      determinable = false;
-      continue;
-    }
-    const { call, recognised } = readCallObject(code, argStart, close);
-    if (!recognised || call.method === null) determinable = false;
-    calls.push(call);
+  try {
+    const calls = new Parser(tokenize(String(source))).program();
+    return { calls, determinable: true };
+  } catch (err) {
+    if (err instanceof Reject) return { calls: [], determinable: false };
+    throw err;
   }
-  return { calls, determinable };
 }
