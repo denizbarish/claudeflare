@@ -3,6 +3,7 @@
   "owner": {
     "name": "Deniz Barış"
   },
+  "description": "Claude Code plugins for operating Cloudflare: audits, optimization and troubleshooting with human-approved, reversible changes.",
   "plugins": [
     {
       "name": "claudeflare",

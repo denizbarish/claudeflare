@@ -7,5 +7,15 @@
   },
   "license": "MIT",
   "repository": "https://github.com/denizbarish/claudeflare",
-  "keywords": ["cloudflare", "dns", "waf", "cdn", "security", "performance", "audit"]
+  "keywords": [
+    "cloudflare",
+    "dns",
+    "waf",
+    "cdn",
+    "security",
+    "performance",
+    "audit"
+  ],
+  "icon": ".claude-plugin/icon.png",
+  "privacyPolicyUrl": "https://github.com/denizbarish/claudeflare/blob/main/PRIVACY.md"
 }

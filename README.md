@@ -216,6 +216,10 @@ In CI (`.github/workflows/ci.yml`), unit tests run on every push. The evals job 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
+## Privacy
+
+claudeflare collects no data. See [PRIVACY.md](PRIVACY.md).
+
 ## License
 
 [MIT](LICENSE)
