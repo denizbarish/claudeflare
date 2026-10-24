@@ -1,0 +1,1 @@
+{"tool_name":"Bash","tool_input":{"command":"curl https://api.cloudflare.com/client/v4/zones/abc/dns_records --data '{\"type\":\"A\"}'"}}

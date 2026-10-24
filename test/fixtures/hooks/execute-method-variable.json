@@ -1,0 +1,1 @@
+{"tool_name":"mcp__cloudflare__execute","tool_input":{"code":"const m = \"DEL\" + \"ETE\";\nreturn cloudflare.request({ method: m, path: \"/zones/abc/dns_records/1\" });"}}

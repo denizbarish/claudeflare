@@ -1,0 +1,1 @@
+{"tool_name":"mcp__cloudflare__execute","tool_input":{"code":"const x = \"POST\";\nreturn cloudflare.request({ method: `${x}`, path: \"/zones/abc/dns_records\" });"}}

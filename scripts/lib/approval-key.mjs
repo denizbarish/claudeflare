@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const KEY_FILE = 'approval.key';
 const KEY_BYTES = 32;
 
-function keyDir() {
+export function keyDir() {
   return process.env.CLAUDEFLARE_KEY_DIR || join(homedir(), '.config', 'claudeflare');
 }
 

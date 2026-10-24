@@ -1,0 +1,1 @@
+{"tool_name":"mcp__cloudflare__execute","tool_input":{"code":"return cloudflare.request({ method: 'POST', path: '/graphql', body: { query: \"{ viewer { zones { x } } }\" } });"}}
