@@ -4,8 +4,13 @@
 import { classify } from './resources.mjs';
 import { CfError } from './errors.mjs';
 
-const DNS_FIELDS = ['type', 'name', 'content', 'ttl', 'proxied', 'priority', 'comment', 'tags'];
-const RULE_FIELDS = ['expression', 'action', 'action_parameters', 'description', 'enabled'];
+const DNS_FIELDS = [
+  'type', 'name', 'content', 'data', 'ttl', 'proxied', 'priority', 'comment', 'tags', 'settings',
+];
+const RULE_FIELDS = [
+  'expression', 'action', 'action_parameters', 'description', 'enabled',
+  'ratelimit', 'logging', 'ref', 'exposed_credential_check',
+];
 
 function pick(source, fields) {
   const out = {};
@@ -13,6 +18,13 @@ function pick(source, fields) {
     if (source?.[field] !== undefined) out[field] = source[field];
   }
   return out;
+}
+
+// Structured records (SRV, CAA, ...) carry `data`; content is derived from it.
+function dnsBody(record) {
+  const body = pick(record, DNS_FIELDS);
+  if (body.data !== undefined) delete body.content;
+  return body;
 }
 
 function lastSegment(path) {
@@ -29,11 +41,12 @@ function ruleIds(ruleset) {
 
 async function readRule(client, readPath, ruleId) {
   const ruleset = await client.request('GET', readPath);
-  const rule = (ruleset?.rules ?? []).find((r) => r?.id === ruleId);
-  if (!rule) {
+  const rules = ruleset?.rules ?? [];
+  const index = rules.findIndex((r) => r?.id === ruleId);
+  if (index < 0) {
     throw new CfError('not_found', `Rule ${ruleId} not found in ruleset ${readPath}`, { status: 404 });
   }
-  return rule;
+  return { rule: rules[index], index: index + 1 };
 }
 
 // Before-readers per kind. Kinds absent here take no snapshot (before = null).
@@ -55,7 +68,9 @@ const READERS = {
   rule_create: async (client, op, readPath) => ({
     rule_ids: ruleIds(await client.request('GET', readPath)),
   }),
-  rule_update: (client, op, readPath) => readRule(client, readPath, lastSegment(op.path)),
+  rule_update: async (client, op, readPath) =>
+    (await readRule(client, readPath, lastSegment(op.path))).rule,
+  // before = { rule, index } where index is the rule's 1-based position.
   rule_delete: (client, op, readPath) => readRule(client, readPath, lastSegment(op.path)),
   phase_entrypoint_put: async (client, op, readPath) => {
     try {
@@ -92,12 +107,12 @@ const INVERTERS = {
     if (!applyResult?.id) throw ambiguous(`No record id in apply result for ${path}`);
     return [{ method: 'DELETE', path: `${path}/${applyResult.id}` }];
   },
-  dns_update: ({ path, before }) => [{ method: 'PUT', path, body: pick(before, DNS_FIELDS) }],
+  dns_update: ({ path, before }) => [{ method: 'PUT', path, body: dnsBody(before) }],
   dns_delete: ({ path, before }) => [
-    { method: 'POST', path: parentPath(path), body: pick(before, DNS_FIELDS) },
+    { method: 'POST', path: parentPath(path), body: dnsBody(before) },
   ],
-  rule_create: ({ path, before }, applyResult) => {
-    const known = new Set(before.rule_ids);
+  rule_create: ({ path, before }, applyResult, { knownRuleIds = [] } = {}) => {
+    const known = new Set([...before.rule_ids, ...knownRuleIds]);
     const added = ruleIds(applyResult).filter((id) => !known.has(id));
     if (added.length !== 1) {
       throw ambiguous(`Expected exactly one new rule in ${path}, found ${added.length}`);
@@ -106,24 +121,40 @@ const INVERTERS = {
   },
   rule_update: ({ path, before }) => [{ method: 'PATCH', path, body: pick(before, RULE_FIELDS) }],
   rule_delete: ({ path, before }) => [
-    { method: 'POST', path: parentPath(path), body: pick(before, RULE_FIELDS) },
+    {
+      method: 'POST',
+      path: parentPath(path),
+      body: { ...pick(before.rule, RULE_FIELDS), position: { index: before.index } },
+    },
   ],
-  phase_entrypoint_put: ({ path, before }) => [{ method: 'PUT', path, body: { rules: before.rules } }],
+  phase_entrypoint_put: ({ path, before }) => [
+    { method: 'PUT', path, body: { rules: (before.rules ?? []).map((r) => pick(r, RULE_FIELDS)) } },
+  ],
 };
 
-export function inverseFor(entry, applyResult) {
+// options.knownRuleIds: rule ids already attributed to earlier rule_create
+// ops on the same ruleset, so they are not mistaken for this op's new rule.
+export function inverseFor(entry, applyResult, options = {}) {
   const inverter = INVERTERS[entry.kind];
   if (!entry.invertible || !inverter) return [];
-  return inverter(entry, applyResult);
+  return inverter(entry, applyResult, options);
 }
 
 // results[i] is the apply result of op i, or null/undefined if it was not applied.
+// Inverses are computed in apply order (to attribute created rule ids), then
+// emitted in reverse.
 export function buildRollbackOps(snapshot, results) {
-  const ops = [];
-  for (const entry of [...snapshot.entries].reverse()) {
+  const createdRuleIds = new Map();
+  const perEntry = [];
+  for (const entry of snapshot.entries) {
     const result = results[entry.op_index];
     if (result === null || result === undefined) continue;
-    ops.push(...inverseFor(entry, result));
+    const knownRuleIds = createdRuleIds.get(entry.path) ?? [];
+    const inverse = inverseFor(entry, result, { knownRuleIds });
+    if (entry.kind === 'rule_create' && inverse.length) {
+      createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);
+    }
+    perEntry.push(inverse);
   }
-  return ops;
+  return perEntry.reverse().flat();
 }

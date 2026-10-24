@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify } from '../scripts/lib/resources.mjs';
+import { classify, validatePlanOps } from '../scripts/lib/resources.mjs';
 import { captureSnapshot, inverseFor, buildRollbackOps } from '../scripts/lib/snapshot.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 
@@ -220,8 +220,9 @@ test('rule_delete: inverse POSTs the original rule fields to the rules collectio
   const noDescription = { ...SAMPLE_RULE, description: undefined };
   delete noDescription.description;
   const { entry } = await snapshotOne(op, {
-    [`GET /zones/${Z}/rulesets/${RS}`]: { id: RS, rules: [noDescription] },
+    [`GET /zones/${Z}/rulesets/${RS}`]: { id: RS, rules: [{ id: 'r0' }, noDescription, { id: 'r2' }] },
   });
+  assert.deepEqual(entry.before, { rule: noDescription, index: 2 });
   assert.deepEqual(inverseFor(entry, { id: RS, rules: [] }), [
     {
       method: 'POST',
@@ -231,6 +232,7 @@ test('rule_delete: inverse POSTs the original rule fields to the rules collectio
         action: 'block',
         action_parameters: { response: { status_code: 403 } },
         enabled: true,
+        position: { index: 2 },
       },
     },
   ]);
@@ -240,8 +242,29 @@ test('phase_entrypoint_put: inverse PUTs the original rules', async () => {
   const path = `/zones/${Z}/rulesets/phases/http_request_firewall_custom/entrypoint`;
   const op = { method: 'PUT', path, body: { rules: [{ expression: 'true', action: 'block' }] } };
   assert.deepEqual(classify(op), { kind: 'phase_entrypoint_put', invertible: true, readPath: path });
-  const { entry } = await snapshotOne(op, { [`GET ${path}`]: { id: RS, rules: [SAMPLE_RULE] } });
-  assert.deepEqual(inverseFor(entry, {}), [{ method: 'PUT', path, body: { rules: [SAMPLE_RULE] } }]);
+  const withRef = { ...SAMPLE_RULE, ref: 'block_a', logging: { enabled: false } };
+  const { entry } = await snapshotOne(op, { [`GET ${path}`]: { id: RS, version: '7', rules: [withRef] } });
+  const [inverse] = inverseFor(entry, {});
+  assert.deepEqual(inverse, {
+    method: 'PUT',
+    path,
+    body: {
+      rules: [
+        {
+          expression: SAMPLE_RULE.expression,
+          action: 'block',
+          action_parameters: { response: { status_code: 403 } },
+          description: 'Block a',
+          enabled: true,
+          ref: 'block_a',
+          logging: { enabled: false },
+        },
+      ],
+    },
+  });
+  for (const field of ['id', 'version', 'last_updated']) {
+    assert.ok(!(field in inverse.body.rules[0]), `inverse rule must not carry ${field}`);
+  }
 });
 
 test('phase_entrypoint_put: a 404 before-read is recorded as empty rules', async () => {
@@ -329,4 +352,125 @@ test('buildRollbackOps skips unapplied ops and reverses order', async () => {
   ]);
   assert.deepEqual(buildRollbackOps(snap, [null, null, null, null]), []);
   assert.deepEqual(buildRollbackOps(snap, []), []);
+});
+
+test('two rule_create ops on one ruleset roll back to two DELETEs with the right ids', async () => {
+  const rulesPath = `/zones/${Z}/rulesets/${RS}/rules`;
+  const client = fakeClient({ [`GET /zones/${Z}/rulesets/${RS}`]: { id: RS, rules: [{ id: 'r1' }] } });
+  const snap = await captureSnapshot(
+    client,
+    planWith([
+      { method: 'POST', path: rulesPath, body: { expression: 'a', action: 'block' } },
+      { method: 'POST', path: rulesPath, body: { expression: 'b', action: 'block' } },
+    ]),
+  );
+  const results = [
+    { id: RS, rules: [{ id: 'r1' }, { id: 'n1' }] },
+    { id: RS, rules: [{ id: 'r1' }, { id: 'n1' }, { id: 'n2' }] },
+  ];
+  assert.deepEqual(buildRollbackOps(snap, results), [
+    { method: 'DELETE', path: `${rulesPath}/n2` },
+    { method: 'DELETE', path: `${rulesPath}/n1` },
+  ]);
+});
+
+test('SRV record (data object): dns_update and dns_delete inverses copy data and settings, omit content', async () => {
+  const path = `/zones/${Z}/dns_records/${REC}`;
+  const srv = {
+    id: REC,
+    type: 'SRV',
+    name: '_sip._tcp.example.com',
+    content: '1 5060 sip.example.com',
+    data: { priority: 10, weight: 1, port: 5060, target: 'sip.example.com' },
+    priority: 10,
+    ttl: 300,
+    proxied: false,
+    settings: { flatten_cname: false },
+  };
+  const expected = {
+    type: 'SRV',
+    name: '_sip._tcp.example.com',
+    data: { priority: 10, weight: 1, port: 5060, target: 'sip.example.com' },
+    ttl: 300,
+    proxied: false,
+    priority: 10,
+    settings: { flatten_cname: false },
+  };
+  const update = await snapshotOne({ method: 'PATCH', path, body: { ttl: 60 } }, { [`GET ${path}`]: srv });
+  assert.deepEqual(inverseFor(update.entry, { id: REC }), [{ method: 'PUT', path, body: expected }]);
+  const del = await snapshotOne({ method: 'DELETE', path }, { [`GET ${path}`]: srv });
+  assert.deepEqual(inverseFor(del.entry, { id: REC }), [
+    { method: 'POST', path: `/zones/${Z}/dns_records`, body: expected },
+  ]);
+});
+
+test('rate limiting rule delete re-create keeps ratelimit and exposed_credential_check', async () => {
+  const rlRule = {
+    id: 'rl1',
+    expression: 'http.request.uri.path eq "/login"',
+    action: 'block',
+    description: 'Login limit',
+    enabled: true,
+    ratelimit: { characteristics: ['ip.src', 'cf.colo.id'], period: 60, requests_per_period: 10, mitigation_timeout: 600 },
+    exposed_credential_check: { username_expression: 'u', password_expression: 'p' },
+    version: '1',
+  };
+  const { entry } = await snapshotOne(
+    { method: 'DELETE', path: `/zones/${Z}/rulesets/${RS}/rules/rl1` },
+    { [`GET /zones/${Z}/rulesets/${RS}`]: { id: RS, rules: [rlRule] } },
+  );
+  const [inverse] = inverseFor(entry, { id: RS, rules: [] });
+  assert.deepEqual(inverse.body.ratelimit, rlRule.ratelimit);
+  assert.deepEqual(inverse.body.exposed_credential_check, rlRule.exposed_credential_check);
+  assert.deepEqual(inverse.body.position, { index: 1 });
+  assert.ok(!('id' in inverse.body) && !('version' in inverse.body));
+});
+
+test('validatePlanOps rejects two ops on the same DNS record', () => {
+  const path = `/zones/${Z}/dns_records/${REC}`;
+  assert.throws(
+    () => validatePlanOps([{ method: 'PATCH', path, body: {} }, { method: 'DELETE', path }]),
+    (e) => e instanceof CfError && e.code === 'plan_conflict',
+  );
+});
+
+test('validatePlanOps rejects two ops on the same rule', () => {
+  const path = `/zones/${Z}/rulesets/${RS}/rules/r1`;
+  assert.throws(
+    () => validatePlanOps([{ method: 'PATCH', path, body: {} }, { method: 'PATCH', path, body: {} }]),
+    (e) => e instanceof CfError && e.code === 'plan_conflict',
+  );
+  assert.throws(
+    () => validatePlanOps([{ method: 'PATCH', path, body: {} }, { method: 'DELETE', path }]),
+    (e) => e instanceof CfError && e.code === 'plan_conflict',
+  );
+});
+
+test('validatePlanOps rejects the same phase entrypoint twice', () => {
+  const path = `/zones/${Z}/rulesets/phases/http_request_firewall_custom/entrypoint`;
+  assert.throws(
+    () => validatePlanOps([{ method: 'PUT', path, body: { rules: [] } }, { method: 'PUT', path, body: { rules: [] } }]),
+    (e) => e instanceof CfError && e.code === 'plan_conflict',
+  );
+});
+
+test('validatePlanOps accepts a valid mixed plan', () => {
+  const rulesPath = `/zones/${Z}/rulesets/${RS}/rules`;
+  assert.doesNotThrow(() =>
+    validatePlanOps([
+      { method: 'PATCH', path: `/zones/${Z}/settings/ssl`, body: { value: 'strict' } },
+      { method: 'PATCH', path: `/zones/${Z}/settings/ssl`, body: { value: 'full' } },
+      { method: 'POST', path: `/zones/${Z}/dns_records`, body: {} },
+      { method: 'POST', path: `/zones/${Z}/dns_records`, body: {} },
+      { method: 'PATCH', path: `/zones/${Z}/dns_records/${REC}`, body: {} },
+      { method: 'DELETE', path: `/zones/${Z}/dns_records/abc123` },
+      { method: 'POST', path: rulesPath, body: {} },
+      { method: 'POST', path: rulesPath, body: {} },
+      { method: 'PATCH', path: `${rulesPath}/r1`, body: {} },
+      { method: 'DELETE', path: `${rulesPath}/r2` },
+      { method: 'PUT', path: `/zones/${Z}/rulesets/phases/http_request_firewall_custom/entrypoint`, body: { rules: [] } },
+      { method: 'PUT', path: `/zones/${Z}/rulesets/phases/http_request_dynamic_redirect/entrypoint`, body: { rules: [] } },
+      { method: 'POST', path: `/zones/${Z}/purge_cache`, body: { purge_everything: true } },
+    ]),
+  );
 });

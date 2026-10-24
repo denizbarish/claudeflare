@@ -1,6 +1,8 @@
 // Classifies a concrete plan op (no {zone_id} placeholders) into a resource
 // kind that the snapshot module knows how to capture and invert.
 
+import { CfError } from './errors.mjs';
+
 const ID = '[A-Za-z0-9]+';
 // Setting ids and phase names contain underscores (always_use_https,
 // http_request_firewall_custom), so they get a wider segment.
@@ -90,4 +92,30 @@ export function classify(op) {
     return result;
   }
   return { kind: 'unknown', invertible: false };
+}
+
+// Kinds whose before-snapshot would be stale if a second op in the same plan
+// targeted the same resource. The op path identifies the resource.
+const EXCLUSIVE_TARGET = {
+  dns_update: 'DNS record',
+  dns_delete: 'DNS record',
+  rule_update: 'rule',
+  rule_delete: 'rule',
+  phase_entrypoint_put: 'phase entrypoint',
+};
+
+export function validatePlanOps(ops) {
+  const seen = new Map();
+  (ops ?? []).forEach((op, index) => {
+    const label = EXCLUSIVE_TARGET[classify(op).kind];
+    if (!label) return;
+    const key = `${label} ${op.path}`;
+    if (seen.has(key)) {
+      throw new CfError(
+        'plan_conflict',
+        `Ops ${seen.get(key)} and ${index} both target the same ${label} (${op.path}); split them into separate plans`,
+      );
+    }
+    seen.set(key, index);
+  });
 }
