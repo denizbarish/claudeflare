@@ -20,7 +20,7 @@ Run `claudeflare init` once per project before the first plan or report. It crea
 | Reads when MCP is unavailable, or bulk reads | `claudeflare get <path> [--query k=v ...]` (needs `CLOUDFLARE_API_TOKEN`) |
 | Live behavior from outside | `curl -sI https://<host>/<path>` (headers such as `cf-ray`, `cf-cache-status`, `server`, `location`) |
 
-Never send a write any other way: no MCP write, no `curl` with a non-GET method to `api.cloudflare.com`. The guard hook denies both. Never run commands on the origin server; give origin-side fixes as step-by-step instructions for the user.
+Never send a write any other way: no MCP write, no `curl` with a non-GET method to `api.cloudflare.com`. The guard hook denies both. Never hand the user ready-to-run write commands either (curl, wget or API snippets with a non-GET method), and never suggest bypassing the protocol. If a change cannot be completed through the protocol, say why and stop; give dashboard steps only when the user explicitly asks to make the change manually. Never run commands on the origin server; give origin-side fixes as step-by-step instructions for the user.
 
 ## 3. MCP `execute` code form (the guard denies anything else)
 
@@ -152,7 +152,8 @@ The guard then shows a native permission prompt listing the ops; the user confir
 `claudeflare apply` takes a snapshot, runs the ops in order and prints JSON with `status` and per-op `results`:
 
 - `applied`: continue with verification.
-- `failed` or `partially_applied`: apply stopped at the first failed op. Report which ops succeeded and the error, then offer a rollback (5.7). Never retry silently.
+- `failed`: the first op failed, so no write was made. Report the error. Never retry silently.
+- `partially_applied`: apply stopped at the first failed op. Report which ops succeeded and the error, then offer a rollback (5.7). Never retry silently.
 
 ### 5.6 Verify
 
@@ -165,6 +166,9 @@ claudeflare rollback <plan-id>
 ```
 
 This only creates a new draft rollback plan from the snapshot's inverse ops; it changes nothing yet. Present it (5.4), get a new `/claudeflare:approve <rollback-plan-id>` from the user, then `claudeflare apply <rollback-plan-id>` and verify. Only applied or partially applied plans can be rolled back.
+
+- Rollback restores the values in the snapshot taken before the original plan ran, even if later plans changed the same resource since. Read the current state first and tell the user which later changes it would undo.
+- If a rollback plan ends `partially_applied`, do not roll back the rollback or retry it. Read the current state of every touched resource and draft a fresh plan for what still differs.
 
 ## 6. Plans and local state
 
@@ -180,7 +184,20 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 |---|---|
 | `permission` (Cloudflare 9109 or 10000) | Name the missing permission from the hint and point to `docs/token-template.md`. Do not guess or retry. |
 | `missing_token` | Writes and `claudeflare get` need `CLOUDFLARE_API_TOKEN`. Point the user to `/claudeflare:setup`. Never ask the user to paste a token into chat. |
-| `plan_conflict` | Split into separate plans (5.2). |
-| `not_draft`, `not_approved` | Create a new plan, or ask for a fresh approval. |
+| `plan_conflict` | Two ops in one plan touch the same resource; split into separate plans (5.2). |
+| `not_draft` | The plan already ran or was rolled back; create a new plan for further changes. |
+| `not_approved` | Ask the user for a fresh `/claudeflare:approve <plan-id>`. |
+| `apply_failed` | Report the status and failed op. `partially_applied`: offer `claudeflare rollback <id>`. `failed`: no write was made; fix the cause and create a new plan. |
+| `rollback_ambiguous` | The snapshot cannot identify what to restore; read the current state and draft a fresh plan by hand. |
+| `nothing_to_rollback` | No applied op of that plan can be reversed; tell the user and stop. |
+| `not_applied` | Only applied or partially applied plans can be rolled back; check `claudeflare plan show <id>`. |
+| `snapshot_exists` | Apply already started for this plan once; do not retry (see the recovery note below). |
+| `invalid_zone` | Fix `zone_id` (32 hex chars) or `zone_name` from discovery and create the plan again. |
+| `invalid_op` | An op leaves the plan's zone, creates a Page Rule, keeps a placeholder or uses an odd method; fix the draft with real ids under `/zones/{zone_id}/`. |
+| `rollback_stale` | The source plan was already rolled back; read the current state and draft a fresh plan if a change is still needed. |
+| `bad_key` | The approval key file is damaged; tell the user to delete the file named in the hint, then approve again. |
+| `rate_limit` | Cloudflare kept returning 429 after retries; wait a minute, then retry the read. Never retry an apply; check the plan status first. |
 | Feature needs a higher plan | Say so and offer the best alternative on the current plan. |
 | MCP unavailable | Use `claudeflare get` if a token exists; otherwise guide the user through `/claudeflare:setup`. |
+
+Recovery: if an apply was interrupted after it started (the plan is still `draft` but `claudeflare apply` reports `snapshot_exists`), do not retry. Some ops may have run. Tell the user, read the current state of every touched resource, and draft a fresh plan for what still differs.

@@ -39,7 +39,7 @@ Account id: <account_id>
 Plan tier: <free|pro|business|enterprise>
 Core rules: <absolute path to skills/cf-core/SKILL.md>
 Checklist: <absolute path to skills/cf-<domain>/SKILL.md>
-Return only a JSON array of findings in the cf-audit finding format.
+Return only a JSON object { "findings": [...], "unread": [...] } as defined in your agent instructions.
 ```
 
 The absolute paths are this skill's base directory with `cf-audit` replaced by `cf-core` or `cf-<domain>`.
@@ -92,9 +92,9 @@ Scores: each domain starts at 100 and loses 25 per critical, 10 per high, 4 per 
 
 ## 6. Merge and deduplicate
 
-1. Parse each auditor result as a JSON array. If a result is not valid JSON or a finding misses fields, re-run that auditor once; if it fails again, list the domain as not audited.
+1. Parse each auditor result as a JSON object `{ "findings": [...], "unread": [...] }`. Re-run that auditor once if the result is not valid JSON, a finding misses fields, or `unread` is not empty. If the second result still fails any of these, mark the domain "not audited": leave it out of `domains` and out of the findings passed to `claudeflare report`, and list it with its `unread` entries in the summary.
 2. Combine all findings. When two findings share an `id`, keep one: the higher severity wins (on a tie keep the first), and its `prerequisites` become the union of both findings' `prerequisites`.
-3. Keep the list of domains you actually audited, including domains with zero findings (they score 100).
+3. Keep the list of domains you actually audited (empty `unread`), including domains with zero findings (they score 100).
 
 ## 7. Write the report
 
@@ -120,6 +120,6 @@ In the user's language:
 - critical and high findings first, one line each (title, current, recommended),
 - findings that need a higher plan, with the best option on the current plan,
 - the report path (`file`),
-- domains skipped or not audited, and why.
+- domains skipped or not audited, and why (for not audited domains, the `unread` entries).
 
 Then ask which findings to fix. Selected findings with a non-empty `fix` become plans through the cf-core change protocol. Group compatible fixes into one plan, and split where cf-core's plan limits require it (same DNS record or rule twice, more than one rule delete per ruleset, same phase entrypoint twice). Findings with an empty `fix` get step-by-step instructions instead.
