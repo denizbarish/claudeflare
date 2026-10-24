@@ -12,7 +12,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute",
+        "matcher": "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute",
         "hooks": [
           {
             "type": "command",

@@ -3,7 +3,7 @@
 // the model away from approval state. Prints one decision or nothing (no
 // decision, normal permissions apply). Never fails open on a call it inspects.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { checkApproval } from '../scripts/lib/approvals.mjs';
 import { keyDir } from '../scripts/lib/approval-key.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
@@ -26,8 +26,9 @@ const PROTECTED_COMMAND_PARTS = [
   'approval-key.mjs',
 ];
 const CF_API_HOST = 'api.cloudflare.com';
+const GRAPHQL_PATHS = new Set(['/graphql', '/client/v4/graphql']);
 const CURL_METHOD = /(?:^|\s)(?:-[A-Za-z]*X\s*|--request(?:\s+|=))['"]?([A-Za-z]+)/g;
-const CURL_BODY = /(?:^|\s)(?:-[A-Za-z]*[dF]|--data|--json|--form)/;
+const CURL_BODY = /(?:^|\s)(?:-[A-Za-z]*[dFT]|--data|--json|--form|--upload-file)/;
 const ASK_OPS_LIMIT = 20;
 const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 
@@ -39,7 +40,7 @@ const ask = (reason) => ({ permissionDecision: 'ask', permissionDecisionReason: 
 function isAllowedCall({ method, path }) {
   const verb = typeof method === 'string' ? method.toUpperCase() : null;
   if (verb === 'GET') return true;
-  return verb === 'POST' && typeof path === 'string' && (path === '/graphql' || path.endsWith('/graphql'));
+  return verb === 'POST' && GRAPHQL_PATHS.has(path);
 }
 
 function decideExecute(toolInput) {
@@ -68,13 +69,25 @@ function isInside(root, target) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-function decideFileTool(toolInput, cwd) {
-  const targets = [toolInput.file_path, toolInput.notebook_path]
+function toolTargets(toolInput, cwd) {
+  return [toolInput.file_path, toolInput.notebook_path]
     .filter((p) => typeof p === 'string' && p !== '')
     .map((p) => resolve(cwd, p));
-  const roots = [join(resolve(cwd), '.claudeflare'), resolve(keyDir())];
-  const hit = targets.some((target) => roots.some((root) => isInside(root, target)));
+}
+
+const inKeyDir = (target) => isInside(resolve(keyDir()), target);
+
+// Any `.claudeflare` segment counts, whatever the session cwd is.
+const inStateDir = (target) => canonicalPath(target).split(sep).includes('.claudeflare');
+
+function decideFileTool(toolInput, cwd) {
+  const hit = toolTargets(toolInput, cwd).some((target) => inStateDir(target) || inKeyDir(target));
   return hit ? deny(STATE_REASON) : null;
+}
+
+// Plans and snapshots stay readable; only the approval key is off limits.
+function decideRead(toolInput, cwd) {
+  return toolTargets(toolInput, cwd).some(inKeyDir) ? deny(STATE_REASON) : null;
 }
 
 function touchesState(command) {
@@ -102,28 +115,30 @@ function decideApply(cwd, planId) {
   }
 }
 
-function decideApplies(cwd, command) {
+function applyDecisions(cwd, command) {
   const ids = [...new Set([...command.matchAll(APPLY_PATTERN)].map((m) => m[3]))];
-  if (ids.length === 0) return null;
-  const decisions = ids.map((id) => decideApply(cwd, id));
-  const denied = decisions.find((d) => d.permissionDecision === 'deny');
-  return denied ?? ask(decisions.map((d) => d.permissionDecisionReason).join(' | '));
+  return ids.map((id) => decideApply(cwd, id));
 }
 
 // curl to the Cloudflare API
 
 function isApiWrite(command) {
-  if (!command.includes(CF_API_HOST)) return false;
+  if (!command.toLowerCase().includes(CF_API_HOST)) return false;
   const methods = [...command.matchAll(CURL_METHOD)].map((m) => m[1].toUpperCase());
   return methods.some((m) => m !== 'GET') || CURL_BODY.test(command);
 }
 
 function decideBash(toolInput, cwd) {
   const command = typeof toolInput.command === 'string' ? toolInput.command : '';
-  if (touchesState(command)) return deny(STATE_REASON);
-  const apply = decideApplies(cwd, command);
-  if (apply) return apply;
-  return isApiWrite(command) ? deny(PROTOCOL_REASON) : null;
+  const decisions = [
+    touchesState(command) ? deny(STATE_REASON) : null,
+    ...applyDecisions(cwd, command),
+    isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
+  ].filter(Boolean);
+  if (decisions.length === 0) return null;
+  // Any deny wins, so an ask for a valid apply never hides another part of the command.
+  const denied = decisions.find((d) => d.permissionDecision === 'deny');
+  return denied ?? ask(decisions.map((d) => d.permissionDecisionReason).join(' | '));
 }
 
 function decide(input) {
@@ -133,6 +148,7 @@ function decide(input) {
   if (typeof toolName !== 'string') return null;
   if (MCP_EXECUTE.test(toolName)) return decideExecute(toolInput);
   if (FILE_TOOLS.has(toolName)) return decideFileTool(toolInput, cwd);
+  if (toolName === 'Read') return decideRead(toolInput, cwd);
   if (toolName === 'Bash') return decideBash(toolInput, cwd);
   return null;
 }

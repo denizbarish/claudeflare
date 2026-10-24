@@ -314,6 +314,99 @@ test('inspectCode treats spreads, duplicates, unbalanced and non-object argument
 test('hooks.json wires approve to UserPromptSubmit and guard to PreToolUse', () => {
   const config = JSON.parse(readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8')).hooks;
   assert.equal(config.UserPromptSubmit[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/approve.mjs"');
-  assert.equal(config.PreToolUse[0].matcher, 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute');
+  assert.equal(config.PreToolUse[0].matcher, 'Bash|Read|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute');
   assert.equal(config.PreToolUse[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs"');
+});
+
+// Fix round 1
+
+test('guard deny wins over ask: valid apply chained with a curl DELETE is denied', (t) => {
+  const ctx = setup(t);
+  writeApproval(ctx.cwd, { plan_id: PLAN_ID, session_id: 's' });
+  const cmd = `claudeflare apply ${PLAN_ID} && curl -X DELETE https://api.cloudflare.com/client/v4/zones/abc`;
+  assertDeny(guard(ctx, bash(cmd)), PROTOCOL);
+});
+
+test('inspectCode fails closed on unrecognised object segments', () => {
+  for (const code of [
+    "cloudflare.request({ method: 'GET', ['method']: 'DELETE' })",
+    "cloudflare.request({ method: 'GET', 'met\\hod': 'DELETE' })",
+    "cloudflare.request({ path: '/x', get method() { return 'DELETE'; } })",
+    "cloudflare.request({ path: '/x', method() { return 'DELETE'; } })",
+  ]) {
+    assert.equal(inspectCode(code).determinable, false, code);
+  }
+});
+
+test('inspectCode fails closed on request aliases, .call and bracket access', () => {
+  for (const code of [
+    "const r = cloudflare.request; return r({ method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare['request']({ method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare.request.call(null, { method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare.request.apply(null, [{ method: 'DELETE', path: '/zones/a' }]);",
+  ]) {
+    assert.equal(inspectCode(code).determinable, false, code);
+  }
+});
+
+test('inspectCode fails closed on fetch()', () => {
+  const code = "return fetch('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });";
+  assert.equal(inspectCode(code).determinable, false);
+});
+
+test('guard denies execute using an alias, bracket access, .call or fetch', (t) => {
+  const ctx = setup(t);
+  for (const code of [
+    "const r = cloudflare.request; return r({ method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare['request']({ method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare.request.call(null, { method: 'DELETE', path: '/zones/a' });",
+    "return fetch('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });",
+    "return cloudflare.request({ method: 'GET', ['method']: 'DELETE', path: '/zones/a' });",
+  ]) {
+    assertDeny(guard(ctx, execute(code)), PROTOCOL);
+  }
+});
+
+test('guard allows POST only to exact graphql paths', (t) => {
+  const ctx = setup(t);
+  const post = (path) => execute(`return cloudflare.request({ method: 'POST', path: '${path}' });`);
+  assert.equal(guard(ctx, post('/client/v4/graphql')), null);
+  for (const path of ['/graphql?x=1', '/graphql#x', '/zones/x/graphql']) {
+    assertDeny(guard(ctx, post(path)), PROTOCOL);
+  }
+});
+
+test('guard denies file tools on any .claudeflare segment regardless of cwd', (t) => {
+  const ctx = setup(t);
+  const other = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-othercwd-')));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  const input = { tool_name: 'Write', tool_input: { file_path: join(ctx.cwd, '.claudeflare/approvals/x.json'), content: '{}' } };
+  assertDeny(guard(ctx, { ...input, cwd: other }), STATE);
+  const nested = { tool_name: 'Edit', tool_input: { file_path: join(other, 'a/.claudeflare/plans/p.json') } };
+  assertDeny(guard(ctx, { ...nested, cwd: ctx.cwd }), STATE);
+});
+
+test('guard denies curl upload and mixed-case API host', (t) => {
+  const ctx = setup(t);
+  assertDeny(guard(ctx, bash('curl -T body.json https://api.cloudflare.com/client/v4/zones/a')), PROTOCOL);
+  assertDeny(guard(ctx, bash('curl --upload-file body.json https://api.cloudflare.com/client/v4/zones/a')), PROTOCOL);
+  assertDeny(guard(ctx, bash('curl -X PUT https://API.Cloudflare.com/client/v4/zones/a')), PROTOCOL);
+});
+
+test('guard denies Read of the key dir but allows reading plans', (t) => {
+  const ctx = setup(t);
+  assertDeny(guard(ctx, { tool_name: 'Read', tool_input: { file_path: join(ctx.keyDir, 'approval.key') } }), STATE);
+  const planPath = join(paths(ctx.cwd).plans, `${PLAN_ID}.json`);
+  assert.equal(guard(ctx, { tool_name: 'Read', tool_input: { file_path: planPath } }), null);
+});
+
+test('approve reports a clear message and writes nothing when writeApproval throws', (t) => {
+  const ctx = setup(t);
+  const blocker = join(ctx.keyDir, 'not-a-dir');
+  writeFileSync(blocker, 'x');
+  const out = runHook(APPROVE, { ...ctx, keyDir: join(blocker, 'sub') }, fixture('approve-exact'));
+  const message = out.hookSpecificOutput.additionalContext;
+  assert.ok(message.startsWith(`Approval for ${PLAN_ID} was not recorded: `), message);
+  assert.equal(out.systemMessage, message);
+  assert.equal(existsSync(approvalFile(ctx.cwd)), false);
 });

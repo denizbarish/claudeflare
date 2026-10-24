@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// UserPromptSubmit hook: records a human approval for a plan. This event fires on
-// real user input, so the model cannot create an approval by itself.
+// UserPromptSubmit hook: records an approval for a plan. The event fires on user
+// prompts (and, per the Claude Code docs, on some harness-delivered messages), not
+// on model output. Only a prompt that is exactly `/claudeflare:approve <id>` is
+// recorded.
 import { readFileSync } from 'node:fs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';

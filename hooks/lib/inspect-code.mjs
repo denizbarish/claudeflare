@@ -7,6 +7,10 @@ const QUOTES = new Set(["'", '"', '`']);
 const OPENERS = '{[(';
 const CLOSERS = '}])';
 const CALL = /request\s*\(/g;
+// `request` used any other way (alias, .call/.apply, bracket access) or a direct
+// fetch() means calls can escape the scan above.
+const REQUEST_NOT_CALLED = /\brequest\b(?!\s*\()/;
+const FETCH_CALL = /\bfetch\s*\(/;
 const PROPERTY = /^\s*(?:([A-Za-z_$][\w$]*)|'([^'\\]*)'|"([^"\\]*)")\s*:\s*([\s\S]*?)\s*$/;
 const SHORTHAND = /^\s*([A-Za-z_$][\w$]*)\s*$/;
 const LITERAL = /^(?:'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`)$/;
@@ -96,10 +100,13 @@ function literalValue(source) {
 }
 
 // Reads `method` and `path` from an object literal. A spread, a duplicate key, a
-// shorthand or a non-literal value makes that field null.
+// shorthand or a non-literal value makes that field null. `recognised` is false
+// when any segment is not a plain `key: value`, shorthand or spread (computed or
+// escaped keys, getters, methods), since such a segment may set the method.
 function readCallObject(code, open, close) {
   const values = { method: [], path: [] };
   let hasSpread = false;
+  let recognised = true;
   for (const segment of topLevelSegments(code, open, close)) {
     if (segment.trim().startsWith('...')) {
       hasSpread = true;
@@ -107,10 +114,14 @@ function readCallObject(code, open, close) {
     }
     const prop = PROPERTY.exec(segment);
     const key = prop ? (prop[1] ?? prop[2] ?? prop[3]) : SHORTHAND.exec(segment)?.[1];
-    if (Object.hasOwn(values, key ?? '')) values[key].push(prop ? literalValue(prop[4]) : null);
+    if (key === undefined) {
+      recognised = false;
+      continue;
+    }
+    if (Object.hasOwn(values, key)) values[key].push(prop ? literalValue(prop[4]) : null);
   }
   const pick = (list) => (!hasSpread && list.length === 1 ? list[0] : null);
-  return { method: pick(values.method), path: pick(values.path) };
+  return { call: { method: pick(values.method), path: pick(values.path) }, recognised };
 }
 
 function firstArgumentStart(code, from) {
@@ -131,7 +142,7 @@ function firstArgumentStart(code, from) {
 export function inspectCode(source) {
   const code = String(source);
   const calls = [];
-  let determinable = true;
+  let determinable = !REQUEST_NOT_CALLED.test(code) && !FETCH_CALL.test(code);
   for (const match of code.matchAll(CALL)) {
     const argStart = firstArgumentStart(code, match.index + match[0].length);
     const close = argStart >= 0 && code[argStart] === '{' ? matchingClose(code, argStart) : -1;
@@ -140,8 +151,8 @@ export function inspectCode(source) {
       determinable = false;
       continue;
     }
-    const call = readCallObject(code, argStart, close);
-    if (call.method === null) determinable = false;
+    const { call, recognised } = readCallObject(code, argStart, close);
+    if (!recognised || call.method === null) determinable = false;
     calls.push(call);
   }
   return { calls, determinable };
