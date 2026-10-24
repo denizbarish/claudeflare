@@ -27,7 +27,7 @@ function isoSeconds(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function slugify(text) {
+export function slugify(text) {
   return String(text)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')

@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeApproval } from '../scripts/lib/approvals.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
 const TOKEN = 'tok-SECRET-1234567890';
@@ -174,4 +175,125 @@ test('cli report writes the audit file and prints its path', async (t) => {
   const file = res.stdout.trim();
   assert.match(file, /\.claudeflare[/\\]reports[/\\]example\.com[/\\]\d{8}-\d{6}-audit\.md$/);
   assert.match(readFileSync(file, 'utf8'), /Overall score: 75\/100/);
+});
+
+const SSL_DRAFT = {
+  zone_id: ZID,
+  zone_name: 'example.com',
+  summary: 'Set SSL to strict',
+  risk: 'r',
+  slug: 'SSL Strict!!',
+  ops: [
+    { method: 'PATCH', path: '/zones/{zone_id}/settings/ssl', body: { value: 'strict' } },
+    { method: 'PATCH', path: '/zones/{zone_id}/settings/always_use_https', body: { value: 'on' } },
+  ],
+};
+
+async function newPlan(cwd) {
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(SSL_DRAFT));
+  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+  assert.equal(res.code, 0, res.stderr);
+  return JSON.parse(res.stdout);
+}
+
+// Signs an approval with the same key dir the child process uses.
+function approveInCwd(cwd, planId) {
+  const saved = process.env.CLAUDEFLARE_KEY_DIR;
+  process.env.CLAUDEFLARE_KEY_DIR = join(cwd, '.key');
+  try {
+    writeApproval(cwd, { plan_id: planId, session_id: 's1' });
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDEFLARE_KEY_DIR;
+    else process.env.CLAUDEFLARE_KEY_DIR = saved;
+  }
+}
+
+// Stub: GET settings return the old value; PATCH succeeds unless the setting is in `failing`.
+async function settingsStub(t, failing = []) {
+  return stubServer(t, (req, res) => {
+    const id = req.url.split('/').pop();
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'PATCH' && failing.includes(id)) {
+      res.statusCode = 400;
+      return res.end(JSON.stringify({ success: false, errors: [{ code: 1, message: 'rejected' }] }));
+    }
+    const value = req.method === 'GET' ? 'off' : 'new';
+    return res.end(JSON.stringify({ success: true, result: { id, value } }));
+  });
+}
+
+test('cli plan new stores the slugified slug', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const plan = await newPlan(cwd);
+  assert.equal(plan.slug, 'ssl-strict');
+  assert.ok(plan.id.endsWith('-ssl-strict'));
+});
+
+test('cli snapshot writes a preview file for drafts and refuses applied plans', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const base = await settingsStub(t);
+  const env = { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base };
+  const plan = await newPlan(cwd);
+  const dir = join(cwd, '.claudeflare', 'snapshots', 'example.com');
+
+  const snap = await run(cwd, ['snapshot', plan.id], env);
+  assert.equal(snap.code, 0, snap.stderr);
+  assert.ok(existsSync(join(dir, `${plan.id}.preview.json`)));
+  assert.equal(existsSync(join(dir, `${plan.id}.json`)), false);
+
+  approveInCwd(cwd, plan.id);
+  assert.equal((await run(cwd, ['apply', plan.id], env)).code, 0);
+  const baseline = readFileSync(join(dir, `${plan.id}.json`), 'utf8');
+  const again = await run(cwd, ['snapshot', plan.id], env);
+  assert.equal(again.code, 1);
+  assert.equal(JSON.parse(again.stderr).error.code, 'not_draft');
+  assert.equal(readFileSync(join(dir, `${plan.id}.json`), 'utf8'), baseline);
+});
+
+test('cli rollback of an applied plan creates a draft plan with rollback_of', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const base = await settingsStub(t);
+  const plan = await newPlan(cwd);
+  approveInCwd(cwd, plan.id);
+  const applied = await run(cwd, ['apply', plan.id], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).status, 'applied');
+
+  const res = await run(cwd, ['rollback', plan.id]);
+  assert.equal(res.code, 0, res.stderr);
+  const rollback = JSON.parse(res.stdout);
+  assert.equal(rollback.status, 'draft');
+  assert.equal(rollback.rollback_of, plan.id);
+  assert.equal(rollback.slug, 'rollback-ssl-strict');
+  assert.deepEqual(rollback.ops.map((op) => [op.path.split('/').pop(), op.body.value]), [
+    ['always_use_https', 'off'],
+    ['ssl', 'off'],
+  ]);
+});
+
+test('cli apply with a failing op exits 1 with apply_failed and prints the plan', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const base = await settingsStub(t, ['always_use_https']);
+  const plan = await newPlan(cwd);
+  approveInCwd(cwd, plan.id);
+  const res = await run(cwd, ['apply', plan.id], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 1);
+  const out = JSON.parse(res.stdout);
+  assert.equal(out.status, 'partially_applied');
+  assert.equal(out.error.op_index, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'apply_failed');
+});
+
+test('cli report accepts { domains, findings } and scores clean domains', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const audit = {
+    domains: ['ssl', 'dns', 'cache'],
+    findings: [{ id: 'ssl.mode.flexible', domain: 'ssl', severity: 'critical', title: 'SSL mode is Flexible' }],
+  };
+  writeFileSync(join(cwd, 'audit.json'), JSON.stringify(audit));
+  const res = await run(cwd, ['report', '--file', 'audit.json', '--zone', 'example.com']);
+  assert.equal(res.code, 0, res.stderr);
+  const md = readFileSync(res.stdout.trim(), 'utf8');
+  assert.match(md, /Overall score: 92\/100/);
+  assert.match(md, /\| dns \| 100 \|/);
 });

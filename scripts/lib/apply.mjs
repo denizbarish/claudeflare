@@ -5,9 +5,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CfError } from './errors.mjs';
 import { paths } from './paths.mjs';
-import { createPlan, readPlan, updatePlan } from './plans.mjs';
+import { createPlan, readPlan, slugify, updatePlan } from './plans.mjs';
 import { checkApproval, consumeApproval } from './approvals.mjs';
-import { classify } from './resources.mjs';
+import { classify, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
 
 const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied']);
@@ -16,11 +16,42 @@ export function snapshotFile(cwd, plan) {
   return join(paths(cwd).snapshots(plan.zone_name), `${plan.id}.json`);
 }
 
-export function writeSnapshot(cwd, plan, snapshot) {
+export function previewSnapshotFile(cwd, plan) {
+  return join(paths(cwd).snapshots(plan.zone_name), `${plan.id}.preview.json`);
+}
+
+function writeJson(file, value, flag) {
+  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { flag });
+}
+
+// The apply snapshot is the rollback baseline: it is written once, never replaced.
+function writeApplySnapshot(cwd, plan, snapshot) {
   const file = snapshotFile(cwd, plan);
   mkdirSync(paths(cwd).snapshots(plan.zone_name), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(snapshot, null, 2)}\n`);
+  try {
+    writeJson(file, snapshot, 'wx');
+  } catch (err) {
+    if (err.code === 'EEXIST') throw new CfError('snapshot_exists', `Snapshot already exists for plan ${plan.id}`);
+    throw err;
+  }
   return file;
+}
+
+// Preview snapshots (claudeflare snapshot) are for draft plans and never touch
+// the apply snapshot.
+export function writePreviewSnapshot(cwd, plan, snapshot) {
+  const file = previewSnapshotFile(cwd, plan);
+  mkdirSync(paths(cwd).snapshots(plan.zone_name), { recursive: true });
+  writeJson(file, snapshot);
+  return file;
+}
+
+export function assertDraft(plan) {
+  if (plan.status !== 'draft') {
+    throw new CfError('not_draft', `Plan ${plan.id} has status ${plan.status}; only draft plans can be applied or snapshotted`, {
+      hint: 'Create a new plan for further changes',
+    });
+  }
 }
 
 // Appends one "Not reversible" line per op that rollback cannot undo.
@@ -31,10 +62,11 @@ export function withIrreversibleRisk(risk, ops) {
   return [risk, ...lines].filter((line) => typeof line === 'string' && line !== '').join('\n');
 }
 
-function assertApproved(cwd, id, now) {
+function assertApproved(cwd, plan, now) {
+  const id = plan.id;
   let check;
   try {
-    check = checkApproval(cwd, id, now);
+    check = checkApproval(cwd, id, now, { plan });
   } catch (err) {
     check = { ok: false, reason: err?.code || 'error' };
   }
@@ -59,19 +91,29 @@ async function executeOps(client, ops) {
   return { status: 'applied', results };
 }
 
+function consumeQuietly(cwd, id) {
+  try {
+    consumeApproval(cwd, id);
+  } catch {
+    // The outcome must still be recorded; a leftover approval cannot re-apply
+    // because the plan is no longer a draft afterwards.
+  }
+}
+
+// The plan is read exactly once; that object is approval-checked and executed.
 export async function applyPlan(cwd, client, id, now = new Date()) {
   const plan = readPlan(cwd, id);
-  assertApproved(cwd, id, now);
-  // A snapshot failure aborts before any write and keeps the approval.
+  assertDraft(plan);
+  if (!plan.rollback_of) validatePlanOps(plan.ops);
+  assertApproved(cwd, plan, now);
+  // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);
-  const file = writeSnapshot(cwd, plan, snapshot);
+  const file = writeApplySnapshot(cwd, plan, snapshot);
 
-  let outcome;
-  try {
-    outcome = await executeOps(client, plan.ops ?? []);
-  } finally {
-    consumeApproval(cwd, id);
-  }
+  // Consumed before the first write so the approval cannot be reused mid-run.
+  // executeOps records op failures instead of throwing.
+  consumeQuietly(cwd, id);
+  const outcome = await executeOps(client, plan.ops ?? []);
   const patch = {
     status: outcome.status,
     results: outcome.results,
@@ -106,7 +148,7 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
   if (!ops.length) {
     throw new CfError('nothing_to_rollback', `Plan ${id} has no applied ops that can be reversed`);
   }
-  const slug = `rollback-${plan.slug || 'plan'}`;
+  const slug = slugify(`rollback-${plan.slug || 'plan'}`);
   const created = createPlan(
     cwd,
     {

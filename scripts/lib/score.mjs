@@ -5,8 +5,9 @@ import { CfError } from './errors.mjs';
 export const SEVERITY_WEIGHTS = { critical: 25, high: 10, medium: 4, low: 1 };
 const MAX_SCORE = 100;
 
-export function scoreDomains(findings) {
-  const penalties = {};
+// domains: audited domain names; one without findings scores 100.
+export function scoreDomains(findings, domains = []) {
+  const penalties = Object.fromEntries(domains.map((d) => [d, 0]));
   for (const finding of findings) {
     const weight = SEVERITY_WEIGHTS[finding?.severity];
     const domain = finding?.domain;
@@ -18,13 +19,13 @@ export function scoreDomains(findings) {
     }
     penalties[domain] = (penalties[domain] ?? 0) + weight;
   }
-  const domains = {};
+  const scores = {};
   for (const domain of Object.keys(penalties).sort()) {
-    domains[domain] = Math.max(0, MAX_SCORE - penalties[domain]);
+    scores[domain] = Math.max(0, MAX_SCORE - penalties[domain]);
   }
-  const values = Object.values(domains);
+  const values = Object.values(scores);
   const overall = values.length
     ? Math.round(values.reduce((sum, v) => sum + v, 0) / values.length)
     : MAX_SCORE;
-  return { domains, overall };
+  return { domains: scores, overall };
 }

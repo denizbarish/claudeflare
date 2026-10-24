@@ -10,6 +10,12 @@ test('scoreDomains: ssl with 1 critical + 1 low = 74; empty domain list overall 
   assert.deepEqual(scoreDomains([]), { domains: {}, overall: 100 });
 });
 
+test('scoreDomains: audited domains without findings score 100 and count toward overall', () => {
+  const result = scoreDomains([f('ssl', 'critical')], ['ssl', 'dns', 'cache']);
+  assert.deepEqual(result, { domains: { ssl: 75, dns: 100, cache: 100 }, overall: 92 });
+  assert.deepEqual(scoreDomains([f('waf', 'low')], ['dns']), { domains: { dns: 100, waf: 99 }, overall: 100 });
+});
+
 test('scoreDomains floors at 0', () => {
   const findings = Array.from({ length: 5 }, () => f('waf', 'critical'));
   assert.deepEqual(scoreDomains(findings).domains, { waf: 0 });

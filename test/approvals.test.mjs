@@ -222,3 +222,15 @@ test('checkApproval treats approved_at more than 60s in the future as expired', 
   writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, later(30));
   assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
 });
+
+test('checkApproval verifies a passed plan object instead of re-reading disk', (t) => {
+  const { cwd, plan } = setup(t);
+  writeApproval(cwd, { plan_id: plan.id, session_id: 's1' }, T0);
+  assert.deepEqual(checkApproval(cwd, plan.id, T0, { plan }), { ok: true });
+  const swapped = { ...plan, ops: [{ method: 'PATCH', path: `/zones/${ZID}/settings/ssl`, body: { value: 'off' } }] };
+  assert.deepEqual(checkApproval(cwd, plan.id, T0, { plan: swapped }), { ok: false, reason: 'hash_mismatch' });
+  assert.deepEqual(checkApproval(cwd, plan.id, T0, { plan: { ...plan, id: 'other-plan' } }), {
+    ok: false,
+    reason: 'plan_missing',
+  });
+});

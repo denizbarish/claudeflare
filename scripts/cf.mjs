@@ -6,10 +6,10 @@ import { join, resolve } from 'node:path';
 import { createClient, redact } from './lib/api.mjs';
 import { CfError } from './lib/errors.mjs';
 import { paths } from './lib/paths.mjs';
-import { createPlan, listPlans, readPlan, updatePlan } from './lib/plans.mjs';
+import { createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
 import { validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
-import { applyPlan, createRollbackPlan, withIrreversibleRisk, writeSnapshot } from './lib/apply.mjs';
+import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
 
@@ -117,7 +117,7 @@ function planNew(cwd, flags) {
   const zoneId = String(draft.zone_id);
   const resolved = draft.ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(zoneId) }));
   validatePlanOps(resolved);
-  const slug = draft.slug || 'plan';
+  const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
     zone_id: draft.zone_id,
     zone_name: draft.zone_name,
@@ -139,19 +139,29 @@ function plan(cwd, positional, flags) {
 
 async function snapshot(cwd, positional) {
   const target = readPlan(cwd, arg(positional, 1, 'id'));
+  assertDraft(target);
   const snap = await captureSnapshot(createClient(), target);
-  writeSnapshot(cwd, target, snap);
+  writePreviewSnapshot(cwd, target, snap);
   return snap;
 }
 
+// Accepts a findings array or { domains: [...], findings: [...] }.
+function parseAudit(data) {
+  if (Array.isArray(data)) return { findings: data, domains: [] };
+  const { findings, domains = [] } = data ?? {};
+  if (!Array.isArray(findings) || !Array.isArray(domains) || !domains.every((d) => typeof d === 'string')) {
+    throw new CfError('invalid_input', 'Findings file must be an array or { domains: string[], findings: [] }');
+  }
+  return { findings, domains };
+}
+
 function report(cwd, flags) {
-  const findings = readJsonFile(cwd, flag(flags, 'file'));
-  if (!Array.isArray(findings)) throw new CfError('invalid_input', 'Findings file must contain a JSON array');
+  const { findings, domains } = parseAudit(readJsonFile(cwd, flag(flags, 'file')));
   const zone = flag(flags, 'zone');
   const dir = paths(cwd).reports(zone);
   const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, '').replace(/[-:]/g, '').replace('T', '-');
   const file = join(dir, `${stamp}-audit.md`);
-  const markdown = renderReport(zone, findings, scoreDomains(findings));
+  const markdown = renderReport(zone, findings, scoreDomains(findings, domains));
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, markdown);
   return file;

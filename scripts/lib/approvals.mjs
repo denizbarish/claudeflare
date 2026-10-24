@@ -68,7 +68,9 @@ export function writeApproval(cwd, { plan_id, session_id }, now = new Date()) {
   return approval;
 }
 
-export function checkApproval(cwd, plan_id, now = new Date()) {
+// options.plan: an already-read plan object to verify against (the caller then
+// executes exactly that object); otherwise the plan is read from disk.
+export function checkApproval(cwd, plan_id, now = new Date(), { plan: givenPlan } = {}) {
   assertPlanId(plan_id);
   const approval = readApproval(cwd, plan_id);
   if (!approval || approval.plan_id !== plan_id) return { ok: false, reason: 'missing' };
@@ -77,8 +79,8 @@ export function checkApproval(cwd, plan_id, now = new Date()) {
   if (!Number.isFinite(ageMs) || ageMs > ttlSeconds() * 1000 || ageMs < -MAX_CLOCK_SKEW_MS) {
     return { ok: false, reason: 'expired' };
   }
-  const plan = tryReadPlan(cwd, plan_id);
-  if (!plan) return { ok: false, reason: 'plan_missing' };
+  const plan = givenPlan ?? tryReadPlan(cwd, plan_id);
+  if (!plan || plan.id !== plan_id) return { ok: false, reason: 'plan_missing' };
   if (approval.ops_hash !== hashOps(plan.ops)) return { ok: false, reason: 'hash_mismatch' };
   return { ok: true };
 }
