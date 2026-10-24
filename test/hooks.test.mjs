@@ -314,7 +314,7 @@ test('inspectCode treats spreads, duplicates, unbalanced and non-object argument
 test('hooks.json wires approve to UserPromptSubmit and guard to PreToolUse', () => {
   const config = JSON.parse(readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8')).hooks;
   assert.equal(config.UserPromptSubmit[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/approve.mjs"');
-  assert.equal(config.PreToolUse[0].matcher, 'Bash|Read|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute');
+  assert.equal(config.PreToolUse[0].matcher, 'Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|mcp__.*cloudflare.*__execute');
   assert.equal(config.PreToolUse[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs"');
 });
 
@@ -409,4 +409,45 @@ test('approve reports a clear message and writes nothing when writeApproval thro
   assert.ok(message.startsWith(`Approval for ${PLAN_ID} was not recorded: `), message);
   assert.equal(out.systemMessage, message);
   assert.equal(existsSync(approvalFile(ctx.cwd)), false);
+});
+
+// Fix round 2
+
+test('guard denies execute bypasses: computed key, escaped identifier, fetch.call, fetch alias', (t) => {
+  const ctx = setup(t);
+  for (const code of [
+    "const k = 'req' + 'uest'; return cloudflare[k]({ method: 'DELETE', path: '/zones/a' });",
+    "return cloudflare.requ\\u0065st({ method: 'DELETE', path: '/zones/a' });",
+    "return fetch.call(null, 'https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });",
+    "const f = fetch; return f('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });",
+  ]) {
+    assertDeny(guard(ctx, execute(code)), PROTOCOL);
+  }
+});
+
+test('guard denies execute code with zero calls', (t) => {
+  assertDeny(guard(setup(t), execute('return 1+1')), PROTOCOL);
+});
+
+test('guard allows a plain GET call with a comment', (t) => {
+  const code = "// list zones for the account\nreturn cloudflare.request({ method: 'GET', path: '/zones' });";
+  assert.equal(guard(setup(t), execute(code)), null);
+});
+
+test('inspectCode is undeterminable for eval, Function, globalThis, self, Reflect, Proxy, import(), require()', () => {
+  const get = "cloudflare.request({ method: 'GET', path: '/zones' });";
+  for (const extra of ['eval(x)', 'new Function(x)', 'globalThis.x', 'self.x', 'Reflect.apply(a, b, c)', 'new Proxy(a, b)', "import('x')", "require('x')", 'a)[0]', 'a[0][1]']) {
+    assert.equal(inspectCode(`${extra}; ${get}`).determinable, false, extra);
+  }
+  assert.equal(inspectCode(`const x = \`\${fetch}\`; ${get}`).determinable, false, 'fetch inside template expression');
+  assert.equal(inspectCode(`const s = 'fetch eval [x]'; return [1]; ${get}`).determinable, true, 'words in strings, array literal after return');
+});
+
+test('guard denies Grep and Glob on the key dir', (t) => {
+  const ctx = setup(t);
+  assertDeny(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: ctx.keyDir } }), STATE);
+  assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: '*', path: ctx.keyDir } }), STATE);
+  assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: join(ctx.keyDir, '*.key') } }), STATE);
+  assert.equal(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: ctx.cwd } }), null);
+  assert.equal(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: '**/*.json' } }), null);
 });

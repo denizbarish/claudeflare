@@ -7,10 +7,22 @@ const QUOTES = new Set(["'", '"', '`']);
 const OPENERS = '{[(';
 const CLOSERS = '}])';
 const CALL = /request\s*\(/g;
-// `request` used any other way (alias, .call/.apply, bracket access) or a direct
-// fetch() means calls can escape the scan above.
+// `request` used any other way (alias, .call/.apply, bracket access) means calls
+// can escape the scan above. Checked on the raw code, strings included.
 const REQUEST_NOT_CALLED = /\brequest\b(?!\s*\()/;
-const FETCH_CALL = /\bfetch\s*\(/;
+// Checked on the code outside strings and comments: constructs that can reach the
+// network or build a call the scan cannot see.
+const ESCAPING_CONSTRUCTS = [
+  /\\/, // escape sequences in identifiers, e.g. requ\u0065st
+  /\bfetch\b/,
+  /\b(?:eval|Function|globalThis|self|Reflect|Proxy)\b/,
+  /\b(?:import|require)\s*\(/,
+];
+// Computed member access: identifier[, )[ or ][ (keywords before an array literal excluded).
+const COMPUTED_ACCESS = /(?:([A-Za-z_$][\w$]*)|[)\]])\s*\[/g;
+const KEYWORDS_BEFORE_ARRAY = new Set([
+  'return', 'typeof', 'in', 'of', 'case', 'yield', 'await', 'void', 'delete', 'throw', 'new', 'else', 'do',
+]);
 const PROPERTY = /^\s*(?:([A-Za-z_$][\w$]*)|'([^'\\]*)'|"([^"\\]*)")\s*:\s*([\s\S]*?)\s*$/;
 const SHORTHAND = /^\s*([A-Za-z_$][\w$]*)\s*$/;
 const LITERAL = /^(?:'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`)$/;
@@ -80,6 +92,78 @@ function matchingClose(code, open) {
   return walk(code, open);
 }
 
+// The code with string literal text and comments blanked out (template `${}`
+// expressions kept), or null if a string or comment never closes.
+function codeOutsideStrings(code) {
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "'" || c === '"') {
+      const end = skipString(code, i);
+      if (end < 0) return null;
+      out += ' '.repeat(end - i);
+      i = end;
+      continue;
+    }
+    if (c === '`') {
+      const end = blankTemplate(code, i);
+      if (end === null) return null;
+      out += end.text;
+      i = end.next;
+      continue;
+    }
+    const afterComment = skipComment(code, i);
+    if (afterComment < 0) return null;
+    if (afterComment !== i) {
+      out += ' '.repeat(afterComment - i);
+      i = afterComment;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function blankTemplate(code, start) {
+  let text = ' ';
+  for (let i = start + 1; i < code.length; i++) {
+    const c = code[i];
+    if (c === '\\') {
+      text += '  ';
+      i++;
+    } else if (c === '`') {
+      return { text: `${text} `, next: i + 1 };
+    } else if (c === '$' && code[i + 1] === '{') {
+      const end = matchingClose(code, i + 1);
+      if (end < 0) return null;
+      const inner = codeOutsideStrings(code.slice(i + 2, end));
+      if (inner === null) return null;
+      text += `  ${inner} `;
+      i = end;
+    } else {
+      text += ' ';
+    }
+  }
+  return null;
+}
+
+function hasComputedAccess(code) {
+  for (const m of code.matchAll(COMPUTED_ACCESS)) {
+    if (!m[1] || !KEYWORDS_BEFORE_ARRAY.has(m[1])) return true;
+  }
+  return false;
+}
+
+// True when the code may make calls the `request(` scan cannot see.
+function canEscapeScan(code) {
+  if (REQUEST_NOT_CALLED.test(code)) return true;
+  const outside = codeOutsideStrings(code);
+  if (outside === null) return true;
+  return ESCAPING_CONSTRUCTS.some((re) => re.test(outside)) || hasComputedAccess(outside);
+}
+
 // Top-level property segments of the object literal spanning open..close.
 function topLevelSegments(code, open, close) {
   const segments = [];
@@ -142,7 +226,7 @@ function firstArgumentStart(code, from) {
 export function inspectCode(source) {
   const code = String(source);
   const calls = [];
-  let determinable = !REQUEST_NOT_CALLED.test(code) && !FETCH_CALL.test(code);
+  let determinable = !canEscapeScan(code);
   for (const match of code.matchAll(CALL)) {
     const argStart = firstArgumentStart(code, match.index + match[0].length);
     const close = argStart >= 0 && code[argStart] === '{' ? matchingClose(code, argStart) : -1;

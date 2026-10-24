@@ -46,7 +46,8 @@ function isAllowedCall({ method, path }) {
 function decideExecute(toolInput) {
   if (typeof toolInput.code !== 'string') return deny(PROTOCOL_REASON);
   const { calls, determinable } = inspectCode(toolInput.code);
-  return determinable && calls.every(isAllowedCall) ? null : deny(PROTOCOL_REASON);
+  // Allowlist: code must make at least one readable call, and only allowed ones.
+  return determinable && calls.length > 0 && calls.every(isAllowedCall) ? null : deny(PROTOCOL_REASON);
 }
 
 // Approval state protection
@@ -88,6 +89,16 @@ function decideFileTool(toolInput, cwd) {
 // Plans and snapshots stay readable; only the approval key is off limits.
 function decideRead(toolInput, cwd) {
   return toolTargets(toolInput, cwd).some(inKeyDir) ? deny(STATE_REASON) : null;
+}
+
+// Grep/Glob: the search root, and a Glob pattern when it is an absolute path.
+function decideSearch(toolName, toolInput, cwd) {
+  const targets = [];
+  if (typeof toolInput.path === 'string' && toolInput.path !== '') targets.push(resolve(cwd, toolInput.path));
+  if (toolName === 'Glob' && typeof toolInput.pattern === 'string' && isAbsolute(toolInput.pattern)) {
+    targets.push(resolve(toolInput.pattern));
+  }
+  return targets.some(inKeyDir) ? deny(STATE_REASON) : null;
 }
 
 function touchesState(command) {
@@ -149,6 +160,7 @@ function decide(input) {
   if (MCP_EXECUTE.test(toolName)) return decideExecute(toolInput);
   if (FILE_TOOLS.has(toolName)) return decideFileTool(toolInput, cwd);
   if (toolName === 'Read') return decideRead(toolInput, cwd);
+  if (toolName === 'Grep' || toolName === 'Glob') return decideSearch(toolName, toolInput, cwd);
   if (toolName === 'Bash') return decideBash(toolInput, cwd);
   return null;
 }
