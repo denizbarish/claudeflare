@@ -16,3 +16,22 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm test
+
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Skip when ANTHROPIC_API_KEY is not set
+        if: ${{ env.ANTHROPIC_API_KEY == '' }}
+        run: echo "ANTHROPIC_API_KEY secret is not set; skipping plugin evals."
+      - uses: actions/checkout@v4
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+      - name: Install Claude Code
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run plugin evals
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: claude plugin eval --trust-plugin --no-publish

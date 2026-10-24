@@ -1,0 +1,33 @@
+{
+  "GET /zones?name=example.com": [
+    {
+      "id": "023e105f4ecef8ad9ca31a8372d0c353",
+      "name": "example.com",
+      "status": "active",
+      "paused": false,
+      "name_servers": [
+        "ada.ns.cloudflare.com",
+        "bob.ns.cloudflare.com"
+      ],
+      "account": {
+        "id": "9a7806061c88ada191ed06f989cc3dac",
+        "name": "Example Ltd"
+      },
+      "plan": {
+        "legacy_id": "free",
+        "name": "Free Website"
+      }
+    }
+  ],
+  "GET /zones/023e105f4ecef8ad9ca31a8372d0c353/settings/ssl": {
+    "id": "ssl",
+    "value": "flexible",
+    "editable": true,
+    "modified_on": "2025-11-04T09:12:44Z"
+  },
+  "GET /zones/023e105f4ecef8ad9ca31a8372d0c353/settings/ssl_automatic_mode": {
+    "id": "ssl_automatic_mode",
+    "value": "custom",
+    "editable": true
+  }
+}
