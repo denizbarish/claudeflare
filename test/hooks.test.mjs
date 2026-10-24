@@ -449,6 +449,55 @@ test('inspectCode rejects line-break tricks, odd whitespace and non-ASCII outsid
   });
 });
 
+// Follow-up: official server code shape (async arrow wrapper, result chains)
+
+test('guard allows the official README GET example', (t) => {
+  const code = 'async () => {\n  const response = await cloudflare.request({\n    method: "GET",\n    path: "/zones/abc/settings"\n  });\n  return response.result;\n}';
+  assert.equal(guard(setup(t), execute(code)), null);
+});
+
+test('guard allows the official README GraphQL example shape', (t) => {
+  const code = 'async () => {\n  const response = await cloudflare.request({\n    method: "POST",\n    path: "/client/v4/graphql",\n    body: { query: `query { viewer { zones(filter: { zoneTag: "abc" }) { zoneTag } } }`, variables: {} }\n  });\n  return response.result;\n}';
+  assert.equal(guard(setup(t), execute(code)), null);
+});
+
+test('guard allows a wrapper with two calls returning result chains', (t) => {
+  const code = "async () => {\n  const a = await cloudflare.request({ method: 'GET', path: '/zones' });\n  const b = await cloudflare.request({ method: 'GET', path: '/zones/abc/settings' });\n  return { zones: a.result, settings: b.result };\n};";
+  assert.equal(guard(setup(t), execute(code)), null);
+});
+
+test('guard denies wrapper and return shapes outside the grammar', (t) => {
+  const ctx = setup(t);
+  const get = "const a = await cloudflare.request({ method: 'GET', path: '/zones' });";
+  for (const code of [
+    `async (x) => { ${get} return a.result; }`,
+    `() => { ${get} return a.result; }`,
+    `async () => { ${get} return a.result.map(f); }`,
+    `async () => { ${get} return a["result"]; }`,
+    `async () => { ${get} return nope.result; }`,
+    `async () => { ${get} return { zones: nope.result }; }`,
+    `async () => { ${get} return a.result; } fetch('https://x');`,
+    `async () => { ${get} return a.result; }; ${get}`,
+    `async () = > { ${get} return a.result; }`,
+    "async () => { await cloudflare.request({ method: 'get', path: '/zones' }); }",
+    "async () => { await cloudflare.request({ method: 'poſt', path: '/client/v4/graphql' }); }",
+    "await cloudflare.request({ method: 'get', path: '/zones' });",
+  ]) {
+    assertDeny(guard(ctx, execute(code)), PROTOCOL);
+  }
+});
+
+test('inspectCode reads the wrapper and rejects code after it', () => {
+  const get = "const a = await cloudflare.request({ method: 'GET', path: '/zones' });";
+  assert.deepEqual(inspectCode(`/* c */ async () => { ${get} return [a.result, a.result_info,]; } // end`), {
+    calls: [{ method: 'GET', path: '/zones' }],
+    determinable: true,
+  });
+  for (const code of [`async () => { ${get} } x`, `async () => { ${get} }}`, `${get} return a.result.map;x`]) {
+    assert.deepEqual(inspectCode(code), { calls: [], determinable: false }, code);
+  }
+});
+
 test('guard limits Grep/Glob key-dir denial to paths inside the key dir', (t) => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-home-')));
   t.after(() => rmSync(home, { recursive: true, force: true }));

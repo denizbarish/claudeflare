@@ -38,9 +38,9 @@ const ask = (reason) => ({ permissionDecision: 'ask', permissionDecisionReason: 
 // MCP execute
 
 function isAllowedCall({ method, path }) {
-  const verb = typeof method === 'string' ? method.toUpperCase() : null;
-  if (verb === 'GET') return true;
-  return verb === 'POST' && GRAPHQL_PATHS.has(path);
+  // Exact ASCII uppercase literals only: no case mapping ("get", "poſt" are denied).
+  if (method === 'GET') return true;
+  return method === 'POST' && GRAPHQL_PATHS.has(path);
 }
 
 function decideExecute(toolInput) {

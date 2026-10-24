@@ -1,14 +1,21 @@
 // Strict reading of MCP "execute" code. Only this grammar is accepted; anything
 // else is undeterminable (the guard denies it):
 //
-//   program    := statement* [returnStmt]
+//   program    := wrapped | bare
+//   wrapped    := "async" "(" ")" "=>" "{" body "}" [";"]
+//   bare       := body
+//   body       := statement* [returnStmt]
 //   statement  := [("const"|"let") IDENT "="] ["await"] call [";"]
 //   call       := "cloudflare" "." "request" "(" object ")"
 //   object     := "{" [prop ("," prop)* [","]] "}"
 //   prop       := key ":" value   (keys: method, path, query, body; each at most once)
 //   value      := STRING for method and path; literal (STRING, NUMBER, true, false,
 //                 null, or object/array of literals) for query and body
-//   returnStmt := "return" (IDENT | "[" IDENTs "]" | "{" IDENTs "}") [";"]
+//   returnStmt := "return" retExpr [";"]
+//   retExpr    := chain | "[" chain ("," chain)* [","] "]"
+//               | "{" retProp ("," retProp)* [","] "}"
+//   retProp    := IDENT | IDENT ":" chain
+//   chain      := IDENT ("." IDENT)*   (root IDENT declared by a statement)
 //
 // Comments are skipped. Any backslash, `${`, or character outside the grammar
 // rejects the whole program, as does whitespace other than space, tab and \n.
@@ -95,6 +102,11 @@ function tokenize(code) {
       i += number[0].length;
       continue;
     }
+    if (code.startsWith('=>', i)) {
+      tokens.push({ type: 'punct', value: '=>' });
+      i += 2;
+      continue;
+    }
     if (!PUNCTUATION.has(c)) reject();
     tokens.push({ type: 'punct', value: c });
     i++;
@@ -137,15 +149,31 @@ class Parser {
   }
 
   program() {
-    while (this.pos < this.tokens.length) {
+    if (this.is('ident', 'async')) {
+      this.pos++;
+      this.expect('punct', '(');
+      this.expect('punct', ')');
+      this.expect('punct', '=>');
+      this.expect('punct', '{');
+      this.body(() => this.is('punct', '}'));
+      this.expect('punct', '}');
+      this.accept('punct', ';');
+    } else {
+      this.body(() => false);
+    }
+    if (this.pos !== this.tokens.length) reject();
+    return this.calls;
+  }
+
+  // Statements until the end of input or atEnd(), then an optional return.
+  body(atEnd) {
+    while (this.pos < this.tokens.length && !atEnd()) {
       if (this.is('ident', 'return')) {
         this.returnStatement();
-        if (this.pos !== this.tokens.length) reject();
-        break;
+        return;
       }
       this.statement();
     }
-    return this.calls;
   }
 
   statement() {
@@ -229,17 +257,34 @@ class Parser {
     if (!this.declared.has(name)) reject();
   }
 
+  // Declared root, then plain property reads only: no calls, no computed access.
+  chain() {
+    this.declaredIdentifier();
+    while (this.accept('punct', '.')) this.expect('ident');
+  }
+
+  // Non-empty comma-separated items between open and close, trailing comma allowed.
+  nonEmptyList(open, close, item) {
+    if (this.is('punct', close, 1)) reject();
+    this.list(open, close, item);
+  }
+
   returnStatement() {
     this.expect('ident', 'return');
-    if (this.is('punct', '[') || this.is('punct', '{')) {
-      const open = this.peek().value;
-      const close = open === '[' ? ']' : '}';
-      this.expect('punct', open);
-      this.declaredIdentifier();
-      while (this.accept('punct', ',')) this.declaredIdentifier();
-      this.expect('punct', close);
+    if (this.is('punct', '[')) {
+      this.nonEmptyList('[', ']', () => this.chain());
+    } else if (this.is('punct', '{')) {
+      this.nonEmptyList('{', '}', () => {
+        if (this.is('punct', ':', 1)) {
+          this.identifier();
+          this.pos++;
+          this.chain();
+        } else {
+          this.declaredIdentifier();
+        }
+      });
     } else {
-      this.declaredIdentifier();
+      this.chain();
     }
     this.accept('punct', ';');
   }
