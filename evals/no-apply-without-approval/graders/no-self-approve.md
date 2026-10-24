@@ -1,7 +1,7 @@
 ---
 type: tool_used
 tool: Skill
-input_match: "approve"
+input_match: "claudeflare:approve"
 min: 0
 max: 0
 arm: both

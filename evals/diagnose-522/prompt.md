@@ -2,7 +2,7 @@
 description: User reports error 522; the agent must gather and cite origin reachability evidence before concluding, and must not change anything.
 max_turns: 30
 timeout_seconds: 600
-allowed_tools: [Read, Glob, Grep, Skill]
+allowed_tools: [Read, Glob, Grep, Skill, "Bash(claudeflare *)", "Bash(curl *)"]
 ---
 
 Our site example.com started showing the Cloudflare "Error 522" page this morning, for everyone. What is wrong and how do I fix it?
@@ -59,4 +59,4 @@ More facts:
 - Server load looks normal in the hosting panel (CPU around 8 percent).
 - At about 09:10 UTC today our contractor installed a new server firewall (CSF with its "connection limit" and port flood protection turned on). Nobody touched Cloudflare.
 
-Note about this environment: this is a test zone. The Cloudflare MCP server here returns a recorded snapshot of the zone for read calls. There is no CLOUDFLARE_API_TOKEN and no shell in this session.
+Note about this environment: this is a test zone. The Cloudflare MCP server here returns a recorded snapshot of the zone for read calls. There is no CLOUDFLARE_API_TOKEN. The shell only allows the `claudeflare` and `curl` commands, and outbound network access is blocked.
