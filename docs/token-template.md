@@ -1,0 +1,86 @@
+# API token template
+
+claudeflare reads through the official Cloudflare MCP server and writes only through `claudeflare apply`, which uses the API token in `CLOUDFLARE_API_TOKEN`. This page lists the token permissions for each job.
+
+- **Read set:** for `claudeflare get` (the read fallback when MCP is unavailable). Audits and diagnosis through MCP need no token at all.
+- **Write set:** for `claudeflare apply`. Create this token only when you want to apply changes.
+
+Create the token in the Cloudflare dashboard under **My Profile > API Tokens > Create Token > Create Custom Token**. Scope zone permissions to the zones you want claudeflare to manage (**Zone Resources > Include > Specific zone**) and account permissions to the account that owns them.
+
+Permission names below are the dashboard names. Where the API name (shown by the [List permission groups](https://developers.cloudflare.com/api/resources/user/subresources/tokens/subresources/permission_groups/methods/list/) endpoint) differs, it is in parentheses. All names were checked against [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) (last updated Oct 12, 2026) on 2026-10-24.
+
+## Read set
+
+Core permissions:
+
+| Scope | Permission | Used for |
+|---|---|---|
+| Zone | Zone Read | Zone discovery, plan tier, Page Rules listing |
+| Zone | Zone Settings Read | SSL mode, TLS, HSTS, cache and performance settings |
+| Zone | DNS Read | DNS records, DNSSEC status |
+| Zone | SSL and Certificates Read | Certificate packs and SSL configuration |
+| Zone | Cache Rules Read (API: Cache Settings Read) | Cache Rules (`http_request_cache_settings`) |
+| Zone | Firewall Services Read | Firewall resources |
+| Zone | Analytics Read | GraphQL analytics (traffic, status codes, firewall events) |
+| Account | Account Rulesets Read | Account-level rulesets |
+| Account | Account Settings Read | Audit logs (`/accounts/{account_id}/logs/audit`) |
+
+There is no separate "Zone Rulesets Read" permission. Each zone rules phase has its own permission. For a full audit (rules, WAF and bots domains), also add:
+
+| Scope | Permission | Used for |
+|---|---|---|
+| Zone | Zone WAF Read | WAF managed and custom rules, rate limiting rules |
+| Zone | Bot Management Read | Bot Fight Mode and Super Bot Fight Mode |
+| Zone | Single Redirect Read (API: Dynamic URL Redirects Read) | Single Redirects (`http_request_dynamic_redirect`) |
+| Zone | Config Rules Read (API: Config Settings Read) | Configuration Rules (`http_config_settings`) |
+| Zone | Transform Rules Read (API: Zone Transform Rules Read) | URL rewrites and header transforms |
+| Zone | Origin Rules Read (API: Origin Read) | Origin Rules (`http_request_origin`) |
+| Zone | Page Rules Read | Page Rules (read only, for migration advice) |
+
+## Write set
+
+The read set, plus the matching edit permissions and Cache Purge:
+
+| Scope | Permission | Used for |
+|---|---|---|
+| Zone | Zone Edit (API: Zone Write) | Optional. No v1 op needs it; leave it out for least privilege |
+| Zone | Zone Settings Edit (API: Zone Settings Write) | Zone settings, Tiered Cache |
+| Zone | DNS Write | DNS records, DNSSEC |
+| Zone | SSL and Certificates Edit (API: SSL and Certificates Write) | Certificate and SSL configuration |
+| Zone | Cache Rules Edit (API: Cache Settings Write) | Cache Rules |
+| Zone | Cache Purge | Cache purge (not reversible) |
+| Zone | Firewall Services Edit (API: Firewall Services Write) | Firewall resources |
+| Zone | Zone WAF Edit (API: Zone WAF Write) | WAF custom and managed rules, rate limiting rules |
+| Zone | Bot Management Edit (API: Bot Management Write) | Bot Fight Mode and Super Bot Fight Mode |
+| Zone | Single Redirect Edit (API: Dynamic URL Redirects Write) | Single Redirects |
+| Zone | Config Rules Edit (API: Config Settings Write) | Configuration Rules |
+| Zone | Transform Rules Edit (API: Zone Transform Rules Write) | URL rewrites and header transforms |
+| Zone | Origin Rules Edit (API: Origin Write) | Origin Rules |
+| Account | Account Rulesets Edit (API: Account Rulesets Write) | Required with Cache Rules Edit |
+| Account | Account Filter Lists Edit (API: Account Rule Lists Write) | Required with Cache Rules Edit |
+
+Keep **Account Settings Read**, **Analytics Read** and **Page Rules Read** as read permissions. claudeflare never writes account settings and never creates Page Rules.
+
+The [Cache Rules API docs](https://developers.cloudflare.com/cache/how-to/cache-rules/create-api/) require Cache Rules Edit, Account Rulesets Edit and Account Filter Lists Edit together. The [Tiered Cache docs](https://developers.cloudflare.com/cache/how-to/tiered-cache/) list Zone Settings Write or Zone Write.
+
+## Use the token
+
+Export the token in your shell profile, then restart Claude Code:
+
+```sh
+export CLOUDFLARE_API_TOKEN="<your token>"
+```
+
+Never paste the token into the chat. claudeflare reads it only from the environment and never writes it to disk or prints it.
+
+If a call fails with a `permission` error, the hint names the missing permission. Add it to the token and run the step again.
+
+Check the token with `/claudeflare:setup`. It calls `GET /user/tokens/verify`, which works for user tokens. An account-owned token verifies with `GET /accounts/<account_id>/tokens/verify` instead.
+
+## Sources
+
+- [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
+- [Audit logs](https://developers.cloudflare.com/fundamentals/account/account-security/audit-logs/) (Account Settings Read)
+- [Create Cache Rules via API](https://developers.cloudflare.com/cache/how-to/cache-rules/create-api/)
+- [Tiered Cache](https://developers.cloudflare.com/cache/how-to/tiered-cache/)
+- API reference "Accepted Permissions": [zone setting edit](https://developers.cloudflare.com/api/resources/zones/subresources/settings/methods/edit/), [DNS record create](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/), [DNSSEC edit](https://developers.cloudflare.com/api/resources/dns/subresources/dnssec/methods/edit/), [bot management update](https://developers.cloudflare.com/api/resources/bot_management/methods/update/), [cache purge](https://developers.cloudflare.com/api/resources/cache/methods/purge/)
