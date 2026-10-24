@@ -1,0 +1,11 @@
+{
+  "name": "claudeflare",
+  "version": "0.1.0",
+  "description": "Turns Claude into a senior Cloudflare engineer: audits, optimizes and troubleshoots zones with approved, reversible changes.",
+  "author": {
+    "name": "Deniz Barış"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/denizbarish/claudeflare",
+  "keywords": ["cloudflare", "dns", "waf", "cdn", "security", "performance", "audit"]
+}

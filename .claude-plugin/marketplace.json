@@ -1,0 +1,13 @@
+{
+  "name": "claudeflare",
+  "owner": {
+    "name": "Deniz Barış"
+  },
+  "plugins": [
+    {
+      "name": "claudeflare",
+      "source": "./",
+      "description": "Turns Claude into a senior Cloudflare engineer: audits, optimizes and troubleshoots zones with approved, reversible changes."
+    }
+  ]
+}
