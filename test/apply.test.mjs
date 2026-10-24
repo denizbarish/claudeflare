@@ -279,3 +279,18 @@ test('applyPlan refuses a second rollback draft once the source was rolled back'
   assert.equal(client.calls.length, 0);
   assert.equal(readPlan(cwd, second.id).status, 'draft');
 });
+
+test('applyPlan re-validates op targets: an out-of-zone op with a fresh approval is refused', async (t) => {
+  const { cwd, plan } = setup(t, [OPS[0]]);
+  const file = join(paths(cwd).plans, `${plan.id}.json`);
+  for (const path of ['/accounts/abc/rulesets', `/zones/${ZID}/%2e%2e/%2e%2e/accounts/abc`, `/zones/${ZID}/settings/ssl#x`]) {
+    const edited = { ...readPlan(cwd, plan.id), ops: [{ method: 'PATCH', path, body: { value: 'x' } }] };
+    writeFileSync(file, JSON.stringify(edited));
+    approve(cwd, edited);
+    assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+    const client = fakeClient({});
+    await assert.rejects(applyPlan(cwd, client, plan.id, T0), (err) => err instanceof CfError && err.code === 'invalid_op', path);
+    assert.equal(client.calls.length, 0);
+    assert.equal(readPlan(cwd, plan.id).status, 'draft');
+  }
+});

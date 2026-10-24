@@ -7,7 +7,7 @@ import { CfError } from './errors.mjs';
 import { paths } from './paths.mjs';
 import { createPlan, readPlan, slugify, updatePlan } from './plans.mjs';
 import { checkApproval, consumeApproval } from './approvals.mjs';
-import { classify, validatePlanOps } from './resources.mjs';
+import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
 
 const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied']);
@@ -120,8 +120,12 @@ function assertRollbackSourceCurrent(cwd, plan) {
 export async function applyPlan(cwd, client, id, now = new Date()) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
-  if (plan.rollback_of) assertRollbackSourceCurrent(cwd, plan);
-  else validatePlanOps(plan.ops);
+  if (plan.rollback_of) {
+    assertRollbackSourceCurrent(cwd, plan);
+  } else {
+    validateOpTargets(plan.ops, plan.zone_id);
+    validatePlanOps(plan.ops);
+  }
   assertApproved(cwd, plan, now);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);

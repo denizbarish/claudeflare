@@ -131,28 +131,38 @@ export function validatePlanOps(ops) {
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const PLACEHOLDER = /\{[^}]*\}/;
 const PLACEHOLDER_SEGMENT = /^[A-Z][A-Z_]{2,}_ID$/;
-// "." and ".." (also percent-encoded) are resolved by URL parsing and could
-// leave the zone prefix; backslashes count as slashes in http URLs.
-const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f\s#]/;
 const PAGE_RULES = /\/pagerules(?:\/|$)/;
 
-// Ops of a draft (after {zone_id} resolution) must stay inside the plan's own
-// zone, use a plain HTTP method, carry no leftover placeholders and never
-// create a Page Rule.
+// URL parsing resolves "." and ".." (also percent-encoded), turns backslashes
+// into slashes and reads "//" as a host. A path that does not survive parsing
+// unchanged could reach a different resource than the one checked here.
+function isNormalPath(path) {
+  try {
+    return new URL(path, 'https://x/').pathname === path.split('?')[0];
+  } catch {
+    return false;
+  }
+}
+
+// Plan ops (after {zone_id} resolution) must stay inside the plan's own zone,
+// use a plain HTTP method, carry no leftover placeholders and never create a
+// Page Rule. Runs on `plan new` and again in applyPlan on the exact ops sent.
 export function validateOpTargets(ops, zoneId) {
   const prefix = `/zones/${zoneId}/`;
   (ops ?? []).forEach((op, index) => {
+    const { method, path } = op ?? {};
     const reject = (why) => {
-      throw new CfError('invalid_op', `Op ${index} (${op.method} ${op.path}) ${why}`);
+      throw new CfError('invalid_op', `Op ${index} (${JSON.stringify(method)} ${JSON.stringify(path)}) ${why}`);
     };
-    const { method, path } = op;
     if (!HTTP_METHODS.has(method)) reject('must use one of GET, POST, PUT, PATCH, DELETE (uppercase)');
-    if (!path.startsWith(prefix)) reject(`must target this plan's zone (${prefix}...)`);
-    const segments = path.split('?')[0].split('/');
-    if (path.includes('\\') || segments.some((s) => DOT_SEGMENT.test(s))) reject('must not contain . or .. segments');
-    if (PLACEHOLDER.test(path) || segments.some((s) => PLACEHOLDER_SEGMENT.test(s))) {
+    if (typeof path !== 'string') reject('needs a string path');
+    if (UNSAFE_CHARS.test(path)) reject('must not contain whitespace, control characters or #');
+    if (PLACEHOLDER.test(path) || path.split('?')[0].split('/').some((s) => PLACEHOLDER_SEGMENT.test(s))) {
       reject('still contains a placeholder; put the real id into the path');
     }
+    if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
+    if (!path.startsWith(prefix)) reject(`must target this plan's zone (${prefix}...)`);
     if (method === 'POST' && PAGE_RULES.test(path)) reject('would create a Page Rule; use the modern rule types');
   });
 }
