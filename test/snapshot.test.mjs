@@ -474,3 +474,21 @@ test('validatePlanOps accepts a valid mixed plan', () => {
     ]),
   );
 });
+
+test('validatePlanOps rejects more than one rule_delete per ruleset', () => {
+  const other = 'eeee5555ffff6666aaaa7777bbbb8888';
+  assert.throws(
+    () =>
+      validatePlanOps([
+        { method: 'DELETE', path: `/zones/${Z}/rulesets/${RS}/rules/r1` },
+        { method: 'DELETE', path: `/zones/${Z}/rulesets/${RS}/rules/r2` },
+      ]),
+    (e) => e instanceof CfError && e.code === 'plan_conflict',
+  );
+  assert.doesNotThrow(() =>
+    validatePlanOps([
+      { method: 'DELETE', path: `/zones/${Z}/rulesets/${RS}/rules/r1` },
+      { method: 'DELETE', path: `/zones/${Z}/rulesets/${other}/rules/r2` },
+    ]),
+  );
+});

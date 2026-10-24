@@ -106,16 +106,24 @@ const EXCLUSIVE_TARGET = {
 
 export function validatePlanOps(ops) {
   const seen = new Map();
-  (ops ?? []).forEach((op, index) => {
-    const label = EXCLUSIVE_TARGET[classify(op).kind];
-    if (!label) return;
-    const key = `${label} ${op.path}`;
+  const claim = (key, index, what) => {
     if (seen.has(key)) {
       throw new CfError(
         'plan_conflict',
-        `Ops ${seen.get(key)} and ${index} both target the same ${label} (${op.path}); split them into separate plans`,
+        `Ops ${seen.get(key)} and ${index} both target ${what}; split them into separate plans`,
       );
     }
     seen.set(key, index);
+  };
+  (ops ?? []).forEach((op, index) => {
+    const { kind, readPath } = classify(op);
+    const label = EXCLUSIVE_TARGET[kind];
+    if (!label) return;
+    claim(`${label} ${op.path}`, index, `the same ${label} (${op.path})`);
+    // Restore positions are captured against the original ruleset, so only
+    // one rule_delete per ruleset can be rolled back to the right position.
+    if (kind === 'rule_delete') {
+      claim(`rule_delete ${readPath}`, index, `rule deletes in the same ruleset (${readPath})`);
+    }
   });
 }
