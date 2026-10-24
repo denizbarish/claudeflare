@@ -5,9 +5,9 @@ description: Check the Cloudflare MCP connection and API token, initialize claud
 Set up claudeflare for this project. Load the `cf-core` skill, then do these steps in order and report each result in the user's language.
 
 1. **MCP connection.** Call the Cloudflare MCP `execute` tool with exactly:
-   `const accounts = await cloudflare.request({ method: "GET", path: "/accounts", query: { per_page: 5 } }); return accounts;`
+   `async () => { const zones = await cloudflare.request({ method: "GET", path: "/zones", query: { per_page: 1 } }); return zones.result; }`
    If the tools are missing or the call fails with an auth error, tell the user to run `/mcp`, select the `cloudflare` server and sign in. Recommend granting read-only OAuth scopes: reads go through MCP, writes never do.
-2. **API token.** Run `claudeflare get /user/tokens/verify`.
+2. **API token.** Run `claudeflare get /user/tokens/verify`. This endpoint verifies user tokens; an account-owned token fails here and verifies with `claudeflare get /accounts/<account_id>/tokens/verify` instead (take the account id from step 1 or ask the user).
    - Success with `status: "active"`: the token works. Never print or repeat the token.
    - `missing_token`: writes and `claudeflare get` need `CLOUDFLARE_API_TOKEN` in the environment. Tell the user to export it in their shell profile and restart Claude Code. Never ask them to paste the token into chat.
    - Any other error: show the error code and hint.

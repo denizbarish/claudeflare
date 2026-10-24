@@ -9,7 +9,7 @@ Load `cf-core` first; it covers zone discovery and the change protocol. An audit
 
 ## 1. Pick the zone
 
-Use cf-core discovery to get `zone_id`, `zone_name` and the plan tier (`plan.legacy_id`). If the user did not name a zone and more than one exists, ask. Run `claudeflare init` if this project has no `.claudeflare/` yet.
+Use cf-core discovery to get `zone_id`, `zone_name` and the plan tier (`plan.legacy_id`). If the user did not name a zone and more than one exists, ask. Run `claudeflare init` (safe to run every time).
 
 ## 2. Domains
 
@@ -29,7 +29,7 @@ A command may ask for a subset (for example performance, cache and ssl). Audit o
 
 ## 3. Dispatch auditors in parallel
 
-If the Agent tool is available, start one `cf-auditor` subagent per domain, all in the same message so they run in parallel. Give each one everything it needs, since it starts with no context:
+If the Agent tool is available, start one subagent per domain with `subagent_type: "claudeflare:cf-auditor"`, all in the same message so they run in parallel. Give each one everything it needs, since it starts with no context:
 
 ```
 Domain: <domain>
@@ -37,11 +37,12 @@ Zone name: <zone_name>
 Zone id: <zone_id>
 Account id: <account_id>
 Plan tier: <free|pro|business|enterprise>
+Core rules: <absolute path to skills/cf-core/SKILL.md>
 Checklist: <absolute path to skills/cf-<domain>/SKILL.md>
 Return only a JSON array of findings in the cf-audit finding format.
 ```
 
-The absolute checklist path is this skill's base directory with `cf-audit` replaced by `cf-<domain>`.
+The absolute paths are this skill's base directory with `cf-audit` replaced by `cf-core` or `cf-<domain>`.
 
 If the Agent tool is not available (for example you are running as a subagent), audit each domain yourself, one after another, following the same checklist and output rules.
 
@@ -92,7 +93,7 @@ Scores: each domain starts at 100 and loses 25 per critical, 10 per high, 4 per 
 ## 6. Merge and deduplicate
 
 1. Parse each auditor result as a JSON array. If a result is not valid JSON or a finding misses fields, re-run that auditor once; if it fails again, list the domain as not audited.
-2. Combine all findings. When two findings share an `id`, keep one: the higher severity wins; on a tie keep the first and merge their `prerequisites`.
+2. Combine all findings. When two findings share an `id`, keep one: the higher severity wins (on a tie keep the first), and its `prerequisites` become the union of both findings' `prerequisites`.
 3. Keep the list of domains you actually audited, including domains with zero findings (they score 100).
 
 ## 7. Write the report

@@ -1,6 +1,6 @@
 ---
 name: cf-core
-description: Foundation for every Cloudflare task in claudeflare. Account and zone discovery, plan tier, which channel to use for reads and writes, the MCP execute grammar the guard accepts, and the full change protocol (plan, user approval, apply, verify, rollback). Load this before any other cf-* skill and before any Cloudflare read or change.
+description: Foundation for every Cloudflare task in claudeflare. Account and zone discovery, plan tier, which channel to use for reads and writes, the exact MCP execute code form the guard accepts (async wrapper, GET or GraphQL, return .result), and the full change protocol (plan, user approval, apply, verify, rollback). Load this before any other cf-* skill and before any Cloudflare read or change.
 ---
 
 # cf-core: discovery, channels and the change protocol
@@ -22,44 +22,52 @@ Run `claudeflare init` once per project before the first plan or report. It crea
 
 Never send a write any other way: no MCP write, no `curl` with a non-GET method to `api.cloudflare.com`. The guard hook denies both. Never run commands on the origin server; give origin-side fixes as step-by-step instructions for the user.
 
-## 3. MCP `execute` grammar (the guard denies anything else)
+## 3. MCP `execute` code form (the guard denies anything else)
 
-The guard only allows code that matches this exact shape:
+Write every `execute` call in this exact form, the official Code Mode wrapper:
 
-- One statement per call: optional `const name =` or `let name =`, optional `await`, then `cloudflare.request({ ... })`, optional `;`.
+```js
+async () => {
+  const zones = await cloudflare.request({ method: "GET", path: "/zones", query: { name: "example.com" } });
+  return zones.result;
+}
+```
+
+Rules inside the wrapper:
+
+- One request per statement: optional `const name =` or `let name =`, then `await cloudflare.request({ ... })`, optional `;`.
 - Keys in the request object: `method`, `path`, `query`, `body`, each at most once.
-- `method` and `path` are string literals. Always write `method: "GET"` literally. The only allowed non-GET is `method: "POST"` with `path: "/graphql"`.
+- `method` and `path` are string literals. `method` is exactly `"GET"` or `"POST"`. Always write `method: "GET"` for reads. `"POST"` is allowed only with `path: "/client/v4/graphql"` (GraphQL analytics).
 - `query` and `body` contain only literals: strings, non-negative numbers, `true`, `false`, `null`, and objects or arrays of those.
-- Optional last line: `return name;`, `return [a, b];` or `return {a, b};` using names you declared.
-- ASCII only. No loops, functions, variables inside values, string concatenation, template `${}`, backslashes or negative numbers. Put real ids into the path as literal text.
+- Optional last line: `return` a declared name or a property chain of it (`return r.result;`), an array of chains (`return [a.result, b.result];`) or an object (`return { ssl: a.result, hsts: b.result };`). Return `.result` to drop the response envelope and save tokens.
+- ASCII only. No loops, other functions, conditionals, variables inside values, string concatenation, template `${}`, backslashes or negative numbers. Put real ids into the path as literal text.
 
-Allowed:
+Two settings in one call:
 
 ```js
-const zone = await cloudflare.request({ method: "GET", path: "/zones", query: { name: "example.com" } });
-return zone;
+async () => {
+  const ssl = await cloudflare.request({ method: "GET", path: "/zones/023e105f4ecef8ad9ca31a8372d0c353/settings/ssl" });
+  const hsts = await cloudflare.request({ method: "GET", path: "/zones/023e105f4ecef8ad9ca31a8372d0c353/settings/security_header" });
+  return { ssl: ssl.result, hsts: hsts.result };
+}
 ```
 
-```js
-const ssl = await cloudflare.request({ method: "GET", path: "/zones/023e105f4ecef8ad9ca31a8372d0c353/settings/ssl" });
-const hsts = await cloudflare.request({ method: "GET", path: "/zones/023e105f4ecef8ad9ca31a8372d0c353/settings/security_header" });
-return {ssl, hsts};
-```
-
-GraphQL analytics: pass every value through `variables`, so the query string needs no quotes or escapes. Use a backtick string for a multi-line query.
+GraphQL analytics: pass every value through `variables`, so the query string needs no quotes or escapes. Use a backtick string for a multi-line query. GraphQL responses have no `.result`; return the whole response.
 
 ```js
-const traffic = await cloudflare.request({ method: "POST", path: "/graphql", body: { query: `query ($zoneTag: string, $since: Time, $until: Time) {
+async () => {
+  const traffic = await cloudflare.request({ method: "POST", path: "/client/v4/graphql", body: { query: `query ($zoneTag: string, $since: Time, $until: Time) {
   viewer { zones(filter: { zoneTag: $zoneTag }) {
     httpRequestsAdaptiveGroups(limit: 10, filter: { datetime_geq: $since, datetime_leq: $until }) {
       count dimensions { edgeResponseStatus }
     }
   } }
 }`, variables: { zoneTag: "023e105f4ecef8ad9ca31a8372d0c353", since: "2026-10-24T00:00:00Z", until: "2026-10-24T06:00:00Z" } } });
-return traffic;
+  return traffic;
+}
 ```
 
-Results are truncated at about 6k tokens. Read narrow paths (a single setting, a single phase entrypoint), pass `per_page`, and filter with `query` instead of listing everything. If a call is denied, rewrite it to fit the grammar; do not try to work around the guard.
+Results are truncated at about 6k tokens. Read narrow paths (a single setting, a single phase entrypoint), pass `per_page`, and filter with `query` instead of listing everything. If a call is denied, rewrite it to fit this form; do not try to work around the guard.
 
 ## 4. Discovery
 
