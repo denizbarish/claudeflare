@@ -11,12 +11,16 @@
 //   returnStmt := "return" (IDENT | "[" IDENTs "]" | "{" IDENTs "}") [";"]
 //
 // Comments are skipped. Any backslash, `${`, or character outside the grammar
-// rejects the whole program.
+// rejects the whole program, as does whitespace other than space, tab and \n.
+// So does any \r, U+2028 or U+2029 anywhere (JS ends
+// `//` comments there too), and any non-ASCII character outside string literals.
 
 const PUNCTUATION = new Set(['{', '}', '[', ']', '(', ')', ',', ':', ';', '.', '=']);
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*/;
 const NUMBER = /^\d+(?:\.\d+)?/;
-const WHITESPACE = /^\s+/;
+const WHITESPACE = /^[ \t\n]+/;
+const LINE_BREAK_TRICKS = /[\r\u2028\u2029]/;
+const NON_ASCII = /[^\x00-\x7f]/;
 const CALL_KEYS = new Set(['method', 'path', 'query', 'body']);
 const STRING_KEYS = new Set(['method', 'path']);
 const RESERVED = new Set(['const', 'let', 'await', 'return', 'true', 'false', 'null', 'cloudflare']);
@@ -39,19 +43,25 @@ function readString(code, start) {
   return reject();
 }
 
+function checkComment(code, start, end) {
+  if (NON_ASCII.test(code.slice(start, end))) reject();
+  return end;
+}
+
 function skipComment(code, i) {
   if (code.startsWith('//', i)) {
     const end = code.indexOf('\n', i);
-    return end < 0 ? code.length : end;
+    return checkComment(code, i, end < 0 ? code.length : end);
   }
   if (code.startsWith('/*', i)) {
     const end = code.indexOf('*/', i + 2);
-    return end < 0 ? reject() : end + 2;
+    return end < 0 ? reject() : checkComment(code, i, end + 2);
   }
   return i;
 }
 
 function tokenize(code) {
+  if (LINE_BREAK_TRICKS.test(code)) reject();
   const tokens = [];
   let i = 0;
   while (i < code.length) {

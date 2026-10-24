@@ -99,16 +99,15 @@ function globBase(pattern) {
 }
 
 // Grep/Glob: deny when a search root (path, else cwd; plus the base of an
-// absolute Glob pattern) is inside the key dir or contains it.
+// absolute Glob pattern) is the key dir or inside it. A root that only
+// contains the key dir (for example $HOME) stays allowed.
 function decideSearch(toolName, toolInput, cwd) {
   const hasPath = typeof toolInput.path === 'string' && toolInput.path !== '';
   const roots = [hasPath ? resolve(cwd, toolInput.path) : resolve(cwd)];
   if (toolName === 'Glob' && typeof toolInput.pattern === 'string' && isAbsolute(toolInput.pattern)) {
     roots.push(globBase(toolInput.pattern));
   }
-  const dir = resolve(keyDir());
-  const hit = roots.some((root) => isInside(dir, root) || isInside(root, dir));
-  return hit ? deny(STATE_REASON) : null;
+  return roots.some(inKeyDir) ? deny(STATE_REASON) : null;
 }
 
 function touchesState(command) {

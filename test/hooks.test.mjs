@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -430,10 +430,35 @@ test('inspectCode rejects everything outside the grammar', () => {
   }
 });
 
-test('guard denies Grep on a parent of the key dir and searches with no path from a parent cwd', (t) => {
-  const ctx = setup(t);
-  const parent = join(ctx.keyDir, '..');
-  assertDeny(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: parent } }), STATE);
-  assertDeny(guard({ ...ctx, cwd: parent }, { tool_name: 'Grep', tool_input: { pattern: 'x' }, cwd: parent }), STATE);
-  assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: join(parent, '**/*.key') } }), STATE);
+test('inspectCode rejects line-break tricks, odd whitespace and non-ASCII outside strings', () => {
+  const get = "await cloudflare.request({ method: 'GET', path: '/zones' });";
+  const hidden = "await fetch('https://api.cloudflare.com/client/v4/zones/a', { method: 'DELETE' });";
+  for (const code of [
+    `${get} // note\r${hidden}`,
+    `${get} // note ${hidden}`,
+    `${get} // note ${hidden}`,
+    "const zoneé = await cloudflare.request({ method: 'GET', path: '/zones' }); return zoneé;",
+    `${get} // café`,
+    "await\vcloudflare.request({ method: 'GET', path: '/zones' });",
+  ]) {
+    assert.deepEqual(inspectCode(code), { calls: [], determinable: false }, JSON.stringify(code));
+  }
+  assert.deepEqual(inspectCode("await cloudflare.request({ method: 'GET', path: '/zones/café' });"), {
+    calls: [{ method: 'GET', path: '/zones/café' }],
+    determinable: true,
+  });
+});
+
+test('guard limits Grep/Glob key-dir denial to paths inside the key dir', (t) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-home-')));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const config = join(home, '.config');
+  const keyDir = join(config, 'claudeflare');
+  mkdirSync(keyDir, { recursive: true });
+  const ctx = { cwd: home, keyDir };
+  assert.equal(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: config } }), null);
+  assert.equal(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x' } }), null);
+  assert.equal(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: '**/*.key' } }), null);
+  assertDeny(guard(ctx, { tool_name: 'Grep', tool_input: { pattern: 'x', path: join(keyDir, 'sub') } }), STATE);
+  assertDeny(guard(ctx, { tool_name: 'Glob', tool_input: { pattern: `${keyDir}/*` } }), STATE);
 });
