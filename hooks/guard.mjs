@@ -8,6 +8,7 @@ import { checkApproval } from '../scripts/lib/approvals.mjs';
 import { keyDir } from '../scripts/lib/approval-key.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
 import { inspectCode } from './lib/inspect-code.mjs';
+import { isAllowedCall } from './lib/allowed-call.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -28,7 +29,6 @@ const PROTECTED_COMMAND_PARTS = [
   'approval-key.mjs',
 ];
 const CF_API_HOST = 'api.cloudflare.com';
-const GRAPHQL_PATHS = new Set(['/graphql', '/client/v4/graphql']);
 const CURL_METHOD = /(?:^|\s)(?:-[A-Za-z]*X\s*|--request(?:\s+|=))['"]?([A-Za-z]+)/g;
 const CURL_BODY = /(?:^|\s)(?:-[A-Za-z]*[dFT]|--data|--json|--form|--upload-file)/;
 const ASK_OPS_LIMIT = 20;
@@ -38,12 +38,6 @@ const deny = (reason) => ({ permissionDecision: 'deny', permissionDecisionReason
 const ask = (reason) => ({ permissionDecision: 'ask', permissionDecisionReason: reason });
 
 // MCP execute
-
-function isAllowedCall({ method, path }) {
-  // Exact ASCII uppercase literals only: no case mapping ("get", "poſt" are denied).
-  if (method === 'GET') return true;
-  return method === 'POST' && GRAPHQL_PATHS.has(path);
-}
 
 // A quoted write method anywhere in the code, read or not.
 const WRITE_METHOD_LITERAL = /['"`](?:POST|PUT|PATCH|DELETE)['"`]/i;

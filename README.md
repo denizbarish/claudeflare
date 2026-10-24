@@ -67,6 +67,8 @@ The plugin adds a `claudeflare` executable to the Bash tool's PATH. Claude uses 
 claudeflare init | get <path> [--query k=v ...] | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone>
 ```
 
+`claudeflare report` writes the Markdown report and prints JSON: `{ "file", "overall", "domains" }`. In an audit, each domain auditor also returns the checks it could not read (`unread`); such a domain is re-run once, then listed as not audited instead of being scored.
+
 Local state lives in `.claudeflare/` in your project (`plans/`, `approvals/`, `snapshots/<zone>/`, `reports/<zone>/`). `claudeflare init` adds it to `.gitignore`.
 
 ## Safety model
@@ -76,7 +78,7 @@ Local state lives in `.claudeflare/` in your project (`plans/`, `approvals/`, `s
 Every write follows the same steps:
 
 1. **Plan.** Claude reads the current state and creates a draft plan with `claudeflare plan new`. You see the plan id, a before and after table, the risk and anything that cannot be rolled back.
-2. **Approve.** You type `/claudeflare:approve <plan-id>` yourself. A hook records a signed approval. Claude cannot type or fake this message.
+2. **Approve.** You type `/claudeflare:approve <plan-id>` yourself. A hook records a signed approval from your prompt; model output does not trigger it. See [Threat model](#threat-model) for its limits.
 3. **Confirm.** Claude runs `claudeflare apply <plan-id>`. The guard hook checks the approval and shows a native permission prompt that lists every op. You confirm there.
 4. **Snapshot.** Before the first write, `claudeflare apply` captures the current state of every resource the plan touches.
 5. **Apply.** Ops run in order. Apply stops at the first failure and records which ops succeeded.
@@ -93,6 +95,8 @@ Approvals:
 Apply works only in interactive sessions. The confirmation is a hook `ask` decision. In a headless run (`claude -p`), there is nobody to answer, so `ask` acts as a deny. This was verified on Claude Code 2.1.306: in interactive mode the prompt appears even in bypass permissions mode (`--dangerously-skip-permissions`), and in headless mode the call is denied in both bypass and default modes. Details are in [the harness spike notes](docs/superpowers/notes/2026-10-24-harness-spike.md).
 
 Ops that rollback cannot undo are flagged in the plan's risk note before you approve: cache purge, and any op outside the snapshot-supported kinds (for example DNSSEC, Tiered Cache and Bot Fight Mode). Supported, reversible kinds are zone settings, DNS records, ruleset rules and phase entrypoints.
+
+`claudeflare plan new` also rejects ops it cannot keep inside the plan's zone: account-level writes, paths outside `/zones/<zone_id>/`, leftover placeholders and Page Rule creation are refused with `invalid_op`.
 
 Plan limits keep snapshots and rollbacks correct. One plan may not touch the same DNS record twice, touch the same rule twice, delete more than one rule in the same ruleset, or PUT the same phase entrypoint twice. Claude splits such work into several plans.
 
@@ -192,9 +196,9 @@ Run them locally from the repo root (needs Claude Code and an Anthropic API key 
 
 ```sh
 claude plugin eval --trust-plugin --scaffold \
-  --allow-tools "Bash(claudeflare *)" "Bash(curl *)" Write \
+  --allow-tools "Bash(claudeflare *)" Write \
   --model claude-opus-5-5 --judge-model claude-opus-5-5 \
-  --threshold 0.8 --max-cost-usd 10 --no-publish --json eval-results.json
+  --threshold 0.8 --max-cost-usd 15 --no-publish --json eval-results.json
 ```
 
 A run costs about $3 to $12, depending mostly on the judge model. `--max-cost-usd` is checked before each run starts, so runs already in flight can push the total past it.

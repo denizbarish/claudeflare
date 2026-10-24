@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Change protocol: draft plans bound to an ops hash, HMAC-signed single-use approvals with a 30 minute TTL, native confirmation prompt on apply, snapshot before apply, verification, and rollback plans built from the snapshot. Non-reversible ops are flagged in the risk note, and plan limits reject conflicting ops.
 - Guard hook: allowlist for MCP `execute` code (at least one call, GET and GraphQL reads only), denial of `curl` writes to `api.cloudflare.com`, and protection of `.claudeflare/` state and the approval key directory.
 - Approval hook for `/claudeflare:approve <plan-id>`.
-- Audit reports with severity-weighted domain scores.
+- Audit reports with severity-weighted domain scores; `claudeflare report` prints `{ file, overall, domains }`.
+- Auditors return `{ findings, unread }`; a domain with unread checks is re-run once, then marked not audited and left out of the scores.
+- `claudeflare plan new` rejects ops outside the plan's zone (including account-level writes), Page Rule creation, leftover placeholders and non-standard methods with `invalid_op`; apply re-checks the same rules.
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
