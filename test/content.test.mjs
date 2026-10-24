@@ -129,3 +129,25 @@ test('cf-incident has Detect, Contain, Return to normal and Report in order, inc
   assert.ok(/"slug": "incident-[a-z0-9-]+"/.test(text), `${file} has no incident- slug example`);
   assert.ok(text.includes('path: "/client/v4/graphql"'), `${file} has no GraphQL detection example`);
 });
+
+const TROUBLESHOOT_TREES = [
+  '520', '521', '522', '523', '524', '525-526', '1xxx',
+  'redirect-loop', 'cache-miss', 'cors', 'waf-false-positive',
+];
+
+for (const tree of TROUBLESHOOT_TREES) {
+  test(`cf-troubleshoot tree ${tree} exists with Evidence, Hypotheses, Fix and Sources in order`, () => {
+    const file = `skills/cf-troubleshoot/trees/${tree}.md`;
+    const text = read(file);
+    assert.ok(text.startsWith('# '), `${file} has no title`);
+    assertHeadingsInOrder(text, ['## Evidence', '## Hypotheses', '## Fix', '## Sources'], file);
+  });
+}
+
+test('cf-troubleshoot SKILL.md links every tree', () => {
+  const file = 'skills/cf-troubleshoot/SKILL.md';
+  const text = read(file);
+  for (const tree of TROUBLESHOOT_TREES) {
+    assert.ok(text.includes(`trees/${tree}.md`), `${file} does not link trees/${tree}.md`);
+  }
+});
