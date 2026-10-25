@@ -10,6 +10,8 @@ import { createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plan
 import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
 import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
+import { assertR2DeletesEmpty } from './lib/wrangler-exec.mjs';
+import { classifyWranglerOp } from './lib/wrangler-ops.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
 
@@ -118,7 +120,15 @@ function assertDraftOps(ops) {
   }
 }
 
-function planNew(cwd, flags) {
+function hasR2Delete(ops) {
+  return ops.some((op) => {
+    if (op?.kind !== 'wrangler') return false;
+    const { kind, resource } = classifyWranglerOp(op);
+    return kind === 'resource_delete' && resource?.type === 'r2';
+  });
+}
+
+async function planNew(cwd, flags) {
   const draft = readJsonFile(cwd, flag(flags, 'file'));
   assertDraftOps(draft?.ops);
   const scope = draft.scope ?? 'zone';
@@ -135,6 +145,8 @@ function planNew(cwd, flags) {
   }
   validateOpTargets(resolved, target);
   validatePlanOps(resolved);
+  // R2 bucket deletes are refused unless the bucket is verifiably empty.
+  if (scope === 'account' && hasR2Delete(resolved)) await assertR2DeletesEmpty(createClient(), { account_id: draft.account_id, ops: resolved });
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
     scope,
@@ -151,7 +163,7 @@ function planNew(cwd, flags) {
   return updatePlan(cwd, plan.id, { slug });
 }
 
-function plan(cwd, positional, flags) {
+async function plan(cwd, positional, flags) {
   const sub = arg(positional, 1, 'new|show|list');
   if (sub === 'new') return planNew(cwd, flags);
   if (sub === 'show') return readPlan(cwd, arg(positional, 2, 'id'));
@@ -189,14 +201,20 @@ function report(cwd, flags) {
   return { file, overall: scores.overall, domains: scores.domains };
 }
 
+const APPLY_HINTS = {
+  partially_applied: (id) => `Run claudeflare rollback ${id} to revert the ops that succeeded`,
+  failed: () => 'The first op failed, so no write was made; fix the cause and create a new plan',
+  applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
+  rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
+};
+
 async function applyCommand(cwd, positional) {
-  const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'));
+  const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
   if (result.status !== 'applied') {
-    const hint = result.status === 'partially_applied'
-      ? `Run claudeflare rollback ${result.id} to revert the ops that succeeded`
-      : 'The first op failed, so no write was made; fix the cause and create a new plan';
-    throw new CfError('apply_failed', `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
+    const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';
+    const hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id);
+    throw new CfError(code, `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
   }
 }
 
@@ -207,7 +225,7 @@ async function main(argv) {
   switch (command) {
     case 'init': return printJson(init(cwd));
     case 'get': return printJson(await get(positional, flags));
-    case 'plan': return printJson(plan(cwd, positional, flags));
+    case 'plan': return printJson(await plan(cwd, positional, flags));
     case 'snapshot': return printJson(await snapshot(cwd, positional));
     case 'apply': return applyCommand(cwd, positional);
     case 'rollback': return printJson(createRollbackPlan(cwd, arg(positional, 1, 'id')));
