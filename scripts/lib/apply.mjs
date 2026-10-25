@@ -9,7 +9,7 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
-import { classifyWranglerOp } from './wrangler-ops.mjs';
+import { classifyWranglerOp, DATA_LOSS_TYPES } from './wrangler-ops.mjs';
 
 const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied']);
 
@@ -55,11 +55,23 @@ export function assertDraft(plan) {
   }
 }
 
-// Appends one "Not reversible" line per op that rollback cannot undo.
+function wranglerRiskLines(op) {
+  const { kind, invertible, resource } = classifyWranglerOp(op);
+  if (invertible) return [];
+  const lines = [`Not reversible: wrangler ${op.args.join(' ')}`];
+  if (kind === 'resource_delete' && DATA_LOSS_TYPES.has(resource?.type)) {
+    lines.push(`Data loss: ${resource.type} ${resource.name} and all its contents are deleted permanently.`);
+  }
+  return lines;
+}
+
+// Appends one "Not reversible" line per op that rollback cannot undo, plus a
+// "Data loss" line for KV, Queue and D1 deletes.
 export function withIrreversibleRisk(risk, ops) {
-  const lines = ops
-    .filter((op) => !(op?.kind === 'wrangler' ? classifyWranglerOp(op) : classify(op)).invertible)
-    .map((op) => (op?.kind === 'wrangler' ? `Not reversible: wrangler ${op.args.join(' ')}` : `Not reversible: ${op.method} ${op.path}`));
+  const lines = ops.flatMap((op) => {
+    if (op?.kind === 'wrangler') return wranglerRiskLines(op);
+    return classify(op).invertible ? [] : [`Not reversible: ${op.method} ${op.path}`];
+  });
   return [risk, ...lines].filter((line) => typeof line === 'string' && line !== '').join('\n');
 }
 

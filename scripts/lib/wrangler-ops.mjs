@@ -2,46 +2,186 @@
 // confirmation prompts with "yes" when it runs non-interactively, so every
 // destructive intent must be explicit in the plan and checked here, before any
 // wrangler process starts. Runs on `plan new` and again in applyPlan.
+//
+// Each subcommand has a positive allowlist of flags and positionals, taken from
+// `wrangler <subcommand> --help` (wrangler 4.152). Anything else is rejected.
 
 import { existsSync, realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { CfError } from './errors.mjs';
 
-// Leading positional args, matched exactly. `name` says where the resource
-// name lives: 'positional' (first arg after the words), 'worker' (--name or
-// op.worker), 'project' (--project-name) or 'namespace' (--namespace-id).
+// Flag value types: 'bool' (bare flag only), 'string', 'list' (string, may
+// repeat) and 'path' (string that must stay inside project_dir).
+// Global flags allowed on every subcommand. --cwd, --env-file, --profile and
+// --install-skills are deliberately absent.
+const GLOBAL_FLAGS = { '--config': 'path', '--env': 'string' };
+const GLOBAL_ALIASES = { '-c': '--config', '-e': '--env' };
+
+const DO_MODE = { '--durable-objects-code-update-mode': 'string' };
+
+// Positionals: { role, type, required, variadic }. role 'name' is the resource
+// name, 'secret' the secret key.
 const ALLOWLIST = [
-  { words: ['deploy'], kind: 'worker_deploy', type: 'worker', name: 'worker' },
-  { words: ['versions', 'deploy'], kind: 'worker_versions_deploy', type: 'worker', name: 'worker' },
-  { words: ['rollback'], kind: 'worker_rollback', type: 'worker', name: 'worker' },
-  { words: ['pages', 'deploy'], kind: 'pages_deploy', type: 'pages', name: 'project' },
-  { words: ['d1', 'migrations', 'apply'], kind: 'd1_migrations_apply', type: 'd1', name: 'positional', remote: true },
-  { words: ['d1', 'time-travel', 'restore'], kind: 'd1_restore', type: 'd1', name: 'positional', remote: true },
-  { words: ['d1', 'create'], kind: 'resource_create', type: 'd1', name: 'positional' },
-  { words: ['d1', 'delete'], kind: 'resource_delete', type: 'd1', name: 'positional' },
-  { words: ['r2', 'bucket', 'create'], kind: 'resource_create', type: 'r2', name: 'positional' },
-  { words: ['r2', 'bucket', 'delete'], kind: 'resource_delete', type: 'r2', name: 'positional' },
-  { words: ['kv', 'namespace', 'create'], kind: 'resource_create', type: 'kv', name: 'positional' },
-  { words: ['kv', 'namespace', 'delete'], kind: 'resource_delete', type: 'kv', name: 'namespace' },
-  { words: ['queues', 'create'], kind: 'resource_create', type: 'queue', name: 'positional' },
-  { words: ['queues', 'delete'], kind: 'resource_delete', type: 'queue', name: 'positional' },
-  { words: ['secret', 'put'], kind: 'secret_put', type: 'worker', name: 'worker', secret: true },
-  { words: ['secret', 'delete'], kind: 'secret_delete', type: 'worker', name: 'worker', secret: true },
-  { words: ['delete'], kind: 'worker_delete', type: 'worker', name: 'worker' },
+  {
+    words: ['deploy'],
+    kind: 'worker_deploy',
+    type: 'worker',
+    positionals: [{ role: 'script', type: 'path' }],
+    flags: {
+      '--name': 'string', '--tag': 'string', '--no-bundle': 'bool', '--compatibility-date': 'string',
+      '--compatibility-flags': 'list', '--latest': 'bool', '--assets': 'path', '--site': 'path', '--var': 'list',
+      '--define': 'list', '--alias': 'list', '--jsx-factory': 'string', '--jsx-fragment': 'string',
+      '--tsconfig': 'path', '--minify': 'bool', '--upload-source-maps': 'bool', '--keep-vars': 'bool',
+      '--strict': 'bool', '--triggers': 'list', '--routes': 'list', '--domains': 'list', '--logpush': 'bool',
+      '--old-asset-ttl': 'string', '--dispatch-namespace': 'string', '--containers-rollout': 'string', ...DO_MODE,
+    },
+    aliases: {
+      '--compatibility-flag': '--compatibility-flags', '--schedule': '--triggers', '--schedules': '--triggers',
+      '--route': '--routes', '--domain': '--domains',
+    },
+  },
+  {
+    words: ['versions', 'deploy'],
+    kind: 'worker_versions_deploy',
+    type: 'worker',
+    positionals: [{ role: 'version-specs', type: 'string', variadic: true }],
+    flags: { '--name': 'string', '--version-id': 'list', '--percentage': 'string', '--version-tag': 'list', ...DO_MODE },
+  },
+  {
+    words: ['rollback'],
+    kind: 'worker_rollback',
+    type: 'worker',
+    positionals: [{ role: 'version-id', type: 'string' }],
+    flags: { '--name': 'string', ...DO_MODE },
+  },
+  {
+    words: ['pages', 'deploy'],
+    kind: 'pages_deploy',
+    type: 'pages',
+    positionals: [{ role: 'directory', type: 'path' }],
+    flags: {
+      '--project-name': 'string', '--branch': 'string', '--commit-hash': 'string', '--commit-message': 'string',
+      '--commit-dirty': 'bool', '--skip-caching': 'bool', '--no-bundle': 'bool', '--upload-source-maps': 'bool',
+    },
+  },
+  {
+    words: ['d1', 'migrations', 'apply'],
+    kind: 'd1_migrations_apply',
+    type: 'd1',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--remote': 'bool' },
+    required: ['--remote'],
+  },
+  {
+    words: ['d1', 'time-travel', 'restore'],
+    kind: 'd1_restore',
+    type: 'd1',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--bookmark': 'string', '--json': 'bool' },
+    required: ['--bookmark'],
+  },
+  {
+    words: ['d1', 'create'],
+    kind: 'resource_create',
+    type: 'd1',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--location': 'string', '--jurisdiction': 'string' },
+  },
+  {
+    words: ['d1', 'delete'],
+    kind: 'resource_delete',
+    type: 'd1',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: {},
+  },
+  {
+    words: ['r2', 'bucket', 'create'],
+    kind: 'resource_create',
+    type: 'r2',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--location': 'string', '--storage-class': 'string', '--jurisdiction': 'string' },
+    aliases: { '-s': '--storage-class', '-J': '--jurisdiction' },
+  },
+  {
+    words: ['r2', 'bucket', 'delete'],
+    kind: 'resource_delete',
+    type: 'r2',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--jurisdiction': 'string' },
+    aliases: { '-J': '--jurisdiction' },
+  },
+  {
+    words: ['kv', 'namespace', 'create'],
+    kind: 'resource_create',
+    type: 'kv',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--preview': 'bool', '--jurisdiction': 'string' },
+  },
+  {
+    // Only the namespace id identifies the target: no positional, no --binding.
+    words: ['kv', 'namespace', 'delete'],
+    kind: 'resource_delete',
+    type: 'kv',
+    positionals: [],
+    flags: { '--namespace-id': 'string' },
+    required: ['--namespace-id'],
+    nameFlag: '--namespace-id',
+  },
+  {
+    words: ['queues', 'create'],
+    kind: 'resource_create',
+    type: 'queue',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--jurisdiction': 'string', '--delivery-delay-secs': 'string', '--message-retention-period-secs': 'string' },
+  },
+  {
+    words: ['queues', 'delete'],
+    kind: 'resource_delete',
+    type: 'queue',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: {},
+  },
+  {
+    words: ['secret', 'put'],
+    kind: 'secret_put',
+    type: 'worker',
+    positionals: [{ role: 'secret', type: 'string', required: true }],
+    flags: { '--name': 'string' },
+    required: ['--name'],
+  },
+  {
+    words: ['secret', 'delete'],
+    kind: 'secret_delete',
+    type: 'worker',
+    positionals: [{ role: 'secret', type: 'string', required: true }],
+    flags: { '--name': 'string' },
+    required: ['--name'],
+  },
+  {
+    words: ['delete'],
+    kind: 'worker_delete',
+    type: 'worker',
+    positionals: [],
+    flags: { '--name': 'string' },
+    required: ['--name'],
+  },
 ];
 
 const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete']);
 export const DELETE_KINDS = new Set(['resource_delete', 'worker_delete']);
 export const DEPLOY_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
+// Deletes whose contents are lost with the resource (R2 deletes are refused
+// at preflight when the bucket is not empty).
+export const DATA_LOSS_TYPES = new Set(['kv', 'queue', 'd1']);
 
-// --dry-run and --outdir belong to preflight; --yes and --message are added
-// by the executor so plans stay canonical; --cwd and --env-file would change
-// what runs or which values it sees.
-const FORBIDDEN_FLAGS = new Set(['--dry-run', '--outdir', '--out-dir', '--cwd', '--env-file', '--yes', '--message', '-y']);
-const CONFIG_FLAGS = ['--config', '-c'];
-const SECRET_PUT_FLAGS = new Set(['--name', '--env', '-e', '--config', '-c']);
+// The executor adds these at run time; drafts must not carry them so plans
+// stay canonical.
+const EXECUTOR_FLAGS = new Set(['--yes', '-y', '--message', '-m', '--skip-confirmation']);
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+// Credentials and claudeflare's own settings must never become a secret value.
+const RESERVED_ENV_PREFIXES = ['CLOUDFLARE_', 'WRANGLER_', 'CLAUDEFLARE_', 'ANTHROPIC_'];
 const PRINTABLE = /^[\x20-\x7e]*$/;
+const FLAG_LIKE = /^--?[a-z][a-z0-9-]*$/i;
 
 function matchEntry(args) {
   let best = null;
@@ -53,58 +193,108 @@ function matchEntry(args) {
   return best;
 }
 
-// yargs accepts camelCase spellings of kebab flags (--dryRun == --dry-run).
-function flagName(arg) {
-  const name = arg.split('=')[0];
-  if (!name.startsWith('--')) return name;
-  return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+// yargs reads `--c` as `-c` and camelCase as kebab (--dryRun == --dry-run).
+function normalizeFlag(raw) {
+  if (/^--[A-Za-z]$/.test(raw)) return `-${raw.slice(2)}`;
+  if (!raw.startsWith('--')) return raw;
+  return raw.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
-// Every occurrence of the flag: { value } where value is null when missing.
-function flagOccurrences(rest, names) {
-  const found = [];
-  rest.forEach((arg, i) => {
-    if (!arg.startsWith('-')) return;
-    const name = flagName(arg);
-    if (!names.includes(name)) return;
-    const eq = arg.indexOf('=');
-    if (eq !== -1) {
-      found.push({ value: arg.slice(eq + 1) || null });
-      return;
+function canonicalFlag(entry, name) {
+  return entry.aliases?.[name] ?? GLOBAL_ALIASES[name] ?? name;
+}
+
+function flagType(entry, name) {
+  return entry.flags[name] ?? GLOBAL_FLAGS[name];
+}
+
+// Splits args after the subcommand words into flags and positionals. Never
+// throws: the first problem is returned as `error` (messages never echo
+// values, since a misplaced secret could be one).
+function parseArgs(entry, rest) {
+  const flags = new Map();
+  const positionals = [];
+  let error = null;
+  const fail = (why) => {
+    if (!error) error = why;
+  };
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (!arg.startsWith('-') || arg === '-') {
+      positionals.push(arg);
+      continue;
     }
-    const next = rest[i + 1];
-    found.push({ value: next !== undefined && !next.startsWith('-') ? next : null });
+    const eq = arg.indexOf('=');
+    const raw = eq === -1 ? arg : arg.slice(0, eq);
+    const name = canonicalFlag(entry, normalizeFlag(raw));
+    const shown = FLAG_LIKE.test(name) ? name : 'an unrecognized flag';
+    const type = flagType(entry, name);
+    if (EXECUTOR_FLAGS.has(name)) {
+      fail(`must not use ${name}; the executor adds confirmation flags at run time`);
+      continue;
+    }
+    if (/^--(experimental|x)-/.test(name)) {
+      fail(`must not use experimental flags (${shown})`);
+      continue;
+    }
+    if (!type) {
+      fail(`must not use ${shown} with "${entry.words.join(' ')}"`);
+      continue;
+    }
+    let value = true;
+    if (type === 'bool') {
+      if (eq !== -1) fail(`${name} is a bare flag and takes no value`);
+    } else if (eq !== -1) {
+      value = arg.slice(eq + 1);
+    } else if (rest[i + 1] !== undefined && !rest[i + 1].startsWith('-')) {
+      value = rest[++i];
+    } else {
+      value = '';
+    }
+    if (type !== 'bool' && value === '') fail(`${name} needs a value`);
+    if (flags.has(name) && type !== 'list') fail(`must not pass ${name} more than once`);
+    flags.set(name, [...(flags.get(name) ?? []), value]);
+  }
+  const specs = entry.positionals;
+  const variadic = specs.some((spec) => spec.variadic);
+  if (!variadic && positionals.length > specs.length) {
+    fail(`takes at most ${specs.length} positional argument(s) after "${entry.words.join(' ')}"`);
+  }
+  specs.forEach((spec, i) => {
+    if (spec.required && (positionals[i] === undefined || positionals[i] === '')) {
+      fail(`needs the ${spec.role === 'name' ? `${entry.type} name` : spec.role} as a positional argument`);
+    }
   });
-  return found;
+  for (const name of entry.required ?? []) {
+    if (!flags.has(name)) fail(`must include ${name}`);
+  }
+  return { flags, positionals, error };
 }
 
-function hasFlag(rest, name) {
-  return rest.some((arg) => arg.startsWith('-') && flagName(arg) === name);
+function flagValue(parsed, name) {
+  const value = parsed.flags.get(name)?.[0];
+  return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-function firstPositional(rest) {
-  const arg = rest[0];
-  return typeof arg === 'string' && arg !== '' && !arg.startsWith('-') ? arg : undefined;
+function positional(entry, parsed, role) {
+  const i = entry.positionals.findIndex((spec) => spec.role === role);
+  return i === -1 ? undefined : parsed.positionals[i] || undefined;
 }
 
-function workerName(rest, op) {
-  return flagOccurrences(rest, ['--name'])[0]?.value ?? (typeof op.worker === 'string' ? op.worker : undefined);
-}
-
-function resourceName(entry, rest, op) {
-  if (entry.name === 'positional') return firstPositional(rest);
-  if (entry.name === 'worker') return workerName(rest, op) || undefined;
-  if (entry.name === 'project') return flagOccurrences(rest, ['--project-name'])[0]?.value ?? undefined;
-  return flagOccurrences(rest, ['--namespace-id'])[0]?.value ?? undefined;
+function resourceName(entry, parsed, op) {
+  if (entry.nameFlag) return flagValue(parsed, entry.nameFlag);
+  if (entry.type === 'worker') return flagValue(parsed, '--name') ?? (typeof op.worker === 'string' && op.worker ? op.worker : undefined);
+  if (entry.type === 'pages') return flagValue(parsed, '--project-name');
+  return positional(entry, parsed, 'name');
 }
 
 export function classifyWranglerOp(op) {
   const args = Array.isArray(op?.args) ? op.args : [];
   const entry = matchEntry(args);
   if (!entry) return { kind: 'unknown', invertible: false };
-  const rest = args.slice(entry.words.length);
+  const parsed = parseArgs(entry, args.slice(entry.words.length));
   const result = { kind: entry.kind, invertible: !NOT_INVERTIBLE.has(entry.kind) };
-  const name = resourceName(entry, rest, op);
+  const name = resourceName(entry, parsed, op);
   if (name) result.resource = { type: entry.type, name };
   return result;
 }
@@ -114,86 +304,54 @@ function isInside(dir, target) {
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-function assertConfigInside(rest, plan, reject) {
-  const found = flagOccurrences(rest, CONFIG_FLAGS);
-  if (found.length === 0) return;
-  if (found.length > 1) reject('must not pass --config more than once');
-  const { value } = found[0];
-  if (!value) reject('--config needs a value');
+function nearestExisting(path) {
+  let current = path;
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+  return current;
+}
+
+// Lexically inside, and the nearest existing ancestor (the path itself when
+// it exists) is inside after following symlinks.
+function assertInsideProject(plan, what, value, reject) {
   const dir = plan?.project_dir;
-  if (typeof dir !== 'string' || !isAbsolute(dir)) reject('--config needs an absolute project_dir to resolve against');
+  if (typeof dir !== 'string' || !isAbsolute(dir)) reject(`${what} needs an absolute project_dir to resolve against`);
   const target = resolve(dir, value);
-  if (!isInside(dir, target)) reject('--config must point inside project_dir');
-  // Symlinks are followed when the file exists, so a link cannot escape.
-  if (existsSync(target) && existsSync(dir) && !isInside(realpathSync(dir), realpathSync(target))) {
-    reject('--config must point inside project_dir');
+  if (!isInside(dir, target)) reject(`${what} must point inside project_dir`);
+  if (!existsSync(dir)) return;
+  if (!isInside(realpathSync(dir), realpathSync(nearestExisting(target)))) reject(`${what} must point inside project_dir`);
+}
+
+function assertPaths(entry, parsed, plan, reject) {
+  for (const [name, values] of parsed.flags) {
+    if (flagType(entry, name) !== 'path') continue;
+    for (const value of values) assertInsideProject(plan, name, value, reject);
   }
+  entry.positionals.forEach((spec, i) => {
+    const value = parsed.positionals[i];
+    if (spec.type === 'path' && value !== undefined) assertInsideProject(plan, `the ${spec.role} argument`, value, reject);
+  });
 }
 
-function assertFlags(rest, reject) {
-  for (const arg of rest) {
-    if (!arg.startsWith('-')) continue;
-    const name = flagName(arg);
-    if (FORBIDDEN_FLAGS.has(name) || name.startsWith('--x-')) reject(`must not use ${name}`);
-    if (/^-[^-]./.test(name)) reject(`must not group short flags (${name}); pass each short flag on its own`);
-  }
-}
-
-function single(rest, name, reject) {
-  const found = flagOccurrences(rest, [name]);
-  if (found.length > 1) reject(`must not pass ${name} more than once`);
-  if (found.length === 1 && !found[0].value) reject(`${name} needs a value`);
-  return found[0]?.value ?? undefined;
-}
-
-function assertWorker(entry, rest, op, reject) {
+function assertWorker(parsed, op, reject) {
   if (op.worker !== undefined && (typeof op.worker !== 'string' || op.worker === '' || !PRINTABLE.test(op.worker))) {
     reject('worker must be a non-empty printable ASCII string');
   }
-  const flag = single(rest, '--name', reject);
+  const flag = flagValue(parsed, '--name');
   if (flag !== undefined && op.worker !== undefined && flag !== op.worker) reject('worker does not match --name');
-  const name = flag ?? op.worker;
-  if (entry.kind === 'worker_delete') {
-    if (firstPositional(rest)) reject('must name the Worker with --name or worker, not a positional argument');
-    if (!name) reject('needs the Worker name in --name or worker');
-  }
-  if (entry.kind === 'secret_put' && !name) reject('needs the target worker in --name or worker');
 }
 
-// Only known flags with values may follow the secret name, so a literal value
-// cannot ride along in args. The message never echoes the offending arg.
-function assertSecretPut(rest, op, reject) {
-  if (typeof op.value_from_env !== 'string' || !ENV_NAME.test(op.value_from_env)) {
+function assertSecretPut(op, reject) {
+  const name = op.value_from_env;
+  if (typeof name !== 'string' || !ENV_NAME.test(name)) {
     reject('needs value_from_env naming an environment variable (^[A-Z_][A-Z0-9_]*$)');
   }
-  for (let i = 1; i < rest.length; i++) {
-    const arg = rest[i];
-    const known = arg.startsWith('-') && SECRET_PUT_FLAGS.has(flagName(arg));
-    if (!known) reject(`has an extra argument (args[${i + 2}]); only --name, --env and --config may follow the secret name`);
-    if (arg.includes('=')) continue;
-    const next = rest[i + 1];
-    if (next === undefined || next.startsWith('-')) reject(`${flagName(arg)} needs a value`);
-    i++;
+  if (RESERVED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    reject(`value_from_env must not start with ${RESERVED_ENV_PREFIXES.join(', ')}`);
   }
-}
-
-function assertNamed(entry, rest, op, reject) {
-  if (entry.name === 'positional' && !firstPositional(rest)) {
-    reject(`needs the ${entry.type} name right after "${entry.words.join(' ')}"`);
-  }
-  if (entry.secret && !firstPositional(rest)) reject(`needs the secret name right after "${entry.words.join(' ')}"`);
-  if (entry.name === 'namespace' && !single(rest, '--namespace-id', reject)) reject('needs --namespace-id <id>');
-  if (entry.name === 'worker') assertWorker(entry, rest, op, reject);
-  if (entry.name === 'project') single(rest, '--project-name', reject);
-}
-
-function assertRemote(entry, rest, reject) {
-  if (!entry.remote) return;
-  // Only the bare flag counts: --remote=false would run against the local copy.
-  if (rest.some((arg) => arg.startsWith('-') && flagName(arg) === '--remote' && arg !== '--remote')) reject('must pass --remote without a value');
-  if (!rest.includes('--remote')) reject('must include --remote');
-  if (hasFlag(rest, '--local') || hasFlag(rest, '--no-remote')) reject('must not use --local or --no-remote');
-  if (entry.kind === 'd1_restore' && !single(rest, '--bookmark', reject)) reject('needs --bookmark <bookmark>');
 }
 
 function assertHealth(op, reject) {
@@ -220,14 +378,13 @@ export function validateWranglerOp(op, plan, index) {
   if (!args.every((arg) => PRINTABLE.test(arg))) reject('args must be printable ASCII without control characters');
   const entry = matchEntry(args);
   if (!entry) reject(`subcommand ${JSON.stringify(args.slice(0, 3).join(' '))} is not allowlisted`);
-  const rest = args.slice(entry.words.length);
-  assertFlags(rest, reject);
-  assertConfigInside(rest, plan, reject);
-  assertNamed(entry, rest, op, reject);
-  assertRemote(entry, rest, reject);
-  if (entry.kind === 'secret_put') assertSecretPut(rest, op, reject);
+  const parsed = parseArgs(entry, args.slice(entry.words.length));
+  if (parsed.error) reject(parsed.error);
+  assertPaths(entry, parsed, plan, reject);
+  if (entry.type === 'worker') assertWorker(parsed, op, reject);
+  if (entry.kind === 'secret_put') assertSecretPut(op, reject);
   if (DELETE_KINDS.has(entry.kind)) {
-    const name = resourceName(entry, rest, op);
+    const name = resourceName(entry, parsed, op);
     if (op.confirm_name !== name) reject(`needs confirm_name equal to the resource name (${JSON.stringify(name)})`);
   }
   assertHealth(op, reject);

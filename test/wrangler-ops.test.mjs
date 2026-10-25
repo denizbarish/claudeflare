@@ -21,32 +21,47 @@ function rejects(op, pattern, plan = PLAN) {
   );
 }
 
+function accepts(op, plan = PLAN) {
+  assert.doesNotThrow(() => validateWranglerOp(op, plan), JSON.stringify(op.args));
+}
+
+function tempProject(t) {
+  const root = mkdtempSync(join(tmpdir(), 'claudeflare-wops-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  mkdirSync(project);
+  return { root, project, plan: { ...PLAN, project_dir: project } };
+}
+
 const ACCEPTED = [
   [w(['deploy']), 'worker_deploy', undefined, true],
   [w(['deploy', '--env', 'production'], { worker: 'api' }), 'worker_deploy', { type: 'worker', name: 'api' }, true],
-  [w(['versions', 'deploy', '--name', 'api']), 'worker_versions_deploy', { type: 'worker', name: 'api' }, true],
+  [w(['deploy', 'src/index.ts', '--name', 'api', '--assets', 'public', '--minify', '--var', 'A:1', '--var', 'B:2', '-e', 'prod']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
+  [w(['deploy', '--route', 'example.com/*', '--compatibility-flag', 'nodejs_compat', '--no-bundle']), 'worker_deploy', undefined, true],
+  [w(['versions', 'deploy', 'v1@50', 'v2@50', '--name', 'api']), 'worker_versions_deploy', { type: 'worker', name: 'api' }, true],
   [w(['rollback', 'v-123'], { worker: 'api' }), 'worker_rollback', { type: 'worker', name: 'api' }, true],
-  [w(['pages', 'deploy', 'dist', '--project-name', 'site']), 'pages_deploy', { type: 'pages', name: 'site' }, true],
+  [w(['pages', 'deploy', 'dist', '--project-name', 'site', '--branch', 'main']), 'pages_deploy', { type: 'pages', name: 'site' }, true],
   [w(['d1', 'migrations', 'apply', 'db1', '--remote']), 'd1_migrations_apply', { type: 'd1', name: 'db1' }, true],
-  [w(['d1', 'time-travel', 'restore', 'db1', '--remote', '--bookmark', 'b-1']), 'd1_restore', { type: 'd1', name: 'db1' }, true],
-  [w(['d1', 'create', 'db1']), 'resource_create', { type: 'd1', name: 'db1' }, true],
+  [w(['d1', 'migrations', 'apply', '--remote', 'db1']), 'd1_migrations_apply', { type: 'd1', name: 'db1' }, true],
+  [w(['d1', 'time-travel', 'restore', 'db1', '--bookmark', 'b-1', '--json']), 'd1_restore', { type: 'd1', name: 'db1' }, true],
+  [w(['d1', 'create', 'db1', '--location', 'weur']), 'resource_create', { type: 'd1', name: 'db1' }, true],
   [w(['d1', 'delete', 'db1'], { confirm_name: 'db1' }), 'resource_delete', { type: 'd1', name: 'db1' }, false],
-  [w(['r2', 'bucket', 'create', 'b1']), 'resource_create', { type: 'r2', name: 'b1' }, true],
+  [w(['r2', 'bucket', 'create', 'b1', '-J', 'eu']), 'resource_create', { type: 'r2', name: 'b1' }, true],
   [w(['r2', 'bucket', 'delete', 'b1'], { confirm_name: 'b1' }), 'resource_delete', { type: 'r2', name: 'b1' }, false],
   [w(['kv', 'namespace', 'create', 'cache']), 'resource_create', { type: 'kv', name: 'cache' }, true],
   [w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1'], { confirm_name: 'ns1' }), 'resource_delete', { type: 'kv', name: 'ns1' }, false],
   [w(['queues', 'create', 'q1']), 'resource_create', { type: 'queue', name: 'q1' }, true],
   [w(['queues', 'delete', 'q1'], { confirm_name: 'q1' }), 'resource_delete', { type: 'queue', name: 'q1' }, false],
-  [w(['secret', 'put', 'STRIPE_KEY'], { worker: 'api', value_from_env: 'STRIPE_KEY' }), 'secret_put', { type: 'worker', name: 'api' }, false],
+  [w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { worker: 'api', value_from_env: 'STRIPE_KEY' }), 'secret_put', { type: 'worker', name: 'api' }, false],
   [w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--env=production'], { value_from_env: 'MY_VAR_2' }), 'secret_put', { type: 'worker', name: 'api' }, false],
-  [w(['secret', 'delete', 'OLD_KEY'], { worker: 'api' }), 'secret_delete', { type: 'worker', name: 'api' }, false],
+  [w(['secret', 'delete', 'OLD_KEY', '--name', 'api']), 'secret_delete', { type: 'worker', name: 'api' }, false],
   [w(['delete', '--name', 'api'], { confirm_name: 'api' }), 'worker_delete', { type: 'worker', name: 'api' }, false],
-  [w(['delete'], { worker: 'api', confirm_name: 'api' }), 'worker_delete', { type: 'worker', name: 'api' }, false],
+  [w(['delete', '--name', 'api'], { worker: 'api', confirm_name: 'api' }), 'worker_delete', { type: 'worker', name: 'api' }, false],
 ];
 
 test('every allowlisted subcommand is accepted and classified', () => {
   for (const [op, kind, resource, invertible] of ACCEPTED) {
-    assert.doesNotThrow(() => validateWranglerOp(op, PLAN), JSON.stringify(op.args));
+    accepts(op);
     const got = classifyWranglerOp(op);
     assert.equal(got.kind, kind, JSON.stringify(op.args));
     assert.deepEqual(got.resource, resource, JSON.stringify(op.args));
@@ -55,8 +70,7 @@ test('every allowlisted subcommand is accepted and classified', () => {
 });
 
 test('deploy ops accept a https health check and on_failed_check rollback', () => {
-  const op = w(['deploy'], { worker: 'api', health_check: { url: 'https://api.example.com/health', expect_status: 200 }, on_failed_check: 'rollback' });
-  assert.doesNotThrow(() => validateWranglerOp(op, PLAN));
+  accepts(w(['deploy'], { worker: 'api', health_check: { url: 'https://api.example.com/health', expect_status: 200 }, on_failed_check: 'rollback' }));
 });
 
 test('subcommands outside the allowlist are rejected (exact, case-sensitive, leading words)', () => {
@@ -69,16 +83,64 @@ test('subcommands outside the allowlist are rejected (exact, case-sensitive, lea
   }
 });
 
-test('forbidden flags are rejected anywhere in args', () => {
+test('flags not on the subcommand allowlist are rejected', () => {
   for (const args of [
     ['deploy', '--dry-run'], ['deploy', '--dry-run=true'], ['deploy', '--dryRun'], ['deploy', '--outdir', 'out'],
-    ['deploy', '--outdir=out'], ['deploy', '--x-provision'], ['deploy', '--experimental-x', '--x-auto-create'],
-    ['deploy', '--cwd', '/'], ['deploy', '--env-file', '.env.prod'], ['deploy', '--envFile=.env'],
-    ['rollback', 'v1', '--yes'], ['rollback', 'v1', '-y'], ['rollback', 'v1', '--message', 'm'], ['rollback', 'v1', '--message=m'],
-    ['d1', 'delete', 'db1', '-y'], ['kv', 'namespace', 'delete', '--namespace-id', 'ns1', '-y'], ['deploy', '-yc', 'x'],
+    ['deploy', '--outdir=out'], ['deploy', '--outfile', 'x.js'], ['deploy', '--metafile'], ['deploy', '--secrets-file', 's.json'],
+    ['deploy', '--cwd', '/'], ['deploy', '--env-file', '.env.prod'], ['deploy', '--envFile=.env'], ['deploy', '--profile', 'p'],
+    ['deploy', '--install-skills'], ['deploy', '--zone', 'example.com'], ['deploy', '--bogus'], ['deploy', '--no-minify'],
+    ['deploy', '-yc', 'x'], ['deploy', '-h'], ['deploy', '-v'], ['versions', 'deploy', '--dry-run'],
+    ['d1', 'migrations', 'apply', 'db1', '--remote', '--local'], ['d1', 'migrations', 'apply', 'db1', '--remote', '--no-remote'],
+    ['d1', 'migrations', 'apply', 'db1', '--remote', '--persist-to', 'x'], ['d1', 'migrations', 'apply', 'db1', '--remote', '--preview'],
+    ['d1', 'time-travel', 'restore', 'db1', '--bookmark', 'b', '--remote'], ['d1', 'time-travel', 'restore', 'db1', '--bookmark', 'b', '--timestamp', '1'],
+    ['d1', 'create', 'db1', '--update-config'], ['r2', 'bucket', 'create', 'b1', '--binding', 'B'],
+  ]) {
+    rejects(w(args, { worker: 'api' }), /must not use/);
+  }
+});
+
+test('experimental flags are never allowed', () => {
+  rejects(w(['deploy', '--experimental-x']), /experimental/);
+  rejects(w(['deploy', '--x-provision']), /experimental/);
+  rejects(w(['deploy', '--experimental-route-zones']), /experimental/);
+  rejects(w(['kv', 'namespace', 'create', 'c', '--x-mode', 'instant']), /experimental/);
+  rejects(w(['deploy', '--experimentalFoo']), /experimental/);
+});
+
+test('executor-owned confirmation flags are rejected in drafts', () => {
+  for (const args of [
+    ['rollback', 'v1', '--yes'], ['rollback', 'v1', '-y'], ['rollback', 'v1', '--y'], ['rollback', 'v1', '--message', 'm'],
+    ['rollback', 'v1', '--message=m'], ['rollback', 'v1', '-m', 'm'], ['versions', 'deploy', '--name', 'api', '--yes'],
+    ['d1', 'delete', 'db1', '-y'], ['d1', 'delete', 'db1', '--skip-confirmation'], ['deploy', '--message', 'x'],
+    ['kv', 'namespace', 'delete', '--namespace-id', 'ns1', '-y'], ['kv', 'namespace', 'delete', '--namespace-id', 'ns1', '--skipConfirmation'],
   ]) {
     const name = args.includes('db1') ? 'db1' : args.includes('ns1') ? 'ns1' : undefined;
-    rejects(w(args, { worker: 'api', confirm_name: name }), /must not use|short flag/);
+    rejects(w(args, { worker: 'api', confirm_name: name }), /executor/);
+  }
+});
+
+test('single-letter double-dash flags are read as their short forms', () => {
+  accepts(w(['deploy', '--e', 'production']));
+  accepts(w(['deploy', '--c', 'wrangler.toml']));
+  rejects(w(['deploy', '--c', '../x.toml']), /--config/);
+  rejects(w(['deploy', '--h']), /must not use/);
+});
+
+test('flag values: bools are bare, strings need a value, singles may not repeat', () => {
+  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote=false']), /bare flag/);
+  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', 'false']), /positional/);
+  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', 'true']), /positional/);
+  rejects(w(['deploy', '--name']), /needs a value/);
+  rejects(w(['deploy', '--name=']), /needs a value/);
+  rejects(w(['deploy', '--name', '--minify']), /needs a value/);
+  rejects(w(['deploy', '--name', 'a', '--name', 'b']), /more than once/);
+  rejects(w(['deploy', 'a.js', 'b.js']), /positional/);
+  accepts(w(['deploy', '--var', 'A:1', '--var', 'B:2']));
+});
+
+test('args must be printable ASCII without control characters', () => {
+  for (const bad of ['prod\nuction', 'tab\there', 'nul\u0000', 'del\u007f', 'café', '‮evil']) {
+    rejects(w(['deploy', '--env', bad]), /printable ASCII/);
   }
 });
 
@@ -86,7 +148,7 @@ test('--config / -c must resolve inside project_dir', () => {
   for (const args of [
     ['deploy', '--config', 'wrangler.toml'], ['deploy', '-c', 'sub/wrangler.jsonc'], ['deploy', '--config=./a/../wrangler.toml'],
   ]) {
-    assert.doesNotThrow(() => validateWranglerOp(w(args), PLAN), JSON.stringify(args));
+    accepts(w(args));
   }
   for (const args of [
     ['deploy', '--config', '../other/wrangler.toml'], ['deploy', '-c', '/etc/wrangler.toml'], ['deploy', '--config=..'],
@@ -97,23 +159,32 @@ test('--config / -c must resolve inside project_dir', () => {
   rejects(w(['deploy', '--config', 'wrangler.toml']), /config/, { ...PLAN, project_dir: '.' });
 });
 
-test('--config through a symlink that leaves project_dir is rejected', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'claudeflare-wops-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const project = join(root, 'project');
-  mkdirSync(project);
-  writeFileSync(join(root, 'outside.toml'), 'name = "x"\n');
-  symlinkSync(join(root, 'outside.toml'), join(project, 'link.toml'));
-  writeFileSync(join(project, 'wrangler.toml'), 'name = "x"\n');
-  const plan = { ...PLAN, project_dir: project };
-  rejects(w(['deploy', '--config', 'link.toml']), /config/, plan);
-  assert.doesNotThrow(() => validateWranglerOp(w(['deploy', '--config', 'wrangler.toml']), plan));
+test('path args (script, --assets, --site, --tsconfig, pages directory) must resolve inside project_dir', () => {
+  for (const args of [
+    ['deploy', '../outside/index.js'], ['deploy', '/etc/passwd'], ['deploy', '--assets', '../public'],
+    ['deploy', '--site=/srv/site'], ['deploy', '--tsconfig', '../tsconfig.json'],
+    ['pages', 'deploy', '../outside', '--project-name', 'site'], ['pages', 'deploy', '/tmp/dist', '--project-name', 'site'],
+  ]) {
+    rejects(w(args), /inside project_dir/);
+  }
+  accepts(w(['deploy', 'src/index.ts', '--assets', './public', '--tsconfig', 'tsconfig.json']));
+  accepts(w(['pages', 'deploy', 'dist', '--project-name', 'site']));
+  rejects(w(['pages', 'deploy', 'dist', '--project-name', 'site']), /project_dir/, { ...PLAN, project_dir: 'rel' });
 });
 
-test('args must be printable ASCII without control characters', () => {
-  for (const bad of ['prod\nuction', 'tab\there', 'nul\u0000', 'del\u007f', 'café', '‮evil']) {
-    rejects(w(['deploy', '--env', bad]), /printable ASCII/);
-  }
+test('path args through a symlink that leaves project_dir are rejected', (t) => {
+  const { root, project, plan } = tempProject(t);
+  writeFileSync(join(root, 'outside.toml'), 'name = "x"\n');
+  mkdirSync(join(root, 'outside-dir'));
+  symlinkSync(join(root, 'outside.toml'), join(project, 'link.toml'));
+  symlinkSync(join(root, 'outside-dir'), join(project, 'dist'));
+  writeFileSync(join(project, 'wrangler.toml'), 'name = "x"\n');
+  mkdirSync(join(project, 'public'));
+  rejects(w(['deploy', '--config', 'link.toml']), /inside project_dir/, plan);
+  rejects(w(['pages', 'deploy', 'dist', '--project-name', 'site']), /inside project_dir/, plan);
+  // A path that does not exist yet is checked through its nearest existing ancestor.
+  rejects(w(['deploy', '--assets', 'dist/not-yet/built']), /inside project_dir/, plan);
+  accepts(w(['deploy', '--config', 'wrangler.toml', '--assets', 'public', 'src/missing.ts']), plan);
 });
 
 test('delete ops need confirm_name equal to the resource name', () => {
@@ -123,52 +194,74 @@ test('delete ops need confirm_name equal to the resource name', () => {
   rejects(w(['queues', 'delete', 'q1']), /confirm_name/);
   rejects(w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1'], { confirm_name: 'cache' }), /confirm_name/);
   rejects(w(['delete', '--name', 'api'], { confirm_name: 'web' }), /confirm_name/);
-  rejects(w(['delete'], { worker: 'api' }), /confirm_name/);
+  rejects(w(['delete', '--name', 'api'], { worker: 'api' }), /confirm_name/);
 });
 
 test('ops that name a resource need it in the expected place', () => {
-  rejects(w(['d1', 'delete', '--remote'], { confirm_name: '--remote' }), /name/);
-  rejects(w(['r2', 'bucket', 'create']), /name/);
-  rejects(w(['d1', 'migrations', 'apply', '--remote']), /name/);
-  rejects(w(['kv', 'namespace', 'delete'], { confirm_name: 'x' }), /namespace-id/);
-  rejects(w(['kv', 'namespace', 'delete', '--namespace-id'], { confirm_name: 'x' }), /namespace-id/);
-  rejects(w(['delete'], { confirm_name: 'api' }), /Worker/);
-  rejects(w(['delete', 'api'], { worker: 'api', confirm_name: 'api' }), /--name/);
-  rejects(w(['deploy', '--name', 'api'], { worker: 'web' }), /worker/);
-  rejects(w(['delete', '--name', 'api', '--name', 'web'], { confirm_name: 'api' }), /more than once/);
+  rejects(w(['d1', 'delete'], { confirm_name: 'x' }), /d1 name/);
+  rejects(w(['r2', 'bucket', 'create']), /r2 name/);
+  rejects(w(['d1', 'migrations', 'apply', '--remote']), /d1 name/);
+  rejects(w(['deploy', '--name', 'api'], { worker: 'web' }), /worker does not match/);
 });
 
-test('d1 migrations apply and time-travel restore must be remote; restore needs a bookmark', () => {
+test('kv namespace delete is identified only by --namespace-id', () => {
+  rejects(w(['kv', 'namespace', 'delete'], { confirm_name: 'x' }), /--namespace-id/);
+  rejects(w(['kv', 'namespace', 'delete', '--namespace-id'], { confirm_name: 'x' }), /--namespace-id/);
+  rejects(w(['kv', 'namespace', 'delete', 'cache', '--namespace-id', 'ns1'], { confirm_name: 'ns1' }), /positional/);
+  rejects(w(['kv', 'namespace', 'delete', '--binding', 'CACHE', '--namespace-id', 'ns1'], { confirm_name: 'ns1' }), /--binding/);
+  rejects(w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1', '--preview'], { confirm_name: 'ns1' }), /--preview/);
+});
+
+test('worker delete and secret ops need --name in args matching op.worker', () => {
+  rejects(w(['delete'], { worker: 'api', confirm_name: 'api' }), /--name/);
+  rejects(w(['delete', 'api'], { worker: 'api', confirm_name: 'api' }), /positional/);
+  rejects(w(['delete', '--name', 'api', '--force'], { confirm_name: 'api' }), /--force/);
+  rejects(w(['delete', '--name', 'api', '--name', 'web'], { confirm_name: 'api' }), /more than once/);
+  rejects(w(['delete', '--name', 'api'], { worker: 'web', confirm_name: 'api' }), /worker does not match/);
+  rejects(w(['secret', 'put', 'K'], { worker: 'api', value_from_env: 'K' }), /--name/);
+  rejects(w(['secret', 'put', 'K', '--name', 'api'], { worker: 'web', value_from_env: 'K' }), /worker does not match/);
+  rejects(w(['secret', 'delete', 'K'], { worker: 'api' }), /--name/);
+  rejects(w(['secret', 'delete', 'K', '--name', 'api'], { worker: 'web' }), /worker does not match/);
+});
+
+test('d1 migrations apply requires --remote; time-travel restore requires --bookmark', () => {
   rejects(w(['d1', 'migrations', 'apply', 'db1']), /--remote/);
-  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', '--local']), /--local/);
-  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote=false']), /--remote/);
-  rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', '--no-remote']), /--no-remote/);
-  rejects(w(['d1', 'time-travel', 'restore', 'db1', '--bookmark', 'b']), /--remote/);
-  rejects(w(['d1', 'time-travel', 'restore', 'db1', '--remote']), /--bookmark/);
-  rejects(w(['d1', 'time-travel', 'restore', 'db1', '--remote', '--bookmark']), /--bookmark/);
+  rejects(w(['d1', 'time-travel', 'restore', 'db1']), /--bookmark/);
+  rejects(w(['d1', 'time-travel', 'restore', 'db1', '--bookmark']), /--bookmark/);
+  rejects(w(['d1', 'time-travel', 'restore', 'db1', '--json']), /--bookmark/);
 });
 
 test('secret put needs value_from_env, a worker and no value-looking extra arg', () => {
-  const ok = { worker: 'api', value_from_env: 'STRIPE_KEY' };
-  rejects(w(['secret', 'put', 'STRIPE_KEY'], { worker: 'api' }), /value_from_env/);
+  const ok = { value_from_env: 'STRIPE_KEY' };
+  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api']), /value_from_env/);
   for (const bad of ['stripe_key', '1KEY', 'KEY-1', '', 'A B']) {
-    rejects(w(['secret', 'put', 'STRIPE_KEY'], { worker: 'api', value_from_env: bad }), /value_from_env/);
+    rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { value_from_env: bad }), /value_from_env/);
   }
-  rejects(w(['secret', 'put', 'STRIPE_KEY'], { value_from_env: 'STRIPE_KEY' }), /worker/);
-  rejects(w(['secret', 'put'], ok), /name/);
-  rejects(w(['secret', 'put', 'STRIPE_KEY', 'sk_live_abc123'], ok), /extra argument/);
-  rejects(w(['secret', 'put', 'STRIPE_KEY', '--env', 'production', 'sk_live_abc123'], ok), /extra argument/);
-  rejects(w(['secret', 'put', 'STRIPE_KEY', '--value', 'sk_live_abc123'], ok), /extra argument/);
-  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name'], ok), /extra argument|value/);
+  rejects(w(['secret', 'put', '--name', 'api'], ok), /secret/);
+  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', 'sk_live_abc123'], ok), /positional/);
+  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--env', 'production', 'sk_live_abc123'], ok), /positional/);
+  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--value', 'sk_live_abc123'], ok), /must not use/);
+  rejects(w(['secret', 'put', 'STRIPE_KEY', '--name'], ok), /needs a value/);
 });
 
-test('secret put rejection messages never echo the extra argument', () => {
-  try {
-    validateWranglerOp(w(['secret', 'put', 'STRIPE_KEY', 'sk_live_abc123'], { worker: 'api', value_from_env: 'STRIPE_KEY' }), PLAN);
-    assert.fail('should throw');
-  } catch (err) {
-    assert.equal(err.code, 'invalid_op');
-    assert.doesNotMatch(err.message, /sk_live_abc123/);
+test('value_from_env must not name credential or claudeflare variables', () => {
+  for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH', 'CLAUDEFLARE_WRANGLER', 'ANTHROPIC_API_KEY']) {
+    rejects(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: name }), /value_from_env must not start/);
+  }
+  accepts(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: 'MY_CLOUDFLARE_KEY' }));
+});
+
+test('rejection messages never echo a misplaced secret value', () => {
+  for (const args of [
+    ['secret', 'put', 'STRIPE_KEY', '--name', 'api', 'sk_live_abc123'],
+    ['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--sk_live_abc123'],
+    ['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--value=sk_live_abc123'],
+  ]) {
+    assert.throws(
+      () => validateWranglerOp(w(args, { value_from_env: 'STRIPE_KEY' }), PLAN),
+      (err) => err.code === 'invalid_op' && !/sk_live_abc123/.test(err.message),
+      JSON.stringify(args),
+    );
   }
 });
 
@@ -202,7 +295,7 @@ test('validatePlanOps rejects two ops on one resource when one is a delete', () 
   for (const pair of [
     [w(['d1', 'migrations', 'apply', 'db1', '--remote']), w(['d1', 'delete', 'db1'], { confirm_name: 'db1' })],
     [w(['r2', 'bucket', 'create', 'b1']), w(['r2', 'bucket', 'delete', 'b1'], { confirm_name: 'b1' })],
-    [w(['secret', 'put', 'K'], { worker: 'api', value_from_env: 'K' }), w(['delete'], { worker: 'api', confirm_name: 'api' })],
+    [w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: 'K' }), w(['delete', '--name', 'api'], { confirm_name: 'api' })],
     [w(['queues', 'delete', 'q1'], { confirm_name: 'q1' }), w(['queues', 'delete', 'q1'], { confirm_name: 'q1' })],
   ]) {
     assert.throws(() => validatePlanOps(pair), (err) => err.code === 'plan_conflict', JSON.stringify(pair));
@@ -211,20 +304,23 @@ test('validatePlanOps rejects two ops on one resource when one is a delete', () 
     validatePlanOps([
       w(['d1', 'create', 'db1']),
       w(['d1', 'migrations', 'apply', 'db1', '--remote']),
-      w(['secret', 'delete', 'OLD'], { worker: 'api' }),
-      w(['secret', 'put', 'NEW'], { worker: 'api', value_from_env: 'NEW' }),
+      w(['secret', 'delete', 'OLD', '--name', 'api']),
+      w(['secret', 'put', 'NEW', '--name', 'api'], { value_from_env: 'NEW' }),
       w(['d1', 'delete', 'db2'], { confirm_name: 'db2' }),
     ]),
   );
 });
 
-test('withIrreversibleRisk names non-invertible wrangler ops', () => {
+test('withIrreversibleRisk names non-invertible wrangler ops and data loss for KV, Queue and D1 deletes', () => {
   const ops = [
     w(['deploy'], { worker: 'api' }),
     w(['d1', 'create', 'db1']),
     w(['r2', 'bucket', 'delete', 'b1'], { confirm_name: 'b1' }),
-    w(['secret', 'put', 'STRIPE_KEY'], { worker: 'api', value_from_env: 'STRIPE_KEY' }),
-    w(['secret', 'delete', 'OLD'], { worker: 'api' }),
+    w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1'], { confirm_name: 'ns1' }),
+    w(['queues', 'delete', 'q1'], { confirm_name: 'q1' }),
+    w(['d1', 'delete', 'db2'], { confirm_name: 'db2' }),
+    w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { value_from_env: 'STRIPE_KEY' }),
+    w(['secret', 'delete', 'OLD', '--name', 'api']),
     w(['delete', '--name', 'api'], { confirm_name: 'api' }),
   ];
   assert.equal(
@@ -232,8 +328,14 @@ test('withIrreversibleRisk names non-invertible wrangler ops', () => {
     [
       'Deploys api.',
       'Not reversible: wrangler r2 bucket delete b1',
-      'Not reversible: wrangler secret put STRIPE_KEY',
-      'Not reversible: wrangler secret delete OLD',
+      'Not reversible: wrangler kv namespace delete --namespace-id ns1',
+      'Data loss: kv ns1 and all its contents are deleted permanently.',
+      'Not reversible: wrangler queues delete q1',
+      'Data loss: queue q1 and all its contents are deleted permanently.',
+      'Not reversible: wrangler d1 delete db2',
+      'Data loss: d1 db2 and all its contents are deleted permanently.',
+      'Not reversible: wrangler secret put STRIPE_KEY --name api',
+      'Not reversible: wrangler secret delete OLD --name api',
       'Not reversible: wrangler delete --name api',
     ].join('\n'),
   );
