@@ -89,7 +89,7 @@ function assertDomainSkill(folder, findingIds, sections = DOMAIN_SECTIONS) {
 }
 
 const ZONE_CORE_FINDINGS = {
-  'cf-dns': ['dns.proxy.origin_exposed', 'dns.dnssec.off', 'dns.caa.missing', 'dns.records.dangling', 'dns.mx.proxied'],
+  'cf-dns': ['dns.proxy.origin_exposed', 'dns.dnssec.off', 'dns.caa.missing', 'dns.records.dangling', 'dns.mx.proxied', 'dns.proxy.non_http_service'],
   'cf-ssl': [
     'ssl.mode.flexible', 'ssl.mode.full_not_strict', 'ssl.always_https.off', 'ssl.min_tls.below_1_2',
     'ssl.hsts.off', 'ssl.tls13.off', 'ssl.auto_rewrites.off',

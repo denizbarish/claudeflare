@@ -9,6 +9,7 @@ import { keyDir } from '../scripts/lib/approval-key.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
 import { inspectCode } from './lib/inspect-code.mjs';
 import { isAllowedCall } from './lib/allowed-call.mjs';
+import { trimPeriod } from './lib/plan-text.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -135,7 +136,7 @@ function decideApply(cwd, planId) {
     const result = checkApproval(cwd, planId);
     if (!result.ok) return deny(`Plan ${planId} is not approved (${result.reason}). ${askUser}`);
     const plan = readPlan(cwd, planId);
-    return ask(`Apply plan ${planId}: ${plan.summary}. Risk: ${plan.risk}. Ops: ${describeOps(plan.ops)}`);
+    return ask(`Apply plan ${planId}: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(plan.risk)}. Ops: ${describeOps(plan.ops)}`);
   } catch (err) {
     return deny(`Plan ${planId} could not be verified (${err?.message ?? err}). ${askUser}`);
   }

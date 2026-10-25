@@ -41,6 +41,7 @@ Live checks (read-only): `curl -sI https://<record name>/` for a proxied host (a
 | `dns.caa.missing` | No CAA record at the zone apex. | low | CAA `issue` records for every CA the user needs (for example the CA of the origin certificate) | free |
 | `dns.records.dangling` | A CNAME points at a target that no longer resolves: DNS-only target fails with curl exit code 6, or the proxied host answers HTTP 530 (Cloudflare error 1016, origin DNS error, in the body). Typical for deleted cloud or SaaS resources; this is a subdomain takeover risk. | high | Delete the record, or point it at a live target | free |
 | `dns.mx.proxied` | MX records cannot be proxied, but the A, AAAA or CNAME record of an MX target host inside this zone is proxied. Cloudflare proxies only HTTP and HTTPS, so mail to that host fails. | critical | Target host record `proxied: false` | free |
+| `dns.proxy.non_http_service` | A proxied A, AAAA or CNAME record whose name indicates a non-HTTP service (`ftp`, `sftp`, `ssh`, `smtp`, `imap`, `pop`, `pop3`), or which the user confirms serves non-HTTP traffic. The proxy only passes HTTP and HTTPS on Cloudflare's supported ports (HTTP 80, 8080, 8880, 2052, 2082, 2086, 2095; HTTPS 443, 2053, 2083, 2087, 2096, 8443), so FTP, SSH and mail protocols to that name fail. Panel hosts on supported ports (for example cPanel 2083, WHM 2087, webmail 2096) work proxied and are not this finding. | high | `proxied: false`, preferably on a host whose IP differs from the web origin | free |
 
 Notes for findings:
 
@@ -102,6 +103,7 @@ Plan limits: one plan may not touch the same DNS record twice. Several different
 ## Sources
 
 - https://developers.cloudflare.com/dns/proxy-status/
+- https://developers.cloudflare.com/fundamentals/reference/network-ports/
 - https://developers.cloudflare.com/dns/manage-dns-records/troubleshooting/exposed-ip-address/
 - https://developers.cloudflare.com/dns/dnssec/
 - https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/

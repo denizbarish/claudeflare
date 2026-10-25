@@ -98,6 +98,27 @@ test('approve writes approval for exact /claudeflare:approve <id>', (t) => {
   assert.equal(out.systemMessage, hso.additionalContext);
 });
 
+test('approve and guard messages do not double the period after summary and risk', (t) => {
+  const ctx = setup(t, { plan: false });
+  createPlan(
+    ctx.cwd,
+    {
+      zone_id: ZID,
+      zone_name: 'example.com',
+      summary: 'Set SSL mode to Full (strict).',
+      risk: 'None, reversible.',
+      ops: [{ method: 'PATCH', path: '/zones/{zone_id}/settings/ssl', body: { value: 'strict' } }],
+      slug: 'ssl-strict',
+    },
+    T0,
+  );
+  const approved = runHook(APPROVE, ctx, fixture('approve-exact')).systemMessage;
+  assert.ok(!approved.includes('..'), approved);
+  assert.ok(approved.includes('Approved: Set SSL mode to Full (strict). Risk: None, reversible. 1 op'), approved);
+  const reason = guard(ctx, bash(`claudeflare apply ${PLAN_ID}`)).permissionDecisionReason;
+  assert.ok(!reason.includes('..'), reason);
+});
+
 test('approve ignores "please /claudeflare:approve x" mid-sentence', (t) => {
   const ctx = setup(t);
   assert.equal(runHook(APPROVE, ctx, fixture('approve-mid-sentence')), null);

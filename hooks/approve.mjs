@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
+import { trimPeriod } from './lib/plan-text.mjs';
 
 const APPROVE_PATTERN = /^\s*\/claudeflare:approve\s+([a-z0-9-]+)\s*$/;
 const HASH_PREVIEW_LENGTH = 12;
@@ -38,7 +39,7 @@ function approve(cwd, planId, sessionId) {
   const hashPreview = String(approval.ops_hash).replace(/^sha256:/, '').slice(0, HASH_PREVIEW_LENGTH);
   return (
     `Approval recorded for ${planId}. Run claudeflare apply ${planId}. ` +
-    `Approved: ${plan.summary}. Risk: ${plan.risk}. ${opCount} op${opCount === 1 ? '' : 's'}, ops hash ${hashPreview}.`
+    `Approved: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(plan.risk)}. ${opCount} op${opCount === 1 ? '' : 's'}, ops hash ${hashPreview}.`
   );
 }
 

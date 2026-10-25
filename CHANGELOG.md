@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-10-25
 
 ### Added
 
@@ -22,5 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Audit reports with severity-weighted domain scores; `claudeflare report` prints `{ file, overall, domains }`.
 - Auditors return `{ findings, unread }`; a domain with unread checks is re-run once, then marked not audited and left out of the scores.
 - `claudeflare plan new` rejects ops outside the plan's zone (including account-level writes), Page Rule creation, leftover placeholders and non-standard methods with `invalid_op`; apply re-checks the same rules.
+- `cf-dns` check `dns.proxy.non_http_service` for proxied FTP, SSH and mail hosts (found in a live test).
+- Verified end to end against the live Cloudflare API: audit, plan, approval, apply, snapshot and rollback.
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
+
+[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/denizbarish/claudeflare/releases/tag/v0.1.0
