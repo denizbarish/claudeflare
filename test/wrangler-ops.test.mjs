@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyWranglerOp, validateWranglerOp } from '../scripts/lib/wrangler-ops.mjs';
+import { assertWranglerOpPaths, classifyWranglerOp, validateWranglerOp } from '../scripts/lib/wrangler-ops.mjs';
 import { validateOpTargets, validatePlanOps } from '../scripts/lib/resources.mjs';
 import { withIrreversibleRisk } from '../scripts/lib/apply.mjs';
 
@@ -53,7 +53,7 @@ const ACCEPTED = [
   [w(['queues', 'create', 'q1']), 'resource_create', { type: 'queue', name: 'q1' }, true],
   [w(['queues', 'delete', 'q1'], { confirm_name: 'q1' }), 'resource_delete', { type: 'queue', name: 'q1' }, false],
   [w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { worker: 'api', value_from_env: 'STRIPE_KEY' }), 'secret_put', { type: 'worker', name: 'api' }, false],
-  [w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--env=production'], { value_from_env: 'MY_VAR_2' }), 'secret_put', { type: 'worker', name: 'api' }, false],
+  [w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', '--env=production'], { value_from_env: 'STRIPE_KEY' }), 'secret_put', { type: 'worker', name: 'api' }, false],
   [w(['secret', 'delete', 'OLD_KEY', '--name', 'api']), 'secret_delete', { type: 'worker', name: 'api' }, false],
   [w(['delete', '--name', 'api'], { confirm_name: 'api' }), 'worker_delete', { type: 'worker', name: 'api' }, false],
   [w(['delete', '--name', 'api'], { worker: 'api', confirm_name: 'api' }), 'worker_delete', { type: 'worker', name: 'api' }, false],
@@ -138,6 +138,30 @@ test('flag values: bools are bare, strings need a value, singles may not repeat'
   accepts(w(['deploy', '--var', 'A:1', '--var', 'B:2']));
 });
 
+test('a positional right after a list flag value is rejected', () => {
+  rejects(w(['deploy', '--var', 'A:1', 'B:2']), /positional after a list flag/);
+  rejects(w(['deploy', '--var=A:1', 'src/index.ts']), /positional after a list flag/);
+  rejects(w(['versions', 'deploy', '--version-id', 'v1', 'v2@50', '--name', 'api']), /positional after a list flag/);
+  accepts(w(['deploy', 'src/index.ts', '--var', 'A:1', '--minify']));
+  accepts(w(['deploy', '--var', 'A:1', '--name', 'api', 'src/index.ts']));
+});
+
+test('flag names must be lowercase (camelCase normalizes, uppercase is rejected)', () => {
+  for (const flag of ['--Name', '--NAME', '--name-X', '--nAME']) {
+    rejects(w(['deploy', flag, 'api']), /lowercase flag names/);
+  }
+  accepts(w(['deploy', '--keepVars']));
+  accepts(w(['r2', 'bucket', 'create', 'b1', '-J', 'eu']));
+});
+
+test('--alias is not allowed and --define needs KEY:VALUE with an identifier key', () => {
+  rejects(w(['deploy', '--alias', 'node:fs:/etc/passwd']), /must not use --alias/);
+  accepts(w(['deploy', '--define', 'DEBUG:false', '--define', 'process.env.MODE:"prod"', '--define', '$x:1']));
+  for (const bad of ['DEBUG', ':x', '1A:x', 'a/b:x', 'a-b:x', '../x:y']) {
+    rejects(w(['deploy', '--define', bad]), /--define values/);
+  }
+});
+
 test('args must be printable ASCII without control characters', () => {
   for (const bad of ['prod\nuction', 'tab\there', 'nul\u0000', 'del\u007f', 'café', '‮evil']) {
     rejects(w(['deploy', '--env', bad]), /printable ASCII/);
@@ -187,6 +211,45 @@ test('path args through a symlink that leaves project_dir are rejected', (t) => 
   accepts(w(['deploy', '--config', 'wrangler.toml', '--assets', 'public', 'src/missing.ts']), plan);
 });
 
+test('symlinks are followed component by component, including dangling links and chains', (t) => {
+  const { root, project, plan } = tempProject(t);
+  mkdirSync(join(root, 'outside'));
+  mkdirSync(join(project, 'build'));
+  // Dangling link pointing outside: the target does not exist yet.
+  symlinkSync(join(root, 'not-there'), join(project, 'dangling-out'));
+  // Dangling link pointing inside: still rejected, it cannot be resolved.
+  symlinkSync(join(project, 'not-built'), join(project, 'dangling-in'));
+  // Chain: a -> b -> outside.
+  symlinkSync(join(root, 'outside'), join(project, 'b'));
+  symlinkSync('b', join(project, 'a'));
+  // Chain that stays inside: c -> d -> build.
+  symlinkSync('build', join(project, 'd'));
+  symlinkSync('d', join(project, 'c'));
+  // Loop.
+  symlinkSync('loop2', join(project, 'loop1'));
+  symlinkSync('loop1', join(project, 'loop2'));
+  rejects(w(['deploy', '--assets', 'dangling-out']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--assets', 'dangling-out/sub']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--assets', 'dangling-in']), /cannot be resolved/, plan);
+  rejects(w(['pages', 'deploy', 'a', '--project-name', 'site']), /inside project_dir/, plan);
+  rejects(w(['deploy', 'a/x/index.js']), /inside project_dir/, plan);
+  rejects(w(['deploy', '--assets', 'loop1']), /cannot be resolved/, plan);
+  accepts(w(['pages', 'deploy', 'c', '--project-name', 'site']), plan);
+  accepts(w(['deploy', 'c/missing/index.js']), plan);
+});
+
+test('assertWranglerOpPaths re-runs path containment on its own', (t) => {
+  const { root, project, plan } = tempProject(t);
+  const op = w(['pages', 'deploy', 'dist', '--project-name', 'site']);
+  mkdirSync(join(project, 'dist'));
+  assert.doesNotThrow(() => assertWranglerOpPaths(op, plan));
+  rmSync(join(project, 'dist'), { recursive: true });
+  mkdirSync(join(root, 'elsewhere'));
+  symlinkSync(join(root, 'elsewhere'), join(project, 'dist'));
+  assert.throws(() => assertWranglerOpPaths(op, plan), (err) => err.code === 'invalid_op' && /inside project_dir/.test(err.message));
+  assert.throws(() => assertWranglerOpPaths(w(['publish']), plan), (err) => err.code === 'invalid_op');
+});
+
 test('delete ops need confirm_name equal to the resource name', () => {
   rejects(w(['d1', 'delete', 'db1']), /confirm_name/);
   rejects(w(['d1', 'delete', 'db1'], { confirm_name: 'db2' }), /confirm_name/);
@@ -234,8 +297,11 @@ test('d1 migrations apply requires --remote; time-travel restore requires --book
 test('secret put needs value_from_env, a worker and no value-looking extra arg', () => {
   const ok = { value_from_env: 'STRIPE_KEY' };
   rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api']), /value_from_env/);
-  for (const bad of ['stripe_key', '1KEY', 'KEY-1', '', 'A B']) {
-    rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { value_from_env: bad }), /value_from_env/);
+  for (const bad of ['stripe_key', '1KEY', 'KEY-1', '', 'A B', 'OTHER_KEY']) {
+    rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { value_from_env: bad }), /value_from_env equal to the secret name/);
+  }
+  for (const name of ['stripe_key', '1KEY', 'KEY-1']) {
+    rejects(w(['secret', 'put', name, '--name', 'api'], { value_from_env: name }), /secret name matching/);
   }
   rejects(w(['secret', 'put', '--name', 'api'], ok), /secret/);
   rejects(w(['secret', 'put', 'STRIPE_KEY', '--name', 'api', 'sk_live_abc123'], ok), /positional/);
@@ -244,11 +310,12 @@ test('secret put needs value_from_env, a worker and no value-looking extra arg',
   rejects(w(['secret', 'put', 'STRIPE_KEY', '--name'], ok), /needs a value/);
 });
 
-test('value_from_env must not name credential or claudeflare variables', () => {
+test('secret names (and so value_from_env) must not name credential or claudeflare variables', () => {
   for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH', 'CLAUDEFLARE_WRANGLER', 'ANTHROPIC_API_KEY']) {
-    rejects(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: name }), /value_from_env must not start/);
+    rejects(w(['secret', 'put', name, '--name', 'api'], { value_from_env: name }), /must not start/);
+    rejects(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: name }), /equal to the secret name/);
   }
-  accepts(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: 'MY_CLOUDFLARE_KEY' }));
+  accepts(w(['secret', 'put', 'MY_CLOUDFLARE_KEY', '--name', 'api'], { value_from_env: 'MY_CLOUDFLARE_KEY' }));
 });
 
 test('rejection messages never echo a misplaced secret value', () => {

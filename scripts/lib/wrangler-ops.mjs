@@ -6,8 +6,8 @@
 // Each subcommand has a positive allowlist of flags and positionals, taken from
 // `wrangler <subcommand> --help` (wrangler 4.152). Anything else is rejected.
 
-import { existsSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstatSync, readlinkSync } from 'node:fs';
+import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { CfError } from './errors.mjs';
 
 // Flag value types: 'bool' (bare flag only), 'string', 'list' (string, may
@@ -30,7 +30,7 @@ const ALLOWLIST = [
     flags: {
       '--name': 'string', '--tag': 'string', '--no-bundle': 'bool', '--compatibility-date': 'string',
       '--compatibility-flags': 'list', '--latest': 'bool', '--assets': 'path', '--site': 'path', '--var': 'list',
-      '--define': 'list', '--alias': 'list', '--jsx-factory': 'string', '--jsx-fragment': 'string',
+      '--define': 'list', '--jsx-factory': 'string', '--jsx-fragment': 'string',
       '--tsconfig': 'path', '--minify': 'bool', '--upload-source-maps': 'bool', '--keep-vars': 'bool',
       '--strict': 'bool', '--triggers': 'list', '--routes': 'list', '--domains': 'list', '--logpush': 'bool',
       '--old-asset-ttl': 'string', '--dispatch-namespace': 'string', '--containers-rollout': 'string', ...DO_MODE,
@@ -182,6 +182,9 @@ const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_ENV_PREFIXES = ['CLOUDFLARE_', 'WRANGLER_', 'CLAUDEFLARE_', 'ANTHROPIC_'];
 const PRINTABLE = /^[\x20-\x7e]*$/;
 const FLAG_LIKE = /^--?[a-z][a-z0-9-]*$/i;
+// --define KEY:VALUE, KEY a JS identifier path (no module or path mapping).
+const DEFINE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$.]*:/;
+const MAX_LINK_HOPS = 40;
 
 function matchEntry(args) {
   let best = null;
@@ -194,10 +197,13 @@ function matchEntry(args) {
 }
 
 // yargs reads `--c` as `-c` and camelCase as kebab (--dryRun == --dry-run).
+// Long flags are never lowercased: anything still uppercase after the
+// camelCase step (--Name, --NAME) returns null and is rejected.
 function normalizeFlag(raw) {
   if (/^--[A-Za-z]$/.test(raw)) return `-${raw.slice(2)}`;
   if (!raw.startsWith('--')) return raw;
-  return raw.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  const kebab = raw.replace(/([a-z0-9])([A-Z])/g, (_, a, b) => `${a}-${b.toLowerCase()}`);
+  return /[A-Z]/.test(kebab) ? null : kebab;
 }
 
 function canonicalFlag(entry, name) {
@@ -218,15 +224,25 @@ function parseArgs(entry, rest) {
   const fail = (why) => {
     if (!error) error = why;
   };
+  // yargs keeps appending bare tokens to an array flag, so a positional right
+  // after a list value would be read differently by wrangler than here.
+  let afterList = false;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (!arg.startsWith('-') || arg === '-') {
+      if (afterList) fail('has a positional after a list flag; put positionals first');
       positionals.push(arg);
       continue;
     }
+    afterList = false;
     const eq = arg.indexOf('=');
     const raw = eq === -1 ? arg : arg.slice(0, eq);
-    const name = canonicalFlag(entry, normalizeFlag(raw));
+    const normalized = normalizeFlag(raw);
+    if (normalized === null) {
+      fail('must use lowercase flag names');
+      continue;
+    }
+    const name = canonicalFlag(entry, normalized);
     const shown = FLAG_LIKE.test(name) ? name : 'an unrecognized flag';
     const type = flagType(entry, name);
     if (EXECUTOR_FLAGS.has(name)) {
@@ -253,6 +269,10 @@ function parseArgs(entry, rest) {
     }
     if (type !== 'bool' && value === '') fail(`${name} needs a value`);
     if (flags.has(name) && type !== 'list') fail(`must not pass ${name} more than once`);
+    if (name === '--define' && value !== '' && !DEFINE_VALUE.test(value)) {
+      fail('--define values must be KEY:VALUE with KEY matching ^[A-Za-z_$][A-Za-z0-9_$.]*$');
+    }
+    afterList = type === 'list';
     flags.set(name, [...(flags.get(name) ?? []), value]);
   }
   const specs = entry.positionals;
@@ -304,25 +324,54 @@ function isInside(dir, target) {
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-function nearestExisting(path) {
-  let current = path;
-  while (!existsSync(current)) {
-    const parent = dirname(current);
-    if (parent === current) return current;
-    current = parent;
+// Resolves an absolute path component by component, following every symlink
+// (lstat, so dangling links are seen) through readlink. Missing trailing
+// components are kept lexically. Returns null when a link is dangling or
+// loops.
+function resolveLinks(path, state = { hops: 0 }) {
+  const { root } = parse(path);
+  const queue = path.slice(root.length).split(sep).filter(Boolean);
+  let current = root;
+  while (queue.length) {
+    const next = join(current, queue.shift());
+    let stat;
+    try {
+      stat = lstatSync(next);
+    } catch {
+      return join(next, ...queue);
+    }
+    if (!stat.isSymbolicLink()) {
+      current = next;
+      continue;
+    }
+    if (++state.hops > MAX_LINK_HOPS) return null;
+    const target = resolveLinks(resolve(current, readlinkSync(next)), state);
+    if (target === null || !exists(target)) return null;
+    current = target;
   }
   return current;
 }
 
-// Lexically inside, and the nearest existing ancestor (the path itself when
-// it exists) is inside after following symlinks.
+function exists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Lexically inside project_dir, and still inside once every symlink on the
+// way has been followed.
 function assertInsideProject(plan, what, value, reject) {
   const dir = plan?.project_dir;
   if (typeof dir !== 'string' || !isAbsolute(dir)) reject(`${what} needs an absolute project_dir to resolve against`);
   const target = resolve(dir, value);
   if (!isInside(dir, target)) reject(`${what} must point inside project_dir`);
-  if (!existsSync(dir)) return;
-  if (!isInside(realpathSync(dir), realpathSync(nearestExisting(target)))) reject(`${what} must point inside project_dir`);
+  const realDir = resolveLinks(resolve(dir));
+  const real = resolveLinks(target);
+  if (realDir === null || real === null) reject(`${what} goes through a symlink that cannot be resolved`);
+  if (!isInside(realDir, real)) reject(`${what} must point inside project_dir`);
 }
 
 function assertPaths(entry, parsed, plan, reject) {
@@ -336,6 +385,18 @@ function assertPaths(entry, parsed, plan, reject) {
   });
 }
 
+// Re-runnable path containment check (the executor repeats it right before
+// spawning wrangler, since the file system can change after plan creation).
+export function assertWranglerOpPaths(op, plan) {
+  const reject = (why) => {
+    throw new CfError('invalid_op', `Wrangler op ${why}`);
+  };
+  const args = Array.isArray(op?.args) ? op.args : [];
+  const entry = matchEntry(args);
+  if (!entry) reject(`subcommand ${JSON.stringify(args.slice(0, 3).join(' '))} is not allowlisted`);
+  assertPaths(entry, parseArgs(entry, args.slice(entry.words.length)), plan, reject);
+}
+
 function assertWorker(parsed, op, reject) {
   if (op.worker !== undefined && (typeof op.worker !== 'string' || op.worker === '' || !PRINTABLE.test(op.worker))) {
     reject('worker must be a non-empty printable ASCII string');
@@ -344,13 +405,14 @@ function assertWorker(parsed, op, reject) {
   if (flag !== undefined && op.worker !== undefined && flag !== op.worker) reject('worker does not match --name');
 }
 
-function assertSecretPut(op, reject) {
-  const name = op.value_from_env;
-  if (typeof name !== 'string' || !ENV_NAME.test(name)) {
-    reject('needs value_from_env naming an environment variable (^[A-Z_][A-Z0-9_]*$)');
-  }
+// The value comes from the environment variable named like the secret, so a
+// plan cannot copy an unrelated variable (a credential) into a Worker.
+function assertSecretPut(parsed, op, reject) {
+  const name = parsed.positionals[0];
+  if (op.value_from_env !== name) reject('needs value_from_env equal to the secret name');
+  if (!ENV_NAME.test(name)) reject('needs a secret name matching ^[A-Z_][A-Z0-9_]*$ (it is also the value_from_env name)');
   if (RESERVED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-    reject(`value_from_env must not start with ${RESERVED_ENV_PREFIXES.join(', ')}`);
+    reject(`secret name and value_from_env must not start with ${RESERVED_ENV_PREFIXES.join(', ')}`);
   }
 }
 
@@ -382,7 +444,7 @@ export function validateWranglerOp(op, plan, index) {
   if (parsed.error) reject(parsed.error);
   assertPaths(entry, parsed, plan, reject);
   if (entry.type === 'worker') assertWorker(parsed, op, reject);
-  if (entry.kind === 'secret_put') assertSecretPut(op, reject);
+  if (entry.kind === 'secret_put') assertSecretPut(parsed, op, reject);
   if (DELETE_KINDS.has(entry.kind)) {
     const name = resourceName(entry, parsed, op);
     if (op.confirm_name !== name) reject(`needs confirm_name equal to the resource name (${JSON.stringify(name)})`);
