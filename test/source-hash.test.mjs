@@ -229,3 +229,132 @@ test('git: symlink is hashed by its target string', (t) => {
   symlinkSync(join(outside, 'b.txt'), join(dir, 'link'));
   assert.notEqual(computeSourceHash(dir), base);
 });
+
+// Fix round 1
+
+function commitAll(dir) {
+  git(dir, 'add', '-A');
+  git(dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'init');
+}
+
+test('empty project -> empty_project', () => {
+  const dir = join(root, 'empty');
+  mkdirSync(dir);
+  write(dir, 'node_modules/x.js', 'x');
+  assert.throws(() => computeSourceHash(dir), { code: 'empty_project' });
+});
+
+test('git: project ignored by enclosing repo (*) is walked, changes count', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  write(repo, '.gitignore', '*\n');
+  git(repo, 'init', '-q');
+  const sub = makeTree(join(repo, 'proj'));
+  const base = computeSourceHash(sub);
+  assert.equal(base, computeSourceHash(makeTree(join(root, 'plain'))));
+  write(sub, 'src/index.js', 'changed');
+  assert.notEqual(computeSourceHash(sub), base);
+});
+
+test('git: project under an ignored sandbox/ dir is walked', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  write(repo, '.gitignore', 'sandbox/\n');
+  write(repo, 'README.md', 'top');
+  git(repo, 'init', '-q');
+  git(repo, 'add', '-A');
+  const sub = makeTree(join(repo, 'sandbox/app'));
+  const base = computeSourceHash(sub);
+  write(sub, 'wrangler.jsonc', '{ "name": "other" }');
+  assert.notEqual(computeSourceHash(sub), base);
+});
+
+test('git: untracked nested repo files are hashed', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const dir = gitTree(join(root, 'g'));
+  const nested = join(dir, 'nested');
+  write(nested, 'a.js', 'one');
+  git(nested, 'init', '-q');
+  const base = computeSourceHash(dir);
+  write(nested, 'a.js', 'two');
+  const changed = computeSourceHash(dir);
+  assert.notEqual(changed, base);
+  write(nested, 'b.js', 'new');
+  assert.notEqual(computeSourceHash(dir), changed);
+});
+
+test('git: submodule (gitlink) file changes change the hash', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const dir = gitTree(join(root, 'g'));
+  const sub = join(dir, 'sub');
+  write(sub, 'lib.js', 'one');
+  git(sub, 'init', '-q');
+  commitAll(sub);
+  git(dir, 'add', 'sub');
+  const base = computeSourceHash(dir);
+  write(sub, 'lib.js', 'two');
+  assert.notEqual(computeSourceHash(dir), base);
+});
+
+test('extraPaths: gitignored dist/ is hashed when passed', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const dir = gitTree(join(root, 'g'));
+  write(dir, '.gitignore', 'dist/\n');
+  write(dir, 'dist/out.js', 'one');
+  const plain = computeSourceHash(dir);
+  const base = computeSourceHash(dir, { extraPaths: ['dist'] });
+  assert.notEqual(base, plain);
+  write(dir, 'dist/out.js', 'two');
+  assert.equal(computeSourceHash(dir), plain);
+  assert.notEqual(computeSourceHash(dir, { extraPaths: ['dist'] }), base);
+  assert.equal(
+    computeSourceHash(dir, { extraPaths: ['dist', './dist/out.js', 'src/index.js'] }),
+    computeSourceHash(dir, { extraPaths: ['dist'] }),
+    'extra paths are deduplicated with listed files',
+  );
+});
+
+test('extraPaths: outside projectDir -> invalid_input', () => {
+  const dir = makeTree(join(root, 'p'));
+  for (const p of ['../x', join(root, 'other'), 'src/../../x']) {
+    assert.throws(() => computeSourceHash(dir, { extraPaths: [p] }), { code: 'invalid_input' });
+  }
+});
+
+test('extraPaths: symlinked extra path or ancestor is hashed by target, not followed', (t) => {
+  const dir = makeTree(join(root, 'p'));
+  const outside = join(root, 'outside');
+  write(outside, 'a.js', 'one');
+  try {
+    symlinkSync(outside, join(dir, 'out'));
+  } catch (err) {
+    t.skip(`symlinks unavailable: ${err.code}`);
+    return;
+  }
+  const base = computeSourceHash(dir, { extraPaths: ['out', 'out/a.js'] });
+  write(outside, 'a.js', 'two');
+  assert.equal(computeSourceHash(dir, { extraPaths: ['out', 'out/a.js'] }), base);
+});
+
+test('secret files are never hashed, in any mode or extra path', (t) => {
+  const dir = makeTree(join(root, 'p'));
+  const base = computeSourceHash(dir);
+  const secrets = ['.dev.vars', '.dev.vars.production', '.env', '.env.local', 'src/.env'];
+  for (const s of secrets) write(dir, s, 'SECRET=1');
+  assert.equal(computeSourceHash(dir), base);
+  assert.equal(computeSourceHash(dir, { extraPaths: ['.env', 'src'] }), base);
+  write(dir, 'src/.env', 'SECRET=2');
+  assert.equal(computeSourceHash(dir), base);
+  if (!GIT) return t.skip('git not available');
+  git(dir, 'init', '-q');
+  git(dir, 'add', '-A');
+  assert.equal(computeSourceHash(dir), base);
+});
+
+test('git: ENOBUFS from ls-files -> project_too_large', (t) => {
+  if (!GIT) return t.skip('git not available');
+  const dir = gitTree(join(root, 'g'));
+  assert.throws(() => computeSourceHash(dir, { gitMaxBuffer: 4 }), { code: 'project_too_large' });
+});

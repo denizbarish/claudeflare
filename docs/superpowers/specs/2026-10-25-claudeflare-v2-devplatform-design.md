@@ -85,6 +85,7 @@ Everything else on accounts stays rejected (`invalid_op`), as in v1.
 
 Bundle determinism is undocumented, so the approval binds to the **source**, not the bundle:
 - `source_hash` = SHA-256 over the sorted list of `<relative path>\0<sha256 of content>` for every file `git ls-files` reports in `project_dir` plus untracked non-ignored files, excluding `.claudeflare/`, `node_modules/` and `.wrangler/`. If `project_dir` is not a git work tree: all files under it with the same exclusions, max 20k files (else `project_too_large`).
+- Deploy inputs (pages directory, assets directory, main, config) are passed as `extraPaths` (relative, inside `project_dir`, else `invalid_input`) and hashed even when gitignored; secret files (basename `.dev.vars`, `.dev.vars.*`, `.env`, `.env.*`) are never hashed in any mode; an empty file list is `empty_project`.
 - Stored in the plan for `deploy`, `versions deploy`, `pages deploy` and `d1 migrations apply` ops; part of the ops hash.
 - `apply` recomputes it before running wrangler; mismatch: `source_changed`, nothing runs, approval kept.
 - `claudeflare preflight` still runs `wrangler deploy --dry-run --outdir <tmp>` to catch build errors and record the upload size; the size is informational.
