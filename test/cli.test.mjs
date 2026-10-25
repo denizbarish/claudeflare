@@ -365,7 +365,7 @@ test('cli plan new accepts account plans with wrangler ops and the Pages rollbac
     summary: 's',
     risk: 'r',
     slug: 'deploy',
-    ops: [{ kind: 'wrangler', args: ['deploy'] }, rollback],
+    ops: [{ kind: 'wrangler', args: ['deploy', '--name', 'api'] }, rollback],
   };
   writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
   const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
@@ -431,7 +431,7 @@ test('cli plan new reports invalid_account for a relative project_dir', async (t
     summary: 's',
     risk: 'r',
     slug: 'x',
-    ops: [{ kind: 'wrangler', args: ['deploy'] }],
+    ops: [{ kind: 'wrangler', args: ['deploy', '--name', 'api'] }],
   };
   writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
   const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);

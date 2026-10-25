@@ -34,12 +34,12 @@ function tempProject(t) {
 }
 
 const ACCEPTED = [
-  [w(['deploy']), 'worker_deploy', undefined, true],
-  [w(['deploy', '--env', 'production'], { worker: 'api' }), 'worker_deploy', { type: 'worker', name: 'api' }, true],
+  [w(['deploy', '--name', 'api']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
+  [w(['deploy', '--name', 'api', '--env', 'production'], { worker: 'api' }), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['deploy', 'src/index.ts', '--name', 'api', '--assets', 'public', '--minify', '--var', 'A:1', '--var', 'B:2', '-e', 'prod']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
-  [w(['deploy', '--route', 'example.com/*', '--compatibility-flag', 'nodejs_compat', '--no-bundle']), 'worker_deploy', undefined, true],
+  [w(['deploy', '--name', 'api', '--route', 'example.com/*', '--compatibility-flag', 'nodejs_compat', '--no-bundle']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['versions', 'deploy', 'v1@50', 'v2@50', '--name', 'api']), 'worker_versions_deploy', { type: 'worker', name: 'api' }, true],
-  [w(['rollback', 'v-123'], { worker: 'api' }), 'worker_rollback', { type: 'worker', name: 'api' }, true],
+  [w(['rollback', 'v-123', '--name', 'api'], { worker: 'api' }), 'worker_rollback', { type: 'worker', name: 'api' }, true],
   [w(['pages', 'deploy', 'dist', '--project-name', 'site', '--branch', 'main']), 'pages_deploy', { type: 'pages', name: 'site' }, true],
   [w(['d1', 'migrations', 'apply', 'db1', '--remote']), 'd1_migrations_apply', { type: 'd1', name: 'db1' }, true],
   [w(['d1', 'migrations', 'apply', '--remote', 'db1']), 'd1_migrations_apply', { type: 'd1', name: 'db1' }, true],
@@ -70,7 +70,7 @@ test('every allowlisted subcommand is accepted and classified', () => {
 });
 
 test('deploy ops accept a https health check and on_failed_check rollback', () => {
-  accepts(w(['deploy'], { worker: 'api', health_check: { url: 'https://api.example.com/health', expect_status: 200 }, on_failed_check: 'rollback' }));
+  accepts(w(['deploy', '--name', 'api'], { worker: 'api', health_check: { url: 'https://api.example.com/health', expect_status: 200 }, on_failed_check: 'rollback' }));
 });
 
 test('subcommands outside the allowlist are rejected (exact, case-sensitive, leading words)', () => {
@@ -105,11 +105,11 @@ test('deploy rejects --dispatch-namespace (Workers for Platforms is out of scope
 });
 
 test('experimental flags are never allowed', () => {
-  rejects(w(['deploy', '--experimental-x']), /experimental/);
-  rejects(w(['deploy', '--x-provision']), /experimental/);
-  rejects(w(['deploy', '--experimental-route-zones']), /experimental/);
+  rejects(w(['deploy', '--name', 'api', '--experimental-x']), /experimental/);
+  rejects(w(['deploy', '--name', 'api', '--x-provision']), /experimental/);
+  rejects(w(['deploy', '--name', 'api', '--experimental-route-zones']), /experimental/);
   rejects(w(['kv', 'namespace', 'create', 'c', '--x-mode', 'instant']), /experimental/);
-  rejects(w(['deploy', '--experimentalFoo']), /experimental/);
+  rejects(w(['deploy', '--name', 'api', '--experimentalFoo']), /experimental/);
 });
 
 test('executor-owned confirmation flags are rejected in drafts', () => {
@@ -125,10 +125,10 @@ test('executor-owned confirmation flags are rejected in drafts', () => {
 });
 
 test('single-letter double-dash flags are read as their short forms', () => {
-  accepts(w(['deploy', '--e', 'production']));
-  accepts(w(['deploy', '--c', 'wrangler.toml']));
-  rejects(w(['deploy', '--c', '../x.toml']), /--config/);
-  rejects(w(['deploy', '--h']), /must not use/);
+  accepts(w(['deploy', '--name', 'api', '--e', 'production']));
+  accepts(w(['deploy', '--name', 'api', '--c', 'wrangler.toml']));
+  rejects(w(['deploy', '--name', 'api', '--c', '../x.toml']), /--config/);
+  rejects(w(['deploy', '--name', 'api', '--h']), /must not use/);
 });
 
 test('flag values: bools are bare, strings need a value, singles may not repeat', () => {
@@ -136,18 +136,18 @@ test('flag values: bools are bare, strings need a value, singles may not repeat'
   rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', 'false']), /positional/);
   rejects(w(['d1', 'migrations', 'apply', 'db1', '--remote', 'true']), /positional/);
   rejects(w(['deploy', '--name']), /needs a value/);
-  rejects(w(['deploy', '--name=']), /needs a value/);
+  rejects(w(['deploy', '--name', 'api', '--name=']), /needs a value/);
   rejects(w(['deploy', '--name', '--minify']), /needs a value/);
   rejects(w(['deploy', '--name', 'a', '--name', 'b']), /more than once/);
-  rejects(w(['deploy', 'a.js', 'b.js']), /positional/);
-  accepts(w(['deploy', '--var', 'A:1', '--var', 'B:2']));
+  rejects(w(['deploy', '--name', 'api', 'a.js', 'b.js']), /positional/);
+  accepts(w(['deploy', '--name', 'api', '--var', 'A:1', '--var', 'B:2']));
 });
 
 test('a positional right after a list flag value is rejected', () => {
-  rejects(w(['deploy', '--var', 'A:1', 'B:2']), /positional after a list flag/);
-  rejects(w(['deploy', '--var=A:1', 'src/index.ts']), /positional after a list flag/);
+  rejects(w(['deploy', '--name', 'api', '--var', 'A:1', 'B:2']), /positional after a list flag/);
+  rejects(w(['deploy', '--name', 'api', '--var=A:1', 'src/index.ts']), /positional after a list flag/);
   rejects(w(['versions', 'deploy', '--version-id', 'v1', 'v2@50', '--name', 'api']), /positional after a list flag/);
-  accepts(w(['deploy', 'src/index.ts', '--var', 'A:1', '--minify']));
+  accepts(w(['deploy', '--name', 'api', 'src/index.ts', '--var', 'A:1', '--minify']));
   accepts(w(['deploy', '--var', 'A:1', '--name', 'api', 'src/index.ts']));
 });
 
@@ -155,48 +155,48 @@ test('flag names must be lowercase (camelCase normalizes, uppercase is rejected)
   for (const flag of ['--Name', '--NAME', '--name-X', '--nAME']) {
     rejects(w(['deploy', flag, 'api']), /lowercase flag names/);
   }
-  accepts(w(['deploy', '--keepVars']));
+  accepts(w(['deploy', '--name', 'api', '--keepVars']));
   accepts(w(['r2', 'bucket', 'create', 'b1', '-J', 'eu']));
 });
 
 test('--alias is not allowed and --define needs KEY:VALUE with an identifier key', () => {
-  rejects(w(['deploy', '--alias', 'node:fs:/etc/passwd']), /must not use --alias/);
-  accepts(w(['deploy', '--define', 'DEBUG:false', '--define', 'process.env.MODE:"prod"', '--define', '$x:1']));
+  rejects(w(['deploy', '--name', 'api', '--alias', 'node:fs:/etc/passwd']), /must not use --alias/);
+  accepts(w(['deploy', '--name', 'api', '--define', 'DEBUG:false', '--define', 'process.env.MODE:"prod"', '--define', '$x:1']));
   for (const bad of ['DEBUG', ':x', '1A:x', 'a/b:x', 'a-b:x', '../x:y']) {
-    rejects(w(['deploy', '--define', bad]), /--define values/);
+    rejects(w(['deploy', '--name', 'api', '--define', bad]), /--define values/);
   }
 });
 
 test('args must be printable ASCII without control characters', () => {
   for (const bad of ['prod\nuction', 'tab\there', 'nul\u0000', 'del\u007f', 'café', '‮evil']) {
-    rejects(w(['deploy', '--env', bad]), /printable ASCII/);
+    rejects(w(['deploy', '--name', 'api', '--env', bad]), /printable ASCII/);
   }
 });
 
 test('--config / -c must resolve inside project_dir', () => {
   for (const args of [
-    ['deploy', '--config', 'wrangler.toml'], ['deploy', '-c', 'sub/wrangler.jsonc'], ['deploy', '--config=./a/../wrangler.toml'],
+    ['deploy', '--name', 'api', '--config', 'wrangler.toml'], ['deploy', '--name', 'api', '-c', 'sub/wrangler.jsonc'], ['deploy', '--name', 'api', '--config=./a/../wrangler.toml'],
   ]) {
     accepts(w(args));
   }
   for (const args of [
-    ['deploy', '--config', '../other/wrangler.toml'], ['deploy', '-c', '/etc/wrangler.toml'], ['deploy', '--config=..'],
-    ['deploy', '-c=sub/../../x.toml'], ['deploy', '--config'], ['deploy', '--config', 'a', '--config', 'b'],
+    ['deploy', '--name', 'api', '--config', '../other/wrangler.toml'], ['deploy', '--name', 'api', '-c', '/etc/wrangler.toml'], ['deploy', '--name', 'api', '--config=..'],
+    ['deploy', '--name', 'api', '-c=sub/../../x.toml'], ['deploy', '--name', 'api', '--config'], ['deploy', '--name', 'api', '--config', 'a', '--config', 'b'],
   ]) {
     rejects(w(args), /config/);
   }
-  rejects(w(['deploy', '--config', 'wrangler.toml']), /config/, { ...PLAN, project_dir: '.' });
+  rejects(w(['deploy', '--name', 'api', '--config', 'wrangler.toml']), /config/, { ...PLAN, project_dir: '.' });
 });
 
 test('path args (script, --assets, --site, --tsconfig, pages directory) must resolve inside project_dir', () => {
   for (const args of [
-    ['deploy', '../outside/index.js'], ['deploy', '/etc/passwd'], ['deploy', '--assets', '../public'],
-    ['deploy', '--site=/srv/site'], ['deploy', '--tsconfig', '../tsconfig.json'],
+    ['deploy', '--name', 'api', '../outside/index.js'], ['deploy', '--name', 'api', '/etc/passwd'], ['deploy', '--name', 'api', '--assets', '../public'],
+    ['deploy', '--name', 'api', '--site=/srv/site'], ['deploy', '--name', 'api', '--tsconfig', '../tsconfig.json'],
     ['pages', 'deploy', '../outside', '--project-name', 'site'], ['pages', 'deploy', '/tmp/dist', '--project-name', 'site'],
   ]) {
     rejects(w(args), /inside project_dir/);
   }
-  accepts(w(['deploy', 'src/index.ts', '--assets', './public', '--tsconfig', 'tsconfig.json']));
+  accepts(w(['deploy', '--name', 'api', 'src/index.ts', '--assets', './public', '--tsconfig', 'tsconfig.json']));
   accepts(w(['pages', 'deploy', 'dist', '--project-name', 'site']));
   rejects(w(['pages', 'deploy', 'dist', '--project-name', 'site']), /project_dir/, { ...PLAN, project_dir: 'rel' });
 });
@@ -209,11 +209,11 @@ test('path args through a symlink that leaves project_dir are rejected', (t) => 
   symlinkSync(join(root, 'outside-dir'), join(project, 'dist'));
   writeFileSync(join(project, 'wrangler.toml'), 'name = "x"\n');
   mkdirSync(join(project, 'public'));
-  rejects(w(['deploy', '--config', 'link.toml']), /inside project_dir/, plan);
+  rejects(w(['deploy', '--name', 'api', '--config', 'link.toml']), /inside project_dir/, plan);
   rejects(w(['pages', 'deploy', 'dist', '--project-name', 'site']), /inside project_dir/, plan);
   // A path that does not exist yet is checked through its nearest existing ancestor.
-  rejects(w(['deploy', '--assets', 'dist/not-yet/built']), /inside project_dir/, plan);
-  accepts(w(['deploy', '--config', 'wrangler.toml', '--assets', 'public', 'src/missing.ts']), plan);
+  rejects(w(['deploy', '--name', 'api', '--assets', 'dist/not-yet/built']), /inside project_dir/, plan);
+  accepts(w(['deploy', '--name', 'api', '--config', 'wrangler.toml', '--assets', 'public', 'src/missing.ts']), plan);
 });
 
 test('symlinks are followed component by component, including dangling links and chains', (t) => {
@@ -233,14 +233,14 @@ test('symlinks are followed component by component, including dangling links and
   // Loop.
   symlinkSync('loop2', join(project, 'loop1'));
   symlinkSync('loop1', join(project, 'loop2'));
-  rejects(w(['deploy', '--assets', 'dangling-out']), /cannot be resolved/, plan);
-  rejects(w(['deploy', '--assets', 'dangling-out/sub']), /cannot be resolved/, plan);
-  rejects(w(['deploy', '--assets', 'dangling-in']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--name', 'api', '--assets', 'dangling-out']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--name', 'api', '--assets', 'dangling-out/sub']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--name', 'api', '--assets', 'dangling-in']), /cannot be resolved/, plan);
   rejects(w(['pages', 'deploy', 'a', '--project-name', 'site']), /inside project_dir/, plan);
-  rejects(w(['deploy', 'a/x/index.js']), /inside project_dir/, plan);
-  rejects(w(['deploy', '--assets', 'loop1']), /cannot be resolved/, plan);
+  rejects(w(['deploy', '--name', 'api', 'a/x/index.js']), /inside project_dir/, plan);
+  rejects(w(['deploy', '--name', 'api', '--assets', 'loop1']), /cannot be resolved/, plan);
   accepts(w(['pages', 'deploy', 'c', '--project-name', 'site']), plan);
-  accepts(w(['deploy', 'c/missing/index.js']), plan);
+  accepts(w(['deploy', '--name', 'api', 'c/missing/index.js']), plan);
 });
 
 test('assertWranglerOpPaths re-runs path containment on its own', (t) => {
@@ -263,6 +263,15 @@ test('delete ops need confirm_name equal to the resource name', () => {
   rejects(w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1'], { confirm_name: 'cache' }), /confirm_name/);
   rejects(w(['delete', '--name', 'api'], { confirm_name: 'web' }), /confirm_name/);
   rejects(w(['delete', '--name', 'api'], { worker: 'api' }), /confirm_name/);
+});
+
+test('deploy, versions deploy and rollback need --name in args matching op.worker', () => {
+  rejects(w(['deploy']), /must include --name/);
+  rejects(w(['deploy'], { worker: 'api' }), /must include --name/);
+  rejects(w(['versions', 'deploy', 'v1@100%']), /must include --name/);
+  rejects(w(['rollback', 'v1'], { worker: 'api' }), /must include --name/);
+  rejects(w(['rollback', 'v1', '--name', 'api'], { worker: 'web' }), /worker does not match/);
+  accepts(w(['rollback', 'v1', '--name', 'api'], { worker: 'api' }));
 });
 
 test('ops that name a resource need it in the expected place', () => {
@@ -338,29 +347,29 @@ test('rejection messages never echo a misplaced secret value', () => {
 });
 
 test('on_failed_check other than rollback and non-https health checks are rejected', () => {
-  rejects(w(['deploy'], { on_failed_check: 'ignore' }), /on_failed_check/);
-  rejects(w(['deploy'], { on_failed_check: '' }), /on_failed_check/);
-  rejects(w(['deploy'], { health_check: { url: 'http://api.example.com/health' } }), /health_check/);
-  rejects(w(['deploy'], { health_check: { url: 'not a url' } }), /health_check/);
-  rejects(w(['deploy'], { health_check: 'https://api.example.com/health' }), /health_check/);
-  rejects(w(['deploy'], { health_check: {} }), /health_check/);
+  rejects(w(['deploy', '--name', 'api'], { on_failed_check: 'ignore' }), /on_failed_check/);
+  rejects(w(['deploy', '--name', 'api'], { on_failed_check: '' }), /on_failed_check/);
+  rejects(w(['deploy', '--name', 'api'], { health_check: { url: 'http://api.example.com/health' } }), /health_check/);
+  rejects(w(['deploy', '--name', 'api'], { health_check: { url: 'not a url' } }), /health_check/);
+  rejects(w(['deploy', '--name', 'api'], { health_check: 'https://api.example.com/health' }), /health_check/);
+  rejects(w(['deploy', '--name', 'api'], { health_check: {} }), /health_check/);
 });
 
 test('validateOpTargets runs wrangler op validation for account plans', () => {
   assert.throws(() => validateOpTargets([w(['publish'])], PLAN), (err) => err.code === 'invalid_op' && /^Op 0 /.test(err.message));
-  assert.throws(() => validateOpTargets([w(['deploy']), w(['deploy', '--dry-run'])], PLAN), (err) => err.code === 'invalid_op' && /^Op 1 /.test(err.message));
-  assert.doesNotThrow(() => validateOpTargets([w(['deploy'], { worker: 'api' })], PLAN));
+  assert.throws(() => validateOpTargets([w(['deploy', '--name', 'api']), w(['deploy', '--name', 'api', '--dry-run'])], PLAN), (err) => err.code === 'invalid_op' && /^Op 1 /.test(err.message));
+  assert.doesNotThrow(() => validateOpTargets([w(['deploy', '--name', 'api'], { worker: 'api' })], PLAN));
 });
 
 test('validatePlanOps rejects two deploy ops for the same worker', () => {
   for (const pair of [
-    [w(['deploy'], { worker: 'api' }), w(['versions', 'deploy', '--name', 'api'])],
-    [w(['deploy'], { worker: 'api' }), w(['rollback'], { worker: 'api' })],
-    [w(['deploy']), w(['deploy', '--env', 'staging'])],
+    [w(['deploy', '--name', 'api'], { worker: 'api' }), w(['versions', 'deploy', '--name', 'api'])],
+    [w(['deploy', '--name', 'api'], { worker: 'api' }), w(['rollback'], { worker: 'api' })],
+    [w(['deploy', '--name', 'api']), w(['deploy', '--name', 'api', '--env', 'staging'])],
   ]) {
     assert.throws(() => validatePlanOps(pair), (err) => err.code === 'plan_conflict', JSON.stringify(pair));
   }
-  assert.doesNotThrow(() => validatePlanOps([w(['deploy'], { worker: 'api' }), w(['deploy'], { worker: 'web' })]));
+  assert.doesNotThrow(() => validatePlanOps([w(['deploy', '--name', 'api'], { worker: 'api' }), w(['deploy', '--name', 'web'], { worker: 'web' })]));
 });
 
 test('validatePlanOps rejects two ops on one resource when one is a delete', () => {
@@ -385,7 +394,7 @@ test('validatePlanOps rejects two ops on one resource when one is a delete', () 
 
 test('withIrreversibleRisk names non-invertible wrangler ops and data loss for KV, Queue and D1 deletes', () => {
   const ops = [
-    w(['deploy'], { worker: 'api' }),
+    w(['deploy', '--name', 'api'], { worker: 'api' }),
     w(['d1', 'create', 'db1']),
     w(['r2', 'bucket', 'delete', 'b1'], { confirm_name: 'b1' }),
     w(['kv', 'namespace', 'delete', '--namespace-id', 'ns1'], { confirm_name: 'ns1' }),

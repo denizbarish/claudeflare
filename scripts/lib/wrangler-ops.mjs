@@ -39,6 +39,7 @@ const ALLOWLIST = [
       '--compatibility-flag': '--compatibility-flags', '--schedule': '--triggers', '--schedules': '--triggers',
       '--route': '--routes', '--domain': '--domains',
     },
+    required: ['--name'],
   },
   {
     words: ['versions', 'deploy'],
@@ -46,6 +47,7 @@ const ALLOWLIST = [
     type: 'worker',
     positionals: [{ role: 'version-specs', type: 'string', variadic: true }],
     flags: { '--name': 'string', '--version-id': 'list', '--percentage': 'string', '--version-tag': 'list', ...DO_MODE },
+    required: ['--name'],
   },
   {
     words: ['rollback'],
@@ -53,6 +55,7 @@ const ALLOWLIST = [
     type: 'worker',
     positionals: [{ role: 'version-id', type: 'string' }],
     flags: { '--name': 'string', ...DO_MODE },
+    required: ['--name'],
   },
   {
     words: ['pages', 'deploy'],

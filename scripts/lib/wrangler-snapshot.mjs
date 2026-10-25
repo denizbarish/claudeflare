@@ -85,14 +85,10 @@ const NO_WORKER = Symbol('no worker');
 // active deployment (latest created_on), or { exists: false } for a Worker
 // that does not exist yet (the inverse deletes it).
 async function readWorker(runner, target, plan) {
-  const name = target.name ? ['--name', target.name] : [];
-  const deployments = await readJson(runner, ['deployments', 'list', ...name, ...target.target_args], plan, (message) =>
+  const deployments = await readJson(runner, ['deployments', 'list', '--name', target.name, ...target.target_args], plan, (message) =>
     WORKER_NOT_FOUND.test(message) ? NO_WORKER : undefined,
   );
-  if (deployments === NO_WORKER) {
-    if (!target.name) return notInvertible({ exists: false }, 'new Worker without --name or worker in the op');
-    return { before: { exists: false }, invertible: true };
-  }
+  if (deployments === NO_WORKER) return { before: { exists: false }, invertible: true };
   if (!Array.isArray(deployments)) throw snapshotFailed('Snapshot read (wrangler deployments list) did not return a list');
   let active = null;
   for (const deployment of deployments) {
@@ -165,15 +161,27 @@ export function noteCreated(created, entry) {
 
 const wrangler = (args, extra = {}) => ({ kind: 'wrangler', args, ...extra });
 
-// A new Worker is deleted; a single version is rolled back to; a split
-// deployment is restored with `versions deploy <id>@<pct>% ...`.
-function invertWorker({ before, target }) {
+// A new Worker is deleted, but only while its deployments hold nothing but
+// the version this plan created (precheck run by the executor); a single
+// version is rolled back to; a split deployment is restored with
+// `versions deploy <id>@<pct>% ...`. Deploy ops always carry --name.
+function invertWorker({ before, target }, result) {
   if (before?.exists === false) {
-    return [wrangler(['delete', '--name', target.name, ...target.target_args], { confirm_name: target.name })];
+    const versionId = result?.version_id;
+    if (typeof versionId !== 'string' || !versionId) {
+      throw ambiguous(`No version id in apply result for the first deploy of Worker ${target.name}`);
+    }
+    return [
+      wrangler(['delete', '--name', target.name, ...target.target_args], {
+        confirm_name: target.name,
+        precheck: 'only_plan_versions',
+        expected_versions: [versionId],
+      }),
+    ];
   }
   const versions = before?.versions ?? [];
   if (versions.length === 0) return [];
-  const name = target.name ? ['--name', target.name] : [];
+  const name = ['--name', target.name];
   if (versions.length > 1) {
     const specs = versions.map((v) => `${v.version_id}@${v.percentage}%`);
     return [wrangler(['versions', 'deploy', ...specs, ...name, ...target.target_args])];
@@ -219,7 +227,7 @@ function invertCreate({ target }, result) {
 
 export function inverseForWrangler(entry, result) {
   if (!entry.invertible) return [];
-  if (WORKER_KINDS.has(entry.kind)) return invertWorker(entry);
+  if (WORKER_KINDS.has(entry.kind)) return invertWorker(entry, result);
   if (entry.kind === 'pages_deploy') return invertPages(entry);
   if (D1_KINDS.has(entry.kind)) return invertD1(entry);
   if (entry.kind === 'resource_create') return invertCreate(entry, result);

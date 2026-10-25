@@ -115,16 +115,9 @@ test('runner gets project_dir, plan account id and the token from the environmen
   assert.deepEqual(runner.calls[0].opts, { cwd: DIR, token: 'tok-at-call-time', accountId: AID });
 });
 
-test('worker name falls back to op.worker, then to the wrangler config', async () => {
-  const named = fakeRunner({ 'deployments list --name api --json': DEPLOYMENTS });
-  const e1 = await captureWranglerEntry(named, noClient, w(['deploy'], { worker: 'api' }), PLAN);
-  assert.deepEqual(inverseForWrangler(e1, { events: [] }), [w(['rollback', V_PREV, '--name', 'api'])]);
-
-  const fromConfig = fakeRunner({ 'deployments list --json': DEPLOYMENTS });
-  const e2 = await captureWranglerEntry(fromConfig, noClient, w(['deploy']), PLAN);
-  const inverse = inverseForWrangler(e2, { events: [] });
-  assert.deepEqual(inverse, [w(['rollback', V_PREV])]);
-  assertValidWrangler(inverse);
+test('deploy ops without --name are rejected, so the snapshot, deploy and inverse name the same Worker', () => {
+  assert.throws(() => validateWranglerOp(w(['deploy']), PLAN), (err) => err.code === 'invalid_op' && /--name/.test(err.message));
+  assert.throws(() => validateWranglerOp(w(['deploy'], { worker: 'api' }), PLAN), (err) => err.code === 'invalid_op' && /--name/.test(err.message));
 });
 
 test('--config and --env (and their aliases) carry over to the read and the inverse', async () => {
@@ -186,8 +179,12 @@ test('first deploy of a Worker that does not exist inverts to deleting it', asyn
   assert.deepEqual(entry.before, { exists: false });
   assert.equal(entry.invertible, true);
   const inverse = inverseForWrangler(entry, { version_id: V_CANARY, events: [] });
-  assert.deepEqual(inverse, [w(['delete', '--name', 'api'], { confirm_name: 'api' })]);
+  assert.deepEqual(inverse, [
+    w(['delete', '--name', 'api'], { confirm_name: 'api', precheck: 'only_plan_versions', expected_versions: [V_CANARY] }),
+  ]);
   assertValidWrangler(inverse);
+  assert.throws(() => inverseForWrangler(entry, { events: [] }), (err) => err.code === 'rollback_ambiguous');
+  assert.throws(() => inverseForWrangler(entry, { version_id: '', events: [] }), (err) => err.code === 'rollback_ambiguous');
 });
 
 test('a "does not exist" failure without code 10007 aborts the snapshot instead of meaning a new Worker', async () => {
@@ -203,16 +200,6 @@ test('a "does not exist" failure without code 10007 aborts the snapshot instead 
     captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN),
     (err) => err.code === 'snapshot_failed' && err.message.includes('config path does not exist'),
   );
-});
-
-test('first deploy of a Worker named only in the wrangler config is not invertible', async () => {
-  const runner = fakeRunner({
-    'deployments list --json': { code: 1, stdout: '', stderr: 'X [ERROR] This Worker does not exist on your account. [code: 10007]', events: [] },
-  });
-  const entry = await captureWranglerEntry(runner, noClient, w(['deploy']), PLAN);
-  assert.equal(entry.invertible, false);
-  assert.match(entry.reason, /--name/);
-  assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
 });
 
 test('a worker with no deployments yet has nothing to roll back to', async () => {
