@@ -4,6 +4,7 @@ import { captureSnapshot, buildRollbackOps } from '../scripts/lib/snapshot.mjs';
 import { captureWranglerEntry, inverseForWrangler } from '../scripts/lib/wrangler-snapshot.mjs';
 import { validateWranglerOp } from '../scripts/lib/wrangler-ops.mjs';
 import { validateOpTargets } from '../scripts/lib/resources.mjs';
+import { CfError } from '../scripts/lib/errors.mjs';
 
 const AID = 'abcdef0123456789abcdef0123456789';
 const DIR = '/work/app';
@@ -78,6 +79,7 @@ function fakeClient(routes) {
       calls.push({ method, path });
       const key = `${method} ${path}`;
       if (!(key in routes)) throw new Error(`unexpected request ${key}`);
+      if (routes[key] instanceof Error) throw routes[key];
       return routes[key];
     },
   };
@@ -188,6 +190,21 @@ test('first deploy of a Worker that does not exist inverts to deleting it', asyn
   assertValidWrangler(inverse);
 });
 
+test('a "does not exist" failure without code 10007 aborts the snapshot instead of meaning a new Worker', async () => {
+  const runner = fakeRunner({
+    'deployments list --name api --json': {
+      code: 1,
+      stdout: '',
+      stderr: '',
+      events: [{ type: 'command-failed', message: 'config path does not exist' }],
+    },
+  });
+  await assert.rejects(
+    captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN),
+    (err) => err.code === 'snapshot_failed' && err.message.includes('config path does not exist'),
+  );
+});
+
 test('first deploy of a Worker named only in the wrangler config is not invertible', async () => {
   const runner = fakeRunner({
     'deployments list --json': { code: 1, stdout: '', stderr: 'X [ERROR] This Worker does not exist on your account. [code: 10007]', events: [] },
@@ -226,6 +243,23 @@ test('pages deploy to a non-production branch needs no inverse (preview deployme
   assert.equal(entry.invertible, false);
   assert.equal(entry.reason, 'preview deployment');
   assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
+});
+
+test('first pages deploy of a project that does not exist yet is not invertible', async () => {
+  const client = fakeClient({ [PAGES_PATH]: new CfError('not_found', 'Project not found', { status: 404 }) });
+  const entry = await captureWranglerEntry(fakeRunner({}), client, w(['pages', 'deploy', 'dist', '--project-name', 'site']), PLAN);
+  assert.deepEqual(entry.before, { exists: false });
+  assert.equal(entry.invertible, false);
+  assert.equal(entry.reason, 'project created by this deploy');
+  assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
+});
+
+test('pages project read errors other than not_found abort the snapshot', async () => {
+  const client = fakeClient({ [PAGES_PATH]: new CfError('permission', 'Authentication error', { status: 403 }) });
+  await assert.rejects(
+    captureWranglerEntry(fakeRunner({}), client, w(['pages', 'deploy', 'dist', '--project-name', 'site']), PLAN),
+    (err) => err.code === 'permission',
+  );
 });
 
 test('pages deploy without a canonical deployment is not invertible', async () => {

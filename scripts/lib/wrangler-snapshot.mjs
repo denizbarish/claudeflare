@@ -11,8 +11,9 @@ import { CfError } from './errors.mjs';
 // Flags that select which Worker or database a command targets; they carry
 // over from the op to its snapshot read and its inverse.
 const TARGET_FLAGS = ['--config', '--env'];
-// wrangler's failure text when the Worker does not exist yet (API code 10007).
-const WORKER_NOT_FOUND = /\b10007\b|does not exist/i;
+// Cloudflare API code for a Worker that does not exist yet; matched only as
+// the error code, never by wording.
+const WORKER_NOT_FOUND = /\b10007\b/;
 const WORKER_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
 const D1_KINDS = new Set(['d1_migrations_apply', 'd1_restore']);
 
@@ -113,7 +114,13 @@ async function readWorker(runner, target, plan) {
 // (live production) deployment.
 async function readPages(client, target) {
   if (!target.name) throw snapshotFailed('pages deploy needs --project-name so its current production deployment can be snapshotted');
-  const project = await client.request('GET', `/accounts/${target.account_id}/pages/projects/${target.name}`);
+  let project;
+  try {
+    project = await client.request('GET', `/accounts/${target.account_id}/pages/projects/${target.name}`);
+  } catch (err) {
+    if (err instanceof CfError && err.code === 'not_found') return notInvertible({ exists: false }, 'project created by this deploy');
+    throw err;
+  }
   const productionBranch = project?.production_branch ?? null;
   const id = project?.canonical_deployment?.id;
   const before = { deployment_id: typeof id === 'string' && id ? id : null, production_branch: productionBranch };
