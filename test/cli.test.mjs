@@ -352,3 +352,78 @@ test('cli plan new rejects ops outside the zone, Page Rule creates, placeholders
   writeFileSync(join(cwd, 'draft.json'), JSON.stringify({ zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [ok] }));
   assert.equal((await run(cwd, ['plan', 'new', '--file', 'draft.json'])).code, 0);
 });
+
+test('cli plan new accepts account plans with wrangler ops and the Pages rollback REST op', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const AID = 'abcdef0123456789abcdef0123456789';
+  const rollback = { method: 'POST', path: `/accounts/${AID}/pages/projects/my-site/deployments/0a1b2c3d-4e5f-6789-abcd-ef0123456789/rollback` };
+  const draft = {
+    scope: 'account',
+    account_id: AID,
+    account_name: 'Acme Corp',
+    project_dir: cwd,
+    summary: 's',
+    risk: 'r',
+    slug: 'deploy',
+    ops: [{ kind: 'wrangler', args: ['deploy'] }, rollback],
+  };
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
+  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+  assert.equal(res.code, 0, res.stderr);
+  const plan = JSON.parse(res.stdout);
+  assert.equal(plan.scope, 'account');
+  assert.equal(plan.account_slug, 'acme-corp');
+  assert.match(plan.id, /^acmecorp-\d{8}-\d{6}-deploy$/);
+  assert.deepEqual(plan.ops, draft.ops);
+});
+
+test('cli plan new rejects account plan ops outside the allowlist and wrangler ops in zone plans', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const AID = 'abcdef0123456789abcdef0123456789';
+  const OTHER = 'fedcba9876543210fedcba9876543210';
+  const pages = `/pages/projects/my-site/deployments/0a1b2c3d/rollback`;
+  const bad = [
+    { method: 'GET', path: `/accounts/${AID}${pages}` },
+    { method: 'POST', path: `/accounts/${OTHER}${pages}` },
+    { method: 'POST', path: `/accounts/${AID}${pages}/extra` },
+    { method: 'POST', path: `/accounts/${AID}/pages/projects/my-site/deployments` },
+    { method: 'DELETE', path: `/accounts/${AID}/workers/scripts/api` },
+    { method: 'POST', path: `/accounts/${AID}/pages/projects/my-site/deployments/../../x/deployments/y/rollback` },
+    { method: 'PATCH', path: `/zones/${ZID}/settings/ssl` },
+    { kind: 'wrangler', args: [] },
+    { kind: 'wrangler', args: 'deploy' },
+    { kind: 'wrangler' },
+  ];
+  const account = { scope: 'account', account_id: AID, account_name: 'Acme', project_dir: cwd, summary: 's', risk: 'r', slug: 'x' };
+  for (const op of bad) {
+    writeFileSync(join(cwd, 'draft.json'), JSON.stringify({ ...account, ops: [op] }));
+    const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+    assert.equal(res.code, 1, JSON.stringify(op));
+    assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op', JSON.stringify(op));
+  }
+  const zone = { zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [{ kind: 'wrangler', args: ['deploy'] }] };
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(zone));
+  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op');
+  assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
+});
+
+test('cli plan new reports invalid_account for a relative project_dir', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const draft = {
+    scope: 'account',
+    account_id: 'abcdef0123456789abcdef0123456789',
+    account_name: 'Acme',
+    project_dir: '.',
+    summary: 's',
+    risk: 'r',
+    slug: 'x',
+    ops: [{ kind: 'wrangler', args: ['deploy'] }],
+  };
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
+  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_account');
+  assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
+});

@@ -105,23 +105,35 @@ async function get(positional, flags) {
   return createClient().request('GET', path, { query: parseQuery(flags.query) });
 }
 
+function isDraftOp(op) {
+  return op?.kind === 'wrangler' || (typeof op?.method === 'string' && typeof op?.path === 'string');
+}
+
 function assertDraftOps(ops) {
-  const valid = Array.isArray(ops) && ops.length > 0 &&
-    ops.every((op) => typeof op?.method === 'string' && typeof op?.path === 'string');
-  if (!valid) throw new CfError('invalid_input', 'Draft ops must be a non-empty array of { method, path, body? }');
+  const valid = Array.isArray(ops) && ops.length > 0 && ops.every(isDraftOp);
+  if (!valid) {
+    throw new CfError('invalid_input', 'Draft ops must be a non-empty array of { method, path, body? } or { kind: "wrangler", args }');
+  }
 }
 
 function planNew(cwd, flags) {
   const draft = readJsonFile(cwd, flag(flags, 'file'));
   assertDraftOps(draft?.ops);
+  const scope = draft.scope ?? 'zone';
   const zoneId = String(draft.zone_id);
-  const resolved = draft.ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(zoneId) }));
-  validateOpTargets(resolved, zoneId);
+  const resolved = scope === 'account'
+    ? draft.ops
+    : draft.ops.map((op) => (typeof op.path === 'string' ? { ...op, path: op.path.split('{zone_id}').join(zoneId) } : op));
+  validateOpTargets(resolved, { scope, zone_id: zoneId, account_id: draft.account_id });
   validatePlanOps(resolved);
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
+    scope,
     zone_id: draft.zone_id,
     zone_name: draft.zone_name,
+    account_id: draft.account_id,
+    account_name: draft.account_name,
+    project_dir: draft.project_dir,
     summary: draft.summary,
     risk: withIrreversibleRisk(draft.risk, resolved),
     ops: draft.ops,

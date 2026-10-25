@@ -145,12 +145,33 @@ function isNormalPath(path) {
   }
 }
 
-// Plan ops (after {zone_id} resolution) must stay inside the plan's own zone,
-// use a plain HTTP method, carry no leftover placeholders and never create a
-// Page Rule. Runs on `plan new` and again in applyPlan on the exact ops sent.
-export function validateOpTargets(ops, zoneId) {
-  const prefix = `/zones/${zoneId}/`;
+// The only REST write accepted on account plans (relative to /accounts/<id>).
+const ACCOUNT_REST_ALLOWLIST = [
+  { method: 'POST', pattern: /^\/pages\/projects\/[A-Za-z0-9-]+\/deployments\/[A-Za-z0-9-]+\/rollback$/ },
+];
+
+function isAllowedAccountOp(method, path, accountId) {
+  const prefix = `/accounts/${accountId}`;
+  if (!path.startsWith(`${prefix}/`)) return false;
+  const rest = path.slice(prefix.length);
+  return ACCOUNT_REST_ALLOWLIST.some((entry) => entry.method === method && entry.pattern.test(rest));
+}
+
+// Plan ops (after {zone_id} resolution) must stay inside the plan's own zone
+// (zone plans) or match the account REST allowlist (account plans), use a
+// plain HTTP method, carry no leftover placeholders and never create a Page
+// Rule. Account plans also take `wrangler` ops. Runs on `plan new` and again
+// in applyPlan on the exact ops sent.
+export function validateOpTargets(ops, plan) {
+  const account = plan?.scope === 'account';
+  const prefix = `/zones/${plan?.zone_id}/`;
   (ops ?? []).forEach((op, index) => {
+    if (account && op?.kind === 'wrangler') {
+      if (!Array.isArray(op.args) || op.args.length === 0) {
+        throw new CfError('invalid_op', `Op ${index} (wrangler) needs a non-empty args array`);
+      }
+      return;
+    }
     const { method, path } = op ?? {};
     const reject = (why) => {
       throw new CfError('invalid_op', `Op ${index} (${JSON.stringify(method)} ${JSON.stringify(path)}) ${why}`);
@@ -162,7 +183,13 @@ export function validateOpTargets(ops, zoneId) {
       reject('still contains a placeholder; put the real id into the path');
     }
     if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
-    if (!path.startsWith(prefix)) reject(`must target this plan's zone (${prefix}...)`);
+    if (account) {
+      if (!isAllowedAccountOp(method, path, plan.account_id)) {
+        reject('is not allowed on account plans (only POST /accounts/<account_id>/pages/projects/<project>/deployments/<id>/rollback)');
+      }
+    } else if (!path.startsWith(prefix)) {
+      reject(`must target this plan's zone (${prefix}...)`);
+    }
     if (method === 'POST' && PAGE_RULES.test(path)) reject('would create a Page Rule; use the modern rule types');
   });
 }

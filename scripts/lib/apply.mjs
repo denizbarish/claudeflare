@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CfError } from './errors.mjs';
 import { paths } from './paths.mjs';
-import { createPlan, readPlan, slugify, updatePlan } from './plans.mjs';
+import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plans.mjs';
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
@@ -13,11 +13,11 @@ import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
 const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied']);
 
 export function snapshotFile(cwd, plan) {
-  return join(paths(cwd).snapshots(plan.zone_name), `${plan.id}.json`);
+  return join(paths(cwd).snapshots(planStateName(plan)), `${plan.id}.json`);
 }
 
 export function previewSnapshotFile(cwd, plan) {
-  return join(paths(cwd).snapshots(plan.zone_name), `${plan.id}.preview.json`);
+  return join(paths(cwd).snapshots(planStateName(plan)), `${plan.id}.preview.json`);
 }
 
 function writeJson(file, value, flag) {
@@ -27,7 +27,7 @@ function writeJson(file, value, flag) {
 // The apply snapshot is the rollback baseline: it is written once, never replaced.
 function writeApplySnapshot(cwd, plan, snapshot) {
   const file = snapshotFile(cwd, plan);
-  mkdirSync(paths(cwd).snapshots(plan.zone_name), { recursive: true });
+  mkdirSync(paths(cwd).snapshots(planStateName(plan)), { recursive: true });
   try {
     writeJson(file, snapshot, 'wx');
   } catch (err) {
@@ -41,7 +41,7 @@ function writeApplySnapshot(cwd, plan, snapshot) {
 // the apply snapshot.
 export function writePreviewSnapshot(cwd, plan, snapshot) {
   const file = previewSnapshotFile(cwd, plan);
-  mkdirSync(paths(cwd).snapshots(plan.zone_name), { recursive: true });
+  mkdirSync(paths(cwd).snapshots(planStateName(plan)), { recursive: true });
   writeJson(file, snapshot);
   return file;
 }
@@ -123,7 +123,7 @@ export async function applyPlan(cwd, client, id, now = new Date()) {
   if (plan.rollback_of) {
     assertRollbackSourceCurrent(cwd, plan);
   } else {
-    validateOpTargets(plan.ops, plan.zone_id);
+    validateOpTargets(plan.ops, plan);
     validatePlanOps(plan.ops);
   }
   assertApproved(cwd, plan, now);

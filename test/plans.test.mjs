@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../scripts/lib/paths.mjs';
@@ -11,6 +11,7 @@ import {
   readPlan,
   listPlans,
   updatePlan,
+  planStateName,
 } from '../scripts/lib/plans.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 
@@ -164,4 +165,80 @@ test('createPlan validates zone_name like paths() before writing anything', (t) 
   }
   assert.ok(!existsSync(paths(cwd).root));
   assert.equal(createPlan(cwd, samplePlan({ zone_name: 'Sub-1.Example.com' }), NOW).zone_name, 'Sub-1.Example.com');
+});
+
+const AID = 'abcdef0123456789abcdef0123456789';
+
+function accountPlan(projectDir, overrides = {}) {
+  return {
+    scope: 'account',
+    account_id: AID,
+    account_name: 'Acme Corp',
+    project_dir: projectDir,
+    summary: 'Deploy api Worker',
+    risk: 'Short error spike if the build is broken',
+    ops: [{ kind: 'wrangler', args: ['deploy'] }],
+    slug: 'deploy api',
+    ...overrides,
+  };
+}
+
+test('createPlan stores scope "zone" on zone plans and planStateName is the zone name', (t) => {
+  const cwd = tempDir(t);
+  const plan = createPlan(cwd, samplePlan(), NOW);
+  assert.equal(plan.scope, 'zone');
+  assert.equal(planStateName(plan), 'example.com');
+  assert.equal(planStateName({ zone_name: 'legacy.example' }), 'legacy.example');
+});
+
+test('createPlan builds an account plan with slug-based id and real project_dir', (t) => {
+  const cwd = tempDir(t);
+  const plan = createPlan(cwd, accountPlan(cwd), NOW);
+  assert.equal(plan.id, 'acmecorp-20261024-143000-deploy-api');
+  assert.equal(plan.scope, 'account');
+  assert.equal(plan.account_id, AID);
+  assert.equal(plan.account_name, 'Acme Corp');
+  assert.equal(plan.account_slug, 'acme-corp');
+  assert.equal(plan.project_dir, realpathSync(cwd));
+  assert.equal('zone_id' in plan, false);
+  assert.equal('zone_name' in plan, false);
+  assert.deepEqual(plan.ops, [{ kind: 'wrangler', args: ['deploy'] }]);
+  assert.equal(plan.ops_hash, hashOps(plan.ops));
+  assert.equal(plan.status, 'draft');
+  assert.deepEqual(readPlan(cwd, plan.id), plan);
+  assert.equal(planStateName(plan), 'acme-corp');
+  assert.equal(paths(cwd).snapshots(planStateName(plan)), join(cwd, '.claudeflare', 'snapshots', 'acme-corp'));
+});
+
+test('createPlan rejects bad account fields with invalid_account before writing anything', (t) => {
+  const cwd = tempDir(t);
+  const isInvalid = (e) => e instanceof CfError && e.code === 'invalid_account';
+  const file = join(cwd, 'file.txt');
+  writeFileSync(file, 'x');
+  const bad = [
+    { account_id: undefined },
+    { account_id: 'acc123' },
+    { account_id: AID.toUpperCase() },
+    { account_id: `${AID}0` },
+    { account_name: undefined },
+    { account_name: '' },
+    { account_name: '!!!' },
+    { project_dir: undefined },
+    { project_dir: 'relative/dir' },
+    { project_dir: join(cwd, 'missing') },
+    { project_dir: file },
+  ];
+  for (const overrides of bad) {
+    assert.throws(() => createPlan(cwd, accountPlan(cwd, overrides), NOW), isInvalid, JSON.stringify(overrides));
+  }
+  assert.ok(!existsSync(paths(cwd).root));
+});
+
+test('createPlan rejects an unknown scope', (t) => {
+  const cwd = tempDir(t);
+  assert.throws(
+    () => createPlan(cwd, samplePlan({ scope: 'global' }), NOW),
+    (e) => e instanceof CfError && e.code === 'invalid_input',
+  );
+  assert.ok(!existsSync(paths(cwd).root));
 });
