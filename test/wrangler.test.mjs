@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,15 +65,55 @@ function helperScript(name, body) {
 
 const opts = () => ({ cwd: dir, token: TOKEN, accountId: 'acc123' });
 
-test('wranglerCommand: .mjs/.js runs with node, other value runs directly, default npx --no-install', () => {
+function fakeProject({ withWrangler }) {
+  const project = join(dir, 'project');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, 'package.json'), '{"name":"p","private":true}');
+  if (withWrangler) {
+    const pkg = join(project, 'node_modules', 'wrangler');
+    mkdirSync(join(pkg, 'bin'), { recursive: true });
+    // Mirrors wrangler 4: "exports" does not expose bin/wrangler.js.
+    writeFileSync(
+      join(pkg, 'package.json'),
+      JSON.stringify({
+        name: 'wrangler',
+        version: '4.152.0',
+        exports: { '.': './index.js', './package.json': './package.json' },
+        bin: { wrangler: 'bin/wrangler.js', wrangler2: 'bin/wrangler.js' },
+      }),
+    );
+    writeFileSync(join(pkg, 'bin', 'wrangler.js'), "process.stdout.write('4.152.0\\n');\n");
+  }
+  return project;
+}
+
+test('wranglerCommand: .mjs/.js runs with node, other value runs directly', () => {
   process.env.CLAUDEFLARE_WRANGLER = '/x/fake.mjs';
-  assert.deepEqual(wranglerCommand(), { file: process.execPath, prefixArgs: ['/x/fake.mjs'] });
+  assert.deepEqual(wranglerCommand(dir), { file: process.execPath, prefixArgs: ['/x/fake.mjs'] });
   process.env.CLAUDEFLARE_WRANGLER = '/x/fake.js';
-  assert.deepEqual(wranglerCommand(), { file: process.execPath, prefixArgs: ['/x/fake.js'] });
+  assert.deepEqual(wranglerCommand(dir), { file: process.execPath, prefixArgs: ['/x/fake.js'] });
   process.env.CLAUDEFLARE_WRANGLER = '/usr/local/bin/wrangler';
-  assert.deepEqual(wranglerCommand(), { file: '/usr/local/bin/wrangler', prefixArgs: [] });
+  assert.deepEqual(wranglerCommand(dir), { file: '/usr/local/bin/wrangler', prefixArgs: [] });
+});
+
+test('wranglerCommand default resolves the project-local wrangler bin', async () => {
   delete process.env.CLAUDEFLARE_WRANGLER;
-  assert.deepEqual(wranglerCommand(), { file: 'npx', prefixArgs: ['--no-install', 'wrangler'] });
+  const project = fakeProject({ withWrangler: true });
+  const cmd = wranglerCommand(project);
+  assert.equal(cmd.file, process.execPath);
+  assert.equal(realpathSync(cmd.prefixArgs[0]), realpathSync(join(project, 'node_modules', 'wrangler', 'bin', 'wrangler.js')));
+  assert.equal(await assertWranglerVersion(project, { token: TOKEN }), '4.152.0');
+});
+
+test('wranglerCommand default without a project install -> wrangler_missing', async () => {
+  delete process.env.CLAUDEFLARE_WRANGLER;
+  const project = fakeProject({ withWrangler: false });
+  assert.throws(() => wranglerCommand(project), (err) => {
+    assert.equal(err.code, 'wrangler_missing');
+    assert.match(err.hint, /npm i -D wrangler@4/);
+    return true;
+  });
+  await assert.rejects(runWrangler(['--version'], { cwd: project }), { code: 'wrangler_missing' });
 });
 
 test('args are passed exactly, without a shell', async () => {
@@ -113,10 +153,16 @@ test('parent CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are replaced', async
   assert.equal(withoutAccount.stdout, 'T=[REDACTED] A=unset');
 });
 
-test('extraEnv is added to the child env', async () => {
-  helperScript('echo-extra.mjs', 'process.stdout.write(String(process.env.EXTRA_FLAG));\n');
-  const result = await runWrangler([], { ...opts(), extraEnv: { EXTRA_FLAG: 'yes' } });
-  assert.equal(result.stdout, 'yes');
+test('extraEnv is added to the child env but cannot override fixed flags', async () => {
+  helperScript('echo-extra.mjs', 'process.stdout.write(`${process.env.EXTRA_FLAG} ${process.env.CI} ${process.env.NO_COLOR}`);\n');
+  const result = await runWrangler([], { ...opts(), extraEnv: { EXTRA_FLAG: 'yes', CI: '0', NO_COLOR: '' } });
+  assert.equal(result.stdout, 'yes 1 1');
+});
+
+test('extraEnv with reserved keys -> invalid_input', async () => {
+  for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH']) {
+    await assert.rejects(runWrangler([], { ...opts(), extraEnv: { [key]: 'x' } }), { code: 'invalid_input' });
+  }
 });
 
 test('events are parsed from the ND-JSON output file, bad lines ignored', async () => {
@@ -144,6 +190,27 @@ test('token and secrets are redacted from stdout and stderr; ANSI stripped', asy
   const result = await runWrangler(['deploy'], { ...opts(), secrets: [SECRET, ''] });
   assert.equal(result.stdout, 'token [REDACTED] and [REDACTED]\n');
   assert.equal(result.stderr, 'X [ERROR] [REDACTED] [REDACTED]\n');
+});
+
+test('event string values are redacted after parsing (secret with quote and newline)', async () => {
+  const tricky = 'pa"ss\nwo\\rd';
+  script({
+    deploy: {
+      code: 1,
+      events: [{ type: 'command-failed', message: `failed with ${tricky} and ${TOKEN}`, nested: { list: [tricky] } }],
+    },
+  });
+  const result = await runWrangler(['deploy'], { ...opts(), secrets: [tricky] });
+  assert.deepEqual(result.events, [
+    { type: 'command-failed', message: 'failed with [REDACTED] and [REDACTED]', nested: { list: ['[REDACTED]'] } },
+  ]);
+});
+
+test('a secret passed via stdin never appears in stdout even when echoed', async () => {
+  script({ 'secret put KEY': { code: 0, echoStdin: true } });
+  const result = await runWrangler(['secret', 'put', 'KEY'], { ...opts(), stdin: SECRET, secrets: [SECRET] });
+  assert.equal(result.stdout, '[REDACTED]');
+  assert.equal(result.stdout.includes(SECRET), false);
 });
 
 test('non-zero exit is returned, not thrown', async () => {
@@ -189,6 +256,53 @@ test('timeout kills the process -> wrangler_failed', async () => {
     return true;
   });
   assert.ok(Date.now() - started < 5000);
+});
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function assertGrandchildGone() {
+  const record = logRecords().find((r) => r.grandchildPid);
+  assert.ok(record, 'grandchild pid logged');
+  for (let i = 0; i < 20 && isAlive(record.grandchildPid); i += 1) await new Promise((r) => setTimeout(r, 50));
+  const alive = isAlive(record.grandchildPid);
+  if (alive) process.kill(record.grandchildPid, 'SIGKILL');
+  assert.equal(alive, false, 'grandchild was killed');
+}
+
+test('timeout is a hard stop when the child ignores SIGTERM and a grandchild holds stdio', async () => {
+  script({ deploy: { code: 0, ignoreSigterm: true, grandchild: true, hang: true } });
+  const timeoutMs = 2000; // long enough for the fake to install its handler and spawn the grandchild
+  const started = Date.now();
+  await assert.rejects(runWrangler(['deploy'], { ...opts(), timeoutMs }), { code: 'wrangler_failed' });
+  assert.ok(Date.now() - started < timeoutMs + 5000 + 2000);
+  await assertGrandchildGone();
+});
+
+test('timeout settles when the child exits but a grandchild keeps the pipes open', async () => {
+  script({ deploy: { code: 0, grandchild: true, hang: true } });
+  const started = Date.now();
+  const timeoutMs = 2000;
+  await assert.rejects(runWrangler(['deploy'], { ...opts(), timeoutMs }), { code: 'wrangler_failed' });
+  assert.ok(Date.now() - started < timeoutMs + 5000 + 2000);
+  await assertGrandchildGone();
+});
+
+test('stopAfterMs stops the process and resolves with collected output', async () => {
+  script({
+    tail: { code: 0, stdout: 'line 1\n', hang: true, events: [{ type: 'wrangler-session' }] },
+  });
+  const result = await runWrangler(['tail'], { ...opts(), stopAfterMs: 2000 });
+  assert.equal(result.stopped, true);
+  assert.equal(result.stdout, 'line 1\n');
+  assert.deepEqual(result.events, [{ type: 'wrangler-session' }]);
+  assert.equal(typeof result.code, 'number');
 });
 
 test('failureMessage prefers the last command-failed event', () => {
