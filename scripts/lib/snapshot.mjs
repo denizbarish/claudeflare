@@ -1,8 +1,11 @@
 // Captures the before-state of every resource a plan touches and builds the
-// inverse ops used by rollback. No filesystem I/O here.
+// inverse ops used by rollback. No filesystem I/O here beyond the wrangler
+// runner used for wrangler op reads.
 
 import { classify } from './resources.mjs';
 import { CfError } from './errors.mjs';
+import { runWrangler } from './wrangler.mjs';
+import { captureWranglerEntry, inverseForWrangler } from './wrangler-snapshot.mjs';
 
 const DNS_FIELDS = [
   'type', 'name', 'content', 'data', 'ttl', 'proxied', 'priority', 'comment', 'tags', 'settings',
@@ -83,11 +86,16 @@ const READERS = {
 };
 
 // Any read error propagates so the caller aborts before any write.
-export async function captureSnapshot(client, plan) {
+// options.runner runs wrangler reads for wrangler ops (tests inject a fake).
+export async function captureSnapshot(client, plan, { runner = runWrangler } = {}) {
   const entries = [];
   const ops = plan.ops ?? [];
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
+    if (op?.kind === 'wrangler') {
+      entries.push({ op_index: i, op_kind: 'wrangler', ...(await captureWranglerEntry(runner, client, op, plan)) });
+      continue;
+    }
     const { kind, invertible, readPath } = classify(op);
     const reader = READERS[kind];
     const before = reader ? await reader(client, op, readPath) : null;
@@ -135,6 +143,7 @@ const INVERTERS = {
 // options.knownRuleIds: rule ids already attributed to earlier rule_create
 // ops on the same ruleset, so they are not mistaken for this op's new rule.
 export function inverseFor(entry, applyResult, options = {}) {
+  if (entry.op_kind === 'wrangler') return inverseForWrangler(entry, applyResult);
   const inverter = INVERTERS[entry.kind];
   if (!entry.invertible || !inverter) return [];
   return inverter(entry, applyResult, options);

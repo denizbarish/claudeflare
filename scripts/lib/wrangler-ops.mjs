@@ -319,6 +319,16 @@ export function classifyWranglerOp(op) {
   return result;
 }
 
+// Parsed view of an allowlisted op for snapshot and inverse builders: flag
+// names are canonical (aliases resolved). Returns null when not allowlisted.
+export function parseWranglerOp(op) {
+  const args = Array.isArray(op?.args) ? op.args : [];
+  const entry = matchEntry(args);
+  if (!entry) return null;
+  const parsed = parseArgs(entry, args.slice(entry.words.length));
+  return { kind: entry.kind, type: entry.type, name: resourceName(entry, parsed, op), flags: parsed.flags };
+}
+
 function isInside(dir, target) {
   const rel = relative(dir, target);
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
