@@ -99,6 +99,11 @@ test('flags not on the subcommand allowlist are rejected', () => {
   }
 });
 
+test('deploy rejects --dispatch-namespace (Workers for Platforms is out of scope)', () => {
+  rejects(w(['deploy', '--name', 'api', '--dispatch-namespace', 'customers']), /must not use --dispatch-namespace/);
+  rejects(w(['deploy', '--name', 'api', '--dispatch-namespace=customers']), /must not use --dispatch-namespace/);
+});
+
 test('experimental flags are never allowed', () => {
   rejects(w(['deploy', '--experimental-x']), /experimental/);
   rejects(w(['deploy', '--x-provision']), /experimental/);

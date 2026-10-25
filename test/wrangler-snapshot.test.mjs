@@ -70,39 +70,24 @@ const DEPLOYMENTS = [
   },
 ];
 
-// Shape from wrangler 4.152 source: `pages deployment list --json` maps each
-// API deployment to { Id, Environment, Branch, Source, Deployment, Status, Build };
-// Status is a relative time for finished successful deployments, else the
-// title-cased stage status. Newest first is the API order (doc-based).
-const PAGES_DEPLOYMENTS = [
-  {
-    Id: 'f64788e9-fccd-4d4a-a28a-cb84f88f6eee',
-    Environment: 'Production',
-    Branch: 'main',
-    Source: 'abc1234',
-    Deployment: 'https://f64788e9.site.pages.dev',
-    Status: 'Failure',
-    Build: 'https://dash.cloudflare.com/x/pages/view/site/f64788e9',
-  },
-  {
-    Id: '0a1b2c3d-1111-2222-3333-444455556666',
-    Environment: 'Production',
-    Branch: 'main',
-    Source: 'def5678',
-    Deployment: 'https://0a1b2c3d.site.pages.dev',
-    Status: '2 hours ago',
-    Build: 'https://dash.cloudflare.com/x/pages/view/site/0a1b2c3d',
-  },
-  {
-    Id: '99999999-1111-2222-3333-444455556666',
-    Environment: 'Production',
-    Branch: 'main',
-    Source: '0123abc',
-    Deployment: 'https://99999999.site.pages.dev',
-    Status: '3 days ago',
-    Build: 'https://dash.cloudflare.com/x/pages/view/site/99999999',
-  },
-];
+function fakeClient(routes) {
+  const calls = [];
+  return {
+    calls,
+    async request(method, path) {
+      calls.push({ method, path });
+      const key = `${method} ${path}`;
+      if (!(key in routes)) throw new Error(`unexpected request ${key}`);
+      return routes[key];
+    },
+  };
+}
+
+const PAGES_PATH = `GET /accounts/${AID}/pages/projects/site`;
+const CANONICAL = '0a1b2c3d-1111-2222-3333-444455556666';
+// Pages project (REST result, doc-based): canonical_deployment is the live
+// production deployment.
+const PAGES_PROJECT = { name: 'site', production_branch: 'main', canonical_deployment: { id: CANONICAL, environment: 'production' } };
 
 test('worker deploy snapshot reads deployments list and inverts to rollback of the previous version', async () => {
   const runner = fakeRunner({ 'deployments list --name api --json': DEPLOYMENTS });
@@ -159,11 +144,58 @@ test('versions deploy and rollback snapshot the active version and invert to it'
   }
 });
 
-test('a split deployment before the op cannot be restored by rollback', async () => {
+test('a split deployment before the op inverts to versions deploy with the same percentages', async () => {
   const split = [{ ...DEPLOYMENTS[1], versions: [{ version_id: V_PREV, percentage: 90 }, { version_id: V_OLD, percentage: 10 }] }];
   const runner = fakeRunner({ 'deployments list --name api --json': split });
   const entry = await captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN);
-  assert.throws(() => inverseForWrangler(entry, { events: [] }), (err) => err.code === 'rollback_ambiguous');
+  assert.equal(entry.invertible, true);
+  const inverse = inverseForWrangler(entry, { events: [] });
+  assert.deepEqual(inverse, [w(['versions', 'deploy', `${V_PREV}@90%`, `${V_OLD}@10%`, '--name', 'api'])]);
+  assertValidWrangler(inverse);
+});
+
+test('the active deployment is the one with the latest created_on, not the last in the list', async () => {
+  const runner = fakeRunner({ 'deployments list --name api --json': [DEPLOYMENTS[1], DEPLOYMENTS[0]] });
+  const entry = await captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN);
+  assert.equal(entry.before.deployment_id, 'dep-2');
+  assert.deepEqual(inverseForWrangler(entry, { events: [] }), [w(['rollback', V_PREV, '--name', 'api'])]);
+});
+
+test('a deployment version without a version_id aborts the snapshot', async () => {
+  for (const bad of [undefined, '', 42]) {
+    const runner = fakeRunner({ 'deployments list --name api --json': [{ ...DEPLOYMENTS[1], versions: [{ version_id: bad, percentage: 100 }] }] });
+    await assert.rejects(
+      captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN),
+      (err) => err.code === 'snapshot_failed',
+    );
+  }
+});
+
+test('first deploy of a Worker that does not exist inverts to deleting it', async () => {
+  const runner = fakeRunner({
+    'deployments list --name api --json': {
+      code: 1,
+      stdout: '',
+      stderr: '',
+      events: [{ type: 'command-failed', message: 'This Worker does not exist on your account. [code: 10007]' }],
+    },
+  });
+  const entry = await captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN);
+  assert.deepEqual(entry.before, { exists: false });
+  assert.equal(entry.invertible, true);
+  const inverse = inverseForWrangler(entry, { version_id: V_CANARY, events: [] });
+  assert.deepEqual(inverse, [w(['delete', '--name', 'api'], { confirm_name: 'api' })]);
+  assertValidWrangler(inverse);
+});
+
+test('first deploy of a Worker named only in the wrangler config is not invertible', async () => {
+  const runner = fakeRunner({
+    'deployments list --json': { code: 1, stdout: '', stderr: 'X [ERROR] This Worker does not exist on your account. [code: 10007]', events: [] },
+  });
+  const entry = await captureWranglerEntry(runner, noClient, w(['deploy']), PLAN);
+  assert.equal(entry.invertible, false);
+  assert.match(entry.reason, /--name/);
+  assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
 });
 
 test('a worker with no deployments yet has nothing to roll back to', async () => {
@@ -173,21 +205,32 @@ test('a worker with no deployments yet has nothing to roll back to', async () =>
   assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
 });
 
-test('pages deploy snapshots the current production deployment and inverts to the REST rollback', async () => {
-  const runner = fakeRunner({ 'pages deployment list --project-name site --environment production --json': PAGES_DEPLOYMENTS });
-  const entry = await captureWranglerEntry(runner, noClient, w(['pages', 'deploy', 'dist', '--project-name', 'site']), PLAN);
-  assert.equal(entry.kind, 'pages_deploy');
-  assert.deepEqual(entry.before, { deployment_id: '0a1b2c3d-1111-2222-3333-444455556666' });
-  const inverse = inverseForWrangler(entry, { events: [] });
-  assert.deepEqual(inverse, [
-    { method: 'POST', path: `/accounts/${AID}/pages/projects/site/deployments/0a1b2c3d-1111-2222-3333-444455556666/rollback` },
-  ]);
-  assert.doesNotThrow(() => validateOpTargets(inverse, PLAN));
+test('pages deploy snapshots the canonical deployment over REST and inverts to the REST rollback', async () => {
+  const runner = fakeRunner({});
+  const client = fakeClient({ [PAGES_PATH]: PAGES_PROJECT });
+  for (const args of [['pages', 'deploy', 'dist', '--project-name', 'site'], ['pages', 'deploy', 'dist', '--project-name', 'site', '--branch', 'main']]) {
+    const entry = await captureWranglerEntry(runner, client, w(args), PLAN);
+    assert.equal(entry.kind, 'pages_deploy');
+    assert.equal(entry.invertible, true);
+    assert.equal(entry.before.deployment_id, CANONICAL);
+    const inverse = inverseForWrangler(entry, { events: [] });
+    assert.deepEqual(inverse, [{ method: 'POST', path: `/accounts/${AID}/pages/projects/site/deployments/${CANONICAL}/rollback` }]);
+    assert.doesNotThrow(() => validateOpTargets(inverse, PLAN));
+  }
+  assert.equal(runner.calls.length, 0);
 });
 
-test('pages deploy without a live production deployment is not invertible', async () => {
-  const runner = fakeRunner({ 'pages deployment list --project-name site --environment production --json': [PAGES_DEPLOYMENTS[0]] });
-  const entry = await captureWranglerEntry(runner, noClient, w(['pages', 'deploy', 'dist', '--project-name', 'site']), PLAN);
+test('pages deploy to a non-production branch needs no inverse (preview deployment)', async () => {
+  const client = fakeClient({ [PAGES_PATH]: PAGES_PROJECT });
+  const entry = await captureWranglerEntry(fakeRunner({}), client, w(['pages', 'deploy', 'dist', '--project-name', 'site', '--branch', 'feature-x']), PLAN);
+  assert.equal(entry.invertible, false);
+  assert.equal(entry.reason, 'preview deployment');
+  assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
+});
+
+test('pages deploy without a canonical deployment is not invertible', async () => {
+  const client = fakeClient({ [PAGES_PATH]: { ...PAGES_PROJECT, canonical_deployment: null } });
+  const entry = await captureWranglerEntry(fakeRunner({}), client, w(['pages', 'deploy', 'dist', '--project-name', 'site']), PLAN);
   assert.equal(entry.invertible, false);
   assert.deepEqual(inverseForWrangler(entry, { events: [] }), []);
 });
@@ -208,7 +251,7 @@ test('d1 migrations apply snapshots the Time Travel bookmark and inverts to a re
   assert.equal(entry.kind, 'd1_migrations_apply');
   assert.deepEqual(entry.before, { bookmark: BOOKMARK });
   const inverse = inverseForWrangler(entry, { events: [] });
-  assert.deepEqual(inverse, [w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK])]);
+  assert.deepEqual(inverse, [w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK, '--json'])]);
   assertValidWrangler(inverse);
 });
 
@@ -218,7 +261,7 @@ test('d1 time-travel restore inverts to the bookmark current before it', async (
   const entry = await captureWranglerEntry(runner, noClient, op, PLAN);
   assert.equal(entry.kind, 'd1_restore');
   const inverse = inverseForWrangler(entry, { events: [] });
-  assert.deepEqual(inverse, [w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK])]);
+  assert.deepEqual(inverse, [w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK, '--json'])]);
   assertValidWrangler(inverse);
 });
 
@@ -307,6 +350,24 @@ test('a snapshot read that does not print JSON aborts with snapshot_failed', asy
   );
 });
 
+test('ops on a resource created earlier in the same plan read nothing and are not invertible', async () => {
+  const runner = fakeRunner({});
+  const plan = planWith([
+    w(['d1', 'create', 'app-db']),
+    w(['d1', 'migrations', 'apply', 'app-db', '--remote']),
+    w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK]),
+  ]);
+  const snap = await captureSnapshot(noClient, plan, { runner });
+  assert.equal(runner.calls.length, 0);
+  assert.deepEqual(snap.entries.map((e) => [e.kind, e.invertible, e.before]), [
+    ['resource_create', true, null],
+    ['d1_migrations_apply', false, { exists: false }],
+    ['d1_restore', false, { exists: false }],
+  ]);
+  const ops = buildRollbackOps(snap, [{ events: [] }, { events: [] }, { events: [] }]);
+  assert.deepEqual(ops, [w(['d1', 'delete', 'app-db'], { confirm_name: 'app-db', precheck: 'empty' })]);
+});
+
 test('captureSnapshot dispatches wrangler ops and buildRollbackOps keeps reverse order', async () => {
   const runner = fakeRunner({
     'd1 time-travel info app-db --json': { bookmark: BOOKMARK },
@@ -341,7 +402,7 @@ test('captureSnapshot dispatches wrangler ops and buildRollbackOps keeps reverse
   const ops = buildRollbackOps(snap, results);
   assert.deepEqual(ops, [
     w(['rollback', V_PREV, '--name', 'api']),
-    w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK]),
+    w(['d1', 'time-travel', 'restore', 'app-db', '--bookmark', BOOKMARK, '--json']),
     w(['kv', 'namespace', 'delete', '--namespace-id', KV_ID], { confirm_name: KV_ID, precheck: 'empty' }),
   ]);
   assert.doesNotThrow(() => validateOpTargets(ops, plan));

@@ -33,7 +33,7 @@ const ALLOWLIST = [
       '--define': 'list', '--jsx-factory': 'string', '--jsx-fragment': 'string',
       '--tsconfig': 'path', '--minify': 'bool', '--upload-source-maps': 'bool', '--keep-vars': 'bool',
       '--strict': 'bool', '--triggers': 'list', '--routes': 'list', '--domains': 'list', '--logpush': 'bool',
-      '--old-asset-ttl': 'string', '--dispatch-namespace': 'string', '--containers-rollout': 'string', ...DO_MODE,
+      '--old-asset-ttl': 'string', '--containers-rollout': 'string', ...DO_MODE,
     },
     aliases: {
       '--compatibility-flag': '--compatibility-flags', '--schedule': '--triggers', '--schedules': '--triggers',

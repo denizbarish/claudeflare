@@ -11,9 +11,8 @@ import { CfError } from './errors.mjs';
 // Flags that select which Worker or database a command targets; they carry
 // over from the op to its snapshot read and its inverse.
 const TARGET_FLAGS = ['--config', '--env'];
-// Title-cased Pages stage statuses of deployments that are not live. A
-// finished successful deployment shows a relative time instead.
-const PAGES_NOT_LIVE = new Set(['Idle', 'Active', 'Failure', 'Canceled', 'Skipped']);
+// wrangler's failure text when the Worker does not exist yet (API code 10007).
+const WORKER_NOT_FOUND = /\b10007\b|does not exist/i;
 const WORKER_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
 const D1_KINDS = new Set(['d1_migrations_apply', 'd1_restore']);
 
@@ -40,18 +39,38 @@ function targetOf(op, plan) {
   if (parsed.name) target.name = parsed.name;
   const jurisdiction = parsed.flags.get('--jurisdiction')?.[0];
   if (typeof jurisdiction === 'string' && jurisdiction) target.jurisdiction = jurisdiction;
-  if (parsed.kind === 'pages_deploy') target.account_id = plan.account_id;
+  if (parsed.kind === 'pages_deploy') {
+    target.account_id = plan.account_id;
+    const branch = parsed.flags.get('--branch')?.[0];
+    if (typeof branch === 'string' && branch) target.branch = branch;
+  }
   return target;
 }
 
-async function readJson(runner, args, plan) {
+// Key shared by a create and later ops on the same resource.
+function resourceKey(target) {
+  return target.name ? `${target.type} ${target.name}` : null;
+}
+
+function notInvertible(before, reason) {
+  return { before, invertible: false, reason };
+}
+
+// Returns the parsed JSON, or calls onFailure(message) for a non-zero exit
+// (it may return a value; otherwise the read aborts with snapshot_failed).
+async function readJson(runner, args, plan, onFailure = () => undefined) {
   const command = `wrangler ${args.join(' ')}`;
   const result = await runner([...args, '--json'], {
     cwd: plan.project_dir,
     token: process.env.CLOUDFLARE_API_TOKEN,
     accountId: plan.account_id,
   });
-  if (result.code !== 0) throw snapshotFailed(`Snapshot read failed (${command}): ${failureMessage(result)}`);
+  if (result.code !== 0) {
+    const message = failureMessage(result);
+    const handled = onFailure(message);
+    if (handled !== undefined) return handled;
+    throw snapshotFailed(`Snapshot read failed (${command}): ${message}`);
+  }
   try {
     return JSON.parse(result.stdout);
   } catch {
@@ -59,29 +78,48 @@ async function readJson(runner, args, plan) {
   }
 }
 
+const NO_WORKER = Symbol('no worker');
+
 // before = { deployment_id, versions: [{ version_id, percentage }] } of the
-// active (latest) deployment; wrangler prints deployments oldest first.
+// active deployment (latest created_on), or { exists: false } for a Worker
+// that does not exist yet (the inverse deletes it).
 async function readWorker(runner, target, plan) {
   const name = target.name ? ['--name', target.name] : [];
-  const deployments = await readJson(runner, ['deployments', 'list', ...name, ...target.target_args], plan);
+  const deployments = await readJson(runner, ['deployments', 'list', ...name, ...target.target_args], plan, (message) =>
+    WORKER_NOT_FOUND.test(message) ? NO_WORKER : undefined,
+  );
+  if (deployments === NO_WORKER) {
+    if (!target.name) return notInvertible({ exists: false }, 'new Worker without --name or worker in the op');
+    return { before: { exists: false }, invertible: true };
+  }
   if (!Array.isArray(deployments)) throw snapshotFailed('Snapshot read (wrangler deployments list) did not return a list');
-  const active = deployments[deployments.length - 1];
-  const versions = (Array.isArray(active?.versions) ? active.versions : []).map((v) => ({
-    version_id: v?.version_id,
-    percentage: v?.percentage,
-  }));
+  let active = null;
+  for (const deployment of deployments) {
+    if (!active || String(deployment?.created_on ?? '') > String(active.created_on ?? '')) active = deployment;
+  }
+  const versions = (Array.isArray(active?.versions) ? active.versions : []).map((v) => {
+    if (typeof v?.version_id !== 'string' || !v.version_id) {
+      throw snapshotFailed('Snapshot read (wrangler deployments list) returned a version without a version_id');
+    }
+    return { version_id: v.version_id, percentage: v.percentage };
+  });
+  if (versions.length > 1 && !versions.every((v) => typeof v.percentage === 'number')) {
+    throw snapshotFailed('Snapshot read (wrangler deployments list) returned a split deployment without percentages');
+  }
   return { before: { deployment_id: active?.id ?? null, versions }, invertible: versions.length > 0 };
 }
 
-// before = { deployment_id } of the newest live production deployment.
-async function readPages(runner, target, plan) {
+// before = { deployment_id, production_branch } from the project's canonical
+// (live production) deployment.
+async function readPages(client, target) {
   if (!target.name) throw snapshotFailed('pages deploy needs --project-name so its current production deployment can be snapshotted');
-  const args = ['pages', 'deployment', 'list', '--project-name', target.name, '--environment', 'production'];
-  const deployments = await readJson(runner, args, plan);
-  if (!Array.isArray(deployments)) throw snapshotFailed('Snapshot read (wrangler pages deployment list) did not return a list');
-  const live = deployments.find((d) => typeof d?.Id === 'string' && !PAGES_NOT_LIVE.has(d?.Status));
-  const id = live?.Id ?? null;
-  return { before: { deployment_id: id }, invertible: id !== null };
+  const project = await client.request('GET', `/accounts/${target.account_id}/pages/projects/${target.name}`);
+  const productionBranch = project?.production_branch ?? null;
+  const id = project?.canonical_deployment?.id;
+  const before = { deployment_id: typeof id === 'string' && id ? id : null, production_branch: productionBranch };
+  if (target.branch && target.branch !== productionBranch) return notInvertible(before, 'preview deployment');
+  if (!before.deployment_id) return notInvertible(before, 'no production deployment yet');
+  return { before, invertible: true };
 }
 
 // before = { bookmark } current before the op.
@@ -93,29 +131,46 @@ async function readD1(runner, target, plan) {
   return { before: { bookmark: info.bookmark }, invertible: true };
 }
 
-// `client` is the REST client, unused by the current readers (spec 3.6 reads
-// go through wrangler). Read failures abort before any write.
-export async function captureWranglerEntry(runner, client, op, plan) {
+// `client` is the REST client (Pages project read). options.created holds
+// resourceKey()s created by earlier ops of the same plan: those resources do
+// not exist yet, so nothing is read and the create's delete covers rollback.
+// Read failures abort before any write.
+export async function captureWranglerEntry(runner, client, op, plan, { created = new Set() } = {}) {
   const target = targetOf(op, plan);
   const { kind } = target;
   let state = { before: null, invertible: false };
-  if (WORKER_KINDS.has(kind)) state = await readWorker(runner, target, plan);
-  else if (kind === 'pages_deploy') state = await readPages(runner, target, plan);
+  const key = resourceKey(target);
+  if (kind === 'resource_create') state = { before: null, invertible: true };
+  else if (key && created.has(key)) state = notInvertible({ exists: false }, 'created earlier in this plan');
+  else if (WORKER_KINDS.has(kind)) state = await readWorker(runner, target, plan);
+  else if (kind === 'pages_deploy') state = await readPages(client, target);
   else if (D1_KINDS.has(kind)) state = await readD1(runner, target, plan);
-  else if (kind === 'resource_create') state = { before: null, invertible: true };
-  return { kind, before: state.before, invertible: state.invertible, target };
+  const entry = { kind, before: state.before, invertible: state.invertible, target };
+  if (state.reason) entry.reason = state.reason;
+  return entry;
+}
+
+// Records the resource an entry creates, for captureWranglerEntry's options.
+export function noteCreated(created, entry) {
+  const key = entry.kind === 'resource_create' ? resourceKey(entry.target) : null;
+  if (key) created.add(key);
 }
 
 const wrangler = (args, extra = {}) => ({ kind: 'wrangler', args, ...extra });
 
+// A new Worker is deleted; a single version is rolled back to; a split
+// deployment is restored with `versions deploy <id>@<pct>% ...`.
 function invertWorker({ before, target }) {
+  if (before?.exists === false) {
+    return [wrangler(['delete', '--name', target.name, ...target.target_args], { confirm_name: target.name })];
+  }
   const versions = before?.versions ?? [];
   if (versions.length === 0) return [];
-  if (versions.length > 1) {
-    const split = versions.map((v) => `${v.version_id}@${v.percentage}%`).join(', ');
-    throw ambiguous(`Worker ${target.name ?? '(from wrangler config)'} was on a split deployment (${split}); rollback restores one version, use a versions deploy plan instead`);
-  }
   const name = target.name ? ['--name', target.name] : [];
+  if (versions.length > 1) {
+    const specs = versions.map((v) => `${v.version_id}@${v.percentage}%`);
+    return [wrangler(['versions', 'deploy', ...specs, ...name, ...target.target_args])];
+  }
   return [wrangler(['rollback', versions[0].version_id, ...name, ...target.target_args])];
 }
 
@@ -130,7 +185,7 @@ function invertPages({ before, target }) {
 }
 
 function invertD1({ before, target }) {
-  return [wrangler(['d1', 'time-travel', 'restore', target.name, '--bookmark', before.bookmark, ...target.target_args])];
+  return [wrangler(['d1', 'time-travel', 'restore', target.name, '--bookmark', before.bookmark, '--json', ...target.target_args])];
 }
 
 // precheck 'empty': the executor deletes only if the resource is still empty.

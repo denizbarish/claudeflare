@@ -5,7 +5,7 @@
 import { classify } from './resources.mjs';
 import { CfError } from './errors.mjs';
 import { runWrangler } from './wrangler.mjs';
-import { captureWranglerEntry, inverseForWrangler } from './wrangler-snapshot.mjs';
+import { captureWranglerEntry, inverseForWrangler, noteCreated } from './wrangler-snapshot.mjs';
 
 const DNS_FIELDS = [
   'type', 'name', 'content', 'data', 'ttl', 'proxied', 'priority', 'comment', 'tags', 'settings',
@@ -89,11 +89,14 @@ const READERS = {
 // options.runner runs wrangler reads for wrangler ops (tests inject a fake).
 export async function captureSnapshot(client, plan, { runner = runWrangler } = {}) {
   const entries = [];
+  const created = new Set();
   const ops = plan.ops ?? [];
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     if (op?.kind === 'wrangler') {
-      entries.push({ op_index: i, op_kind: 'wrangler', ...(await captureWranglerEntry(runner, client, op, plan)) });
+      const entry = await captureWranglerEntry(runner, client, op, plan, { created });
+      noteCreated(created, entry);
+      entries.push({ op_index: i, op_kind: 'wrangler', ...entry });
       continue;
     }
     const { kind, invertible, readPath } = classify(op);
