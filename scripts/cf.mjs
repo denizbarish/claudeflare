@@ -126,7 +126,7 @@ function planNew(cwd, flags) {
   let target;
   let resolved;
   if (scope === 'account') {
-    target = { scope, account_id: draft.account_id };
+    target = { scope, account_id: draft.account_id, project_dir: draft.project_dir };
     resolved = draft.ops;
   } else {
     const zoneId = String(draft.zone_id);

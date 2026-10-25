@@ -9,6 +9,7 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
+import { classifyWranglerOp } from './wrangler-ops.mjs';
 
 const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied']);
 
@@ -57,8 +58,8 @@ export function assertDraft(plan) {
 // Appends one "Not reversible" line per op that rollback cannot undo.
 export function withIrreversibleRisk(risk, ops) {
   const lines = ops
-    .filter((op) => !classify(op).invertible)
-    .map((op) => `Not reversible: ${op.method} ${op.path}`);
+    .filter((op) => !(op?.kind === 'wrangler' ? classifyWranglerOp(op) : classify(op)).invertible)
+    .map((op) => (op?.kind === 'wrangler' ? `Not reversible: wrangler ${op.args.join(' ')}` : `Not reversible: ${op.method} ${op.path}`));
   return [risk, ...lines].filter((line) => typeof line === 'string' && line !== '').join('\n');
 }
 

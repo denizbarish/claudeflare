@@ -2,6 +2,7 @@
 // kind that the snapshot module knows how to capture and invert.
 
 import { CfError } from './errors.mjs';
+import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, validateWranglerOp } from './wrangler-ops.mjs';
 
 const ID = '[A-Za-z0-9]+';
 // Setting ids and phase names contain underscores (always_use_https,
@@ -115,7 +116,25 @@ export function validatePlanOps(ops) {
     }
     seen.set(key, index);
   };
+  const resources = new Map();
+  const claimWrangler = (op, index) => {
+    const { kind, resource } = classifyWranglerOp(op);
+    // A deploy without a worker name targets the worker in the wrangler config.
+    if (DEPLOY_KINDS.has(kind)) claim(`deploy ${resource?.name ?? ''}`, index, `deploys of the same worker (${resource?.name ?? 'from wrangler config'})`);
+    if (!resource) return;
+    const key = `${resource.type} ${resource.name}`;
+    const isDelete = DELETE_KINDS.has(kind);
+    const prior = resources.get(key);
+    if (prior && (prior.isDelete || isDelete)) {
+      throw new CfError('plan_conflict', `Ops ${prior.index} and ${index} both target ${key} and one deletes it; split them into separate plans`);
+    }
+    if (!prior || isDelete) resources.set(key, { index, isDelete });
+  };
   (ops ?? []).forEach((op, index) => {
+    if (op?.kind === 'wrangler') {
+      claimWrangler(op, index);
+      return;
+    }
     const { kind, readPath } = classify(op);
     const label = EXCLUSIVE_TARGET[kind];
     if (!label) return;
@@ -157,7 +176,7 @@ function isAllowedAccountOp(method, path, accountId) {
   return ACCOUNT_REST_ALLOWLIST.some((entry) => entry.method === method && entry.pattern.test(rest));
 }
 
-// Structural check only; subcommand and flag rules are added by Task 3.
+// Structural check; subcommand and flag rules live in wrangler-ops.mjs.
 function assertWranglerOpShape(op, index) {
   const reject = (why) => {
     throw new CfError('invalid_op', `Op ${index} (wrangler) ${why}`);
@@ -181,6 +200,7 @@ export function validateOpTargets(ops, plan) {
         throw new CfError('invalid_op', `Op ${index} has unsupported kind ${JSON.stringify(op.kind)} on ${account ? 'account' : 'zone'} plans`);
       }
       assertWranglerOpShape(op, index);
+      validateWranglerOp(op, plan, index);
       return;
     }
     const { method, path } = op ?? {};
