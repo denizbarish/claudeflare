@@ -105,6 +105,8 @@ async function get(positional, flags) {
   return createClient().request('GET', path, { query: parseQuery(flags.query) });
 }
 
+const PLAN_SCOPES = new Set(['zone', 'account']);
+
 function isDraftOp(op) {
   return op?.kind === 'wrangler' || (typeof op?.method === 'string' && typeof op?.path === 'string');
 }
@@ -120,11 +122,18 @@ function planNew(cwd, flags) {
   const draft = readJsonFile(cwd, flag(flags, 'file'));
   assertDraftOps(draft?.ops);
   const scope = draft.scope ?? 'zone';
-  const zoneId = String(draft.zone_id);
-  const resolved = scope === 'account'
-    ? draft.ops
-    : draft.ops.map((op) => (typeof op.path === 'string' ? { ...op, path: op.path.split('{zone_id}').join(zoneId) } : op));
-  validateOpTargets(resolved, { scope, zone_id: zoneId, account_id: draft.account_id });
+  if (!PLAN_SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
+  let target;
+  let resolved;
+  if (scope === 'account') {
+    target = { scope, account_id: draft.account_id };
+    resolved = draft.ops;
+  } else {
+    const zoneId = String(draft.zone_id);
+    target = { scope, zone_id: zoneId };
+    resolved = draft.ops.map((op) => (typeof op.path === 'string' ? { ...op, path: op.path.split('{zone_id}').join(zoneId) } : op));
+  }
+  validateOpTargets(resolved, target);
   validatePlanOps(resolved);
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {

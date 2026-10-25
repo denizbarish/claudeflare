@@ -44,8 +44,20 @@ export function makePlanId(zoneName, slug, now) {
   return [zoneShort, stamp, slugify(slug)].filter(Boolean).join('-');
 }
 
+function sha256(value) {
+  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
 export function hashOps(ops) {
-  return `sha256:${createHash('sha256').update(JSON.stringify(ops)).digest('hex')}`;
+  return sha256(ops);
+}
+
+// The approval hash. Zone plans keep the v1 value (ops only) so existing
+// approvals stay valid; account plans also bind the account and project dir.
+export function hashPlan(plan) {
+  if (plan.scope !== 'account') return hashOps(plan.ops);
+  const { scope, account_id, project_dir, ops } = plan;
+  return sha256({ scope, account_id, project_dir, ops });
 }
 
 // State directories (snapshots) are keyed by zone name or account slug.
@@ -99,9 +111,9 @@ export function createPlan(cwd, fields, now = new Date()) {
     summary,
     risk,
     ops: resolved,
-    ops_hash: hashOps(resolved),
     status: 'draft',
   };
+  plan.ops_hash = hashPlan(plan);
   mkdirSync(paths(cwd).plans, { recursive: true });
   try {
     writeFileSync(planFile(cwd, id), toJson(plan), { flag: 'wx' });

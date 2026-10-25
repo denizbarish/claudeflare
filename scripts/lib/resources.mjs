@@ -157,6 +157,16 @@ function isAllowedAccountOp(method, path, accountId) {
   return ACCOUNT_REST_ALLOWLIST.some((entry) => entry.method === method && entry.pattern.test(rest));
 }
 
+// Structural check only; subcommand and flag rules are added by Task 3.
+function assertWranglerOpShape(op, index) {
+  const reject = (why) => {
+    throw new CfError('invalid_op', `Op ${index} (wrangler) ${why}`);
+  };
+  if ('method' in op || 'path' in op || 'body' in op) reject('must not carry method, path or body');
+  if (!Array.isArray(op.args) || op.args.length === 0) reject('needs a non-empty args array');
+  if (!op.args.every((arg) => typeof arg === 'string')) reject('args must all be strings');
+}
+
 // Plan ops (after {zone_id} resolution) must stay inside the plan's own zone
 // (zone plans) or match the account REST allowlist (account plans), use a
 // plain HTTP method, carry no leftover placeholders and never create a Page
@@ -166,10 +176,11 @@ export function validateOpTargets(ops, plan) {
   const account = plan?.scope === 'account';
   const prefix = `/zones/${plan?.zone_id}/`;
   (ops ?? []).forEach((op, index) => {
-    if (account && op?.kind === 'wrangler') {
-      if (!Array.isArray(op.args) || op.args.length === 0) {
-        throw new CfError('invalid_op', `Op ${index} (wrangler) needs a non-empty args array`);
+    if (op && typeof op === 'object' && 'kind' in op) {
+      if (!account || op.kind !== 'wrangler') {
+        throw new CfError('invalid_op', `Op ${index} has unsupported kind ${JSON.stringify(op.kind)} on ${account ? 'account' : 'zone'} plans`);
       }
+      assertWranglerOpShape(op, index);
       return;
     }
     const { method, path } = op ?? {};

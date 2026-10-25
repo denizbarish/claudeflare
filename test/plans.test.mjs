@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,7 @@ import {
   listPlans,
   updatePlan,
   planStateName,
+  hashPlan,
 } from '../scripts/lib/plans.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 
@@ -203,7 +205,7 @@ test('createPlan builds an account plan with slug-based id and real project_dir'
   assert.equal('zone_id' in plan, false);
   assert.equal('zone_name' in plan, false);
   assert.deepEqual(plan.ops, [{ kind: 'wrangler', args: ['deploy'] }]);
-  assert.equal(plan.ops_hash, hashOps(plan.ops));
+  assert.equal(plan.ops_hash, hashPlan(plan));
   assert.equal(plan.status, 'draft');
   assert.deepEqual(readPlan(cwd, plan.id), plan);
   assert.equal(planStateName(plan), 'acme-corp');
@@ -241,4 +243,14 @@ test('createPlan rejects an unknown scope', (t) => {
     (e) => e instanceof CfError && e.code === 'invalid_input',
   );
   assert.ok(!existsSync(paths(cwd).root));
+});
+
+test('account plan ops_hash binds scope, account_id, project_dir and ops', (t) => {
+  const cwd = tempDir(t);
+  const plan = createPlan(cwd, accountPlan(cwd), NOW);
+  const { scope, account_id, project_dir, ops } = plan;
+  const expected = `sha256:${createHash('sha256').update(JSON.stringify({ scope, account_id, project_dir, ops })).digest('hex')}`;
+  assert.equal(plan.ops_hash, expected);
+  assert.equal(hashPlan(plan), expected);
+  assert.notEqual(plan.ops_hash, hashOps(plan.ops));
 });

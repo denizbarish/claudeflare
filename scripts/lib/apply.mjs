@@ -116,10 +116,18 @@ function assertRollbackSourceCurrent(cwd, plan) {
   }
 }
 
+// Wrangler execution is not available yet; refuse before any approval or API use.
+function assertNoWranglerOps(plan) {
+  if ((plan.ops ?? []).some((op) => op?.kind === 'wrangler')) {
+    throw new CfError('not_supported', `Plan ${plan.id} contains wrangler ops, which this version cannot apply yet`);
+  }
+}
+
 // The plan is read exactly once; that object is approval-checked and executed.
 export async function applyPlan(cwd, client, id, now = new Date()) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
+  assertNoWranglerOps(plan);
   if (plan.rollback_of) {
     assertRollbackSourceCurrent(cwd, plan);
   } else {

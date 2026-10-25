@@ -5,7 +5,7 @@ import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../scripts/lib/paths.mjs';
-import { createPlan, readPlan, hashOps } from '../scripts/lib/plans.mjs';
+import { createPlan, readPlan, hashOps, hashPlan } from '../scripts/lib/plans.mjs';
 import { writeApproval, checkApproval, consumeApproval } from '../scripts/lib/approvals.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 import { getApprovalKey } from '../scripts/lib/approval-key.mjs';
@@ -260,4 +260,52 @@ test('an approval written in one directory does not verify in another with the s
   cpSync(paths(cwd).root, paths(other).root, { recursive: true });
   assert.deepEqual(readPlan(other, plan.id), plan);
   assert.deepEqual(checkApproval(other, plan.id, T0), { ok: false, reason: 'bad_signature' });
+});
+
+const AID = 'abcdef0123456789abcdef0123456789';
+
+function accountPlanSetup(t) {
+  const { cwd } = setup(t);
+  const plan = createPlan(
+    cwd,
+    {
+      scope: 'account',
+      account_id: AID,
+      account_name: 'Acme Corp',
+      project_dir: cwd,
+      summary: 'Roll back Pages',
+      risk: 'r',
+      ops: [{ method: 'POST', path: `/accounts/${AID}/pages/projects/site/deployments/d1/rollback` }],
+      slug: 'rollback',
+    },
+    T0,
+  );
+  return { cwd, plan };
+}
+
+test('zone plan approval hash stays the v1 ops-only hash', (t) => {
+  const { plan } = setup(t);
+  assert.equal(plan.ops_hash, hashOps(plan.ops));
+  assert.equal(hashPlan(plan), hashOps(plan.ops));
+  assert.equal(hashPlan({ ops: plan.ops }), hashOps(plan.ops));
+});
+
+test('checkApproval hash_mismatch when an account plan account_id is edited after approval', (t) => {
+  const { cwd, plan } = accountPlanSetup(t);
+  writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, T0);
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+  const edited = { ...plan, account_id: 'fedcba9876543210fedcba9876543210' };
+  writeFileSync(planFile(cwd, plan.id), JSON.stringify(edited, null, 2));
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: false, reason: 'hash_mismatch' });
+});
+
+test('checkApproval hash_mismatch when an account plan project_dir or scope is edited after approval', (t) => {
+  const { cwd, plan } = accountPlanSetup(t);
+  writeApproval(cwd, { plan_id: plan.id, session_id: 's' }, T0);
+  const other = mkdtempSync(join(tmpdir(), 'claudeflare-other-'));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  writeFileSync(planFile(cwd, plan.id), JSON.stringify({ ...plan, project_dir: realpathSync(other) }, null, 2));
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: false, reason: 'hash_mismatch' });
+  writeFileSync(planFile(cwd, plan.id), JSON.stringify({ ...plan, scope: 'zone' }, null, 2));
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: false, reason: 'hash_mismatch' });
 });

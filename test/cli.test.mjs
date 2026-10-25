@@ -393,6 +393,12 @@ test('cli plan new rejects account plan ops outside the allowlist and wrangler o
     { kind: 'wrangler', args: [] },
     { kind: 'wrangler', args: 'deploy' },
     { kind: 'wrangler' },
+    { kind: 'wrangler', args: ['deploy'], method: 'POST' },
+    { kind: 'wrangler', args: ['deploy'], path: `/accounts/${AID}${pages}` },
+    { kind: 'wrangler', args: ['deploy'], body: {} },
+    { kind: 'wrangler', args: ['deploy', 1] },
+    { kind: 'wrangler', args: ['deploy', null] },
+    { kind: 'rest', method: 'POST', path: `/accounts/${AID}${pages}` },
   ];
   const account = { scope: 'account', account_id: AID, account_name: 'Acme', project_dir: cwd, summary: 's', risk: 'r', slug: 'x' };
   for (const op of bad) {
@@ -401,11 +407,17 @@ test('cli plan new rejects account plan ops outside the allowlist and wrangler o
     assert.equal(res.code, 1, JSON.stringify(op));
     assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op', JSON.stringify(op));
   }
-  const zone = { zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [{ kind: 'wrangler', args: ['deploy'] }] };
-  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(zone));
-  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
-  assert.equal(res.code, 1);
-  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op');
+  const zoneOps = [
+    { kind: 'wrangler', args: ['deploy'] },
+    { kind: 'rest', method: 'PATCH', path: '/zones/{zone_id}/settings/ssl', body: { value: 'strict' } },
+  ];
+  for (const op of zoneOps) {
+    const zone = { zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [op] };
+    writeFileSync(join(cwd, 'draft.json'), JSON.stringify(zone));
+    const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+    assert.equal(res.code, 1, JSON.stringify(op));
+    assert.equal(JSON.parse(res.stderr).error.code, 'invalid_op', JSON.stringify(op));
+  }
   assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
 });
 
@@ -425,5 +437,15 @@ test('cli plan new reports invalid_account for a relative project_dir', async (t
   const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
   assert.equal(res.code, 1);
   assert.equal(JSON.parse(res.stderr).error.code, 'invalid_account');
+  assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
+});
+
+test('cli plan new refuses an unknown scope with invalid_input', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const draft = { scope: 'global', zone_id: ZID, zone_name: 'example.com', summary: 's', risk: 'r', slug: 'x', ops: [{ kind: 'wrangler', args: ['deploy'] }] };
+  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
+  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_input');
   assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
 });
