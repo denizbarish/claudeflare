@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listSecretFiles } from '../scripts/lib/secret-files.mjs';
-import { isGitIgnored, writeEnvVar } from '../scripts/lib/tunnel-token.mjs';
+import { isGitIgnored, runTunnelToken, writeEnvVar } from '../scripts/lib/tunnel-token.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
 const TOKEN = 'tok-tunnel-token-API-123';
@@ -23,13 +23,11 @@ function tempDir(t, prefix = 'claudeflare-tt-') {
 }
 
 // Async spawn: the stub server lives in this process, so spawnSync would deadlock.
-// `--` before the script: some Node versions (24.22) read --env-file anywhere
-// in argv as their own option and exit 9 before the script runs.
 function run(cwd, args, env = {}) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ['--', CLI, ...args],
+      [CLI, ...args],
       { cwd, env: { PATH: process.env.PATH, CLAUDEFLARE_KEY_DIR: join(cwd, '.key'), CLOUDFLARE_API_TOKEN: TOKEN, ...env } },
       (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }),
     );
@@ -49,7 +47,7 @@ async function stub(t, { result = VALUE, status = 200 } = {}) {
   return { base: `http://127.0.0.1:${server.address().port}`, seen };
 }
 
-const args = (envFile, extra = []) => ['tunnel-token', '--account', AID, '--tunnel', TID, '--env-file', envFile, ...extra];
+const args = (envFile, extra = []) => ['tunnel-token', '--account', AID, '--tunnel', TID, '--env-path', envFile, ...extra];
 
 function assertNoValue(res) {
   assert.ok(!res.stdout.includes(VALUE), 'value printed on stdout');
@@ -131,8 +129,8 @@ test('tunnel-token validates --account, --tunnel and --var before any request', 
   const cwd = tempDir(t);
   const { base, seen } = await stub(t);
   for (const bad of [
-    ['tunnel-token', '--account', 'xyz', '--tunnel', TID, '--env-file', '.env'],
-    ['tunnel-token', '--account', AID, '--tunnel', 'not-a-uuid', '--env-file', '.env'],
+    ['tunnel-token', '--account', 'xyz', '--tunnel', TID, '--env-path', '.env'],
+    ['tunnel-token', '--account', AID, '--tunnel', 'not-a-uuid', '--env-path', '.env'],
     args('.env', ['--var', 'lower']),
     args('.env', ['--var', '1BAD']),
     ['tunnel-token', '--account', AID, '--tunnel', TID],
@@ -182,4 +180,50 @@ test('writeEnvVar creates a 0600 file and appends to a file without the variable
   writeEnvVar(file, 'C', 'v2');
   assert.equal(readFileSync(file, 'utf8'), 'A_B=v1\nC=v2\n');
   assert.throws(() => writeEnvVar(file, 'bad-name', 'v'), /variable name/);
+});
+
+test('writeEnvVar keeps CRLF line endings and values containing =', (t) => {
+  const dir = tempDir(t);
+  const file = join(dir, 'x.env');
+  writeFileSync(file, 'A=1\r\nTUNNEL_TOKEN=old\r\nB=2\r\n', { mode: 0o600 });
+  writeEnvVar(file, 'TUNNEL_TOKEN', 'eyJhYmMi==');
+  assert.equal(readFileSync(file, 'utf8'), 'A=1\r\nTUNNEL_TOKEN=eyJhYmMi==\r\nB=2\r\n');
+  writeEnvVar(file, 'TUNNEL_TOKEN', 'x=y=z');
+  assert.equal(readFileSync(file, 'utf8'), 'A=1\r\nTUNNEL_TOKEN=x=y=z\r\nB=2\r\n');
+});
+
+test('tunnel-token records the env file under the project root shared with the guard', async (t) => {
+  const project = tempDir(t);
+  mkdirSync(join(project, '.git'));
+  mkdirSync(join(project, 'a'));
+  mkdirSync(join(project, 'b'));
+  const { base } = await stub(t);
+  const res = await run(join(project, 'b'), args('../a/.env'), { CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(JSON.parse(res.stdout).file, join(project, 'a', '.env'));
+  assert.deepEqual(listSecretFiles(project), [join(project, 'a', '.env')]);
+  assert.equal(existsSync(join(project, 'b', '.claudeflare')), false);
+});
+
+test('a write failure after a successful read is redacted and the index entry is already recorded', async (t) => {
+  const root = tempDir(t);
+  // The value doubles as the folder name, so the OS error message contains it.
+  const value = 'eyJTRUNSRVQtRElSLVZBTFVFIn0';
+  const dir = join(root, value);
+  mkdirSync(dir);
+  chmodSync(dir, 0o500);
+  const fake = () => ({ request: async () => value });
+  const opts = { account: AID, tunnel: TID, envFile: join(dir, '.env') };
+  try {
+    await assert.rejects(runTunnelToken(root, opts, fake), (err) => {
+      assert.equal(err.code, 'write_failed');
+      assert.ok(!err.message.includes(value), err.message);
+      assert.match(err.message, /\[REDACTED\]/);
+      return true;
+    });
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  assert.deepEqual(listSecretFiles(root), [join(dir, '.env')]);
+  assert.equal(existsSync(join(dir, '.env')), false);
 });

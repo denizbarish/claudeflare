@@ -11,7 +11,7 @@ import { inspectCode } from './lib/inspect-code.mjs';
 import { isAllowedCall, isTunnelTokenRead } from './lib/allowed-call.mjs';
 import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 import { decideWrangler } from './lib/wrangler-rules.mjs';
-import { SECRET_REASON, TUNNEL_TOKEN_REASON, bashReadsSecret, decideCloudflared, globMatchesName, readSecretIndex } from './lib/secret-rules.mjs';
+import { SECRET_REASON, TUNNEL_TOKEN_REASON, bashPaths, bashReadsSecret, decideCloudflared, globExcludes, secretFilesFor } from './lib/secret-rules.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -103,9 +103,9 @@ function decideFileTool(toolInput, cwd) {
 }
 
 // Secret files: anything under a .claudeflare/secrets folder, and every file
-// listed in secret-files.json (canonical paths).
-function secretFiles(cwd) {
-  return readSecretIndex(cwd).map(canonicalPath);
+// listed in secret-files.json of the project owning cwd or a target (canonical paths).
+function secretFiles(cwd, targets) {
+  return secretFilesFor(cwd, targets).map(canonicalPath);
 }
 
 function inSecretsDir(target) {
@@ -119,7 +119,7 @@ const isSecret = (target, files) => inSecretsDir(target) || files.includes(canon
 function decideRead(toolInput, cwd) {
   const targets = toolTargets(toolInput, cwd);
   if (targets.some(inKeyDir)) return deny(STATE_REASON);
-  const files = secretFiles(cwd);
+  const files = secretFiles(cwd, targets);
   return targets.some((target) => isSecret(target, files)) ? deny(SECRET_REASON) : null;
 }
 
@@ -140,16 +140,17 @@ function decideSearch(toolName, toolInput, cwd) {
     roots.push(globBase(toolInput.pattern));
   }
   if (roots.some(inKeyDir)) return deny(STATE_REASON);
-  const files = secretFiles(cwd);
+  const files = secretFiles(cwd, roots);
   if (roots.some((root) => isSecret(root, files))) return deny(SECRET_REASON);
   return toolName === 'Grep' && grepCanReachSecret(toolInput, roots, files) ? deny(SECRET_REASON) : null;
 }
 
-// Grep reads contents: a root that holds a listed file is denied unless the
-// Grep glob cannot match that file's name. Glob only lists names.
+// Grep reads contents: a root that holds a secret file is denied unless the
+// Grep glob is one the guard models and cannot match that file's name. Glob
+// only lists names.
 function grepCanReachSecret(toolInput, roots, files) {
   const glob = typeof toolInput.glob === 'string' && toolInput.glob !== '' ? toolInput.glob : null;
-  return files.some((file) => roots.some((root) => isInside(root, file)) && (glob === null || globMatchesName(glob, basename(file))));
+  return files.some((file) => roots.some((root) => isInside(root, file)) && (glob === null || !globExcludes(glob, basename(file))));
 }
 
 function touchesState(command) {
@@ -202,7 +203,7 @@ function decideBash(toolInput, cwd) {
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
     TUNNEL_TOKEN_TEXT.test(command) ? deny(TUNNEL_TOKEN_REASON) : null,
-    bashReadsSecret(command, cwd, secretFiles(cwd), canonicalPath) ? deny(SECRET_REASON) : null,
+    bashReadsSecret(command, cwd, secretFiles(cwd, bashPaths(command, cwd)), { canonical: canonicalPath, isInside }) ? deny(SECRET_REASON) : null,
   ].filter(Boolean);
   const cloudflared = decideCloudflared(command);
   if (cloudflared) decisions.push(deny(cloudflared));

@@ -5,11 +5,13 @@
 // Tunnel Write, so it runs with the same token as apply.
 
 import { spawnSync } from 'node:child_process';
-import { realpathSync, statSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, constants, fchmodSync, openSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createClient, redact } from './api.mjs';
 import { CfError } from './errors.mjs';
-import { lstatOrNull, readOrEmpty, recordSecretFile, refuseLink, replaceFile } from './secret-files.mjs';
+import { secretProjectRoot } from './project-root.mjs';
+import { lstatOrNull, readOrEmpty, recordSecretFile, refuseLink } from './secret-files.mjs';
 
 export const DEFAULT_VARIABLE = 'TUNNEL_TOKEN';
 const VARIABLE = /^[A-Z_][A-Z0-9_]*$/;
@@ -18,6 +20,7 @@ const TUNNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const SINGLE_LINE = /^[^\r\n\0]+$/;
 const NEW_FILE_MODE = 0o600;
 const OTHERS_MASK = 0o077;
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
 const lineFor = (name) => new RegExp(`^(\\s*(?:export\\s+)?)${name}\\s*=`);
 
@@ -29,14 +32,35 @@ function envFileStat(file) {
   return stat;
 }
 
-// Creates file with mode 0600 or rewrites it keeping its mode: every NAME=
-// line (also `export NAME=`) gets the new value, other lines stay, and NAME
-// is appended when absent. Never follows a symlink.
+// Writes content to a new temp file in the same folder (O_EXCL | O_NOFOLLOW,
+// final mode set before any byte lands) and renames it over file, so a
+// failure never leaves file half written or missing.
+function atomicWrite(file, content, mode) {
+  const temp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`);
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, mode);
+  try {
+    try {
+      fchmodSync(fd, mode);
+      writeSync(fd, content);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, file);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
+  }
+}
+
+// Creates file with mode 0600 or rewrites it keeping its mode and line
+// endings: every NAME= line (also `export NAME=`) gets the new value, other
+// lines stay, and NAME is appended when absent. Never follows a symlink.
 export function writeEnvVar(file, name, value) {
   if (typeof name !== 'string' || !VARIABLE.test(name)) throw new TypeError(`Invalid variable name: ${JSON.stringify(name)}`);
   if (typeof value !== 'string' || !SINGLE_LINE.test(value)) throw new TypeError('The value must be a non-empty single-line string');
   const stat = envFileStat(file);
   const content = stat ? readOrEmpty(file) : '';
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
   const lines = content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/);
   const pattern = lineFor(name);
   let found = false;
@@ -47,7 +71,7 @@ export function writeEnvVar(file, name, value) {
     return `${match[1]}${name}=${value}`;
   });
   if (!found) next.push(`${name}=${value}`);
-  replaceFile(file, `${next.join('\n')}\n`, stat ? stat.mode & 0o777 : NEW_FILE_MODE);
+  atomicWrite(file, `${next.join(eol)}${eol}`, stat ? stat.mode & 0o777 : NEW_FILE_MODE);
 }
 
 // True when git ignores file; false outside a git repo or without git.
@@ -95,8 +119,9 @@ export async function runTunnelToken(cwd, { account, tunnel, envFile, variable =
     throw new CfError('invalid_response', 'The tunnel token response is not a non-empty single-line string; nothing was written');
   }
   try {
+    // Recorded first: a stale entry is harmless, an unlisted secret is not.
+    recordSecretFile(secretProjectRoot(file, cwd), file);
     writeEnvVar(file, variable, value);
-    recordSecretFile(cwd, file);
   } catch (err) {
     const message = redact(String(err?.message ?? err), process.env.CLOUDFLARE_API_TOKEN, [value]);
     throw new CfError('write_failed', `Writing ${variable} failed: ${message}`);

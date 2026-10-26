@@ -13,6 +13,7 @@ import { decideWrangler, WRANGLER_REASON } from '../hooks/lib/wrangler-rules.mjs
 import { isAllowedCall } from '../hooks/lib/allowed-call.mjs';
 import { CLOUDFLARED_REASON, SECRET_REASON, TUNNEL_TOKEN_REASON } from '../hooks/lib/secret-rules.mjs';
 import { recordSecretFile, writeSecretFile } from '../scripts/lib/secret-files.mjs';
+import { runTunnelToken } from '../scripts/lib/tunnel-token.mjs';
 
 const APPROVE = fileURLToPath(new URL('../hooks/approve.mjs', import.meta.url));
 const GUARD = fileURLToPath(new URL('../hooks/guard.mjs', import.meta.url));
@@ -723,12 +724,23 @@ test('Bash cat of a listed env file is denied', (t) => {
     "sh -c 'tail deploy/.env'",
     'cat .claudeflare/secrets/x.json',
     'ls .claudeflare/secrets',
+    // Case-insensitive filesystems: case variants name the same folder.
+    ...(process.platform === 'darwin' ? ['cat .ClaudeFlare/Secrets/x.json'] : []),
+    'while read -r line; do echo "$line"; done < deploy/.env',
+    'x=$(<deploy/.env)',
+    'python3 app.py 0<deploy/.env',
   ]) {
     assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
   }
   // The basename with a read verb is enough: the guard cannot follow every cd.
   assertDeny(guard(ctx, bash('cat .env')), SECRET_REASON);
-  for (const cmd of ['cat other.env', 'cat deploy/.env.example', 'ls deploy', 'npm test', 'echo .env', 'git add .env.example']) {
+  // Programs handed the file may use it; only reads into the conversation are denied.
+  for (const cmd of [
+    'cat other.env', 'cat deploy/.env.example', 'ls deploy', 'npm test', 'echo .env', 'git add .env.example',
+    'git add deploy/.env', 'docker compose --env-file deploy/.env up -d', 'systemctl restart cloudflared',
+    `claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path deploy/.env`,
+    `cloudflared tunnel --no-autoupdate run --token-file ${ctx.envFile}`,
+  ]) {
     assert.equal(guard(ctx, bash(cmd)), null, cmd);
   }
 });
@@ -750,7 +762,11 @@ test('Grep over a root holding a listed env file is denied unless its glob exclu
   assertDeny(guard(ctx, grep({ glob: '**/.env' })), SECRET_REASON);
   assertDeny(guard(ctx, grep({ glob: '*' })), SECRET_REASON);
   assert.equal(guard(ctx, grep({ glob: '*.js' })), null);
-  assert.equal(guard(ctx, grep({ glob: '**/*.{ts,tsx}' })), null);
+  assert.equal(guard(ctx, grep({ glob: 'src/**/*.ts' })), null);
+  // Globs the guard does not fully model count as able to match.
+  for (const g of ['**/*.{ts,tsx}', '!*.md', '[.]env', '*.js}', 'src/**', '\\.env']) {
+    assertDeny(guard(ctx, grep({ glob: g })), SECRET_REASON);
+  }
   assert.equal(guard(ctx, grep({ path: 'src' })), null);
   // Glob lists names only: a project-wide Glob stays allowed.
   assert.equal(guard(ctx, glob({ pattern: '**/*.env' })), null);
@@ -795,7 +811,7 @@ test('Bash reads of the tunnel token endpoint are denied', (t) => {
     assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
   }
   assert.equal(guard(ctx, bash(`claudeflare get /accounts/${AID}/cfd_tunnel/${TID}`)), null);
-  assert.equal(guard(ctx, bash(`claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-file .env`)), null);
+  assert.equal(guard(ctx, bash(`claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path .env`)), null);
 });
 
 test('Bash "cloudflared tunnel run --token eyJ..." is denied', (t) => {
@@ -835,4 +851,57 @@ test('Bash "cloudflared tunnel --no-autoupdate run" (token from env) is allowed'
   ]) {
     assert.equal(guard(ctx, bash(cmd)), null, cmd);
   }
+});
+
+test('Bash recursive searches whose root holds a secret file are denied unless an include excludes it', (t) => {
+  const ctx = secretSetup(t);
+  mkdirSync(join(ctx.cwd, 'src'));
+  for (const cmd of [
+    'grep -r TUNNEL .',
+    'grep -rn TUNNEL',
+    'grep -R --include=* TUNNEL deploy',
+    'grep -d recurse x .',
+    'cd deploy && grep -r x',
+    'rg TUNNEL',
+    'rg -n TUNNEL deploy',
+    "rg -g '!*.md' TUNNEL",
+    "rg -g '*.{js,env}' TUNNEL",
+    'ag TUNNEL',
+    'ack TUNNEL',
+    'git grep TUNNEL',
+    "find . -name '*' -exec cat {} \\;",
+    "find deploy -type f -exec sh -c 'head {}' \\;",
+    "find . ! -name '*.js' -exec grep x {} +",
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  for (const cmd of [
+    'grep -r TUNNEL src',
+    "grep -r --include='*.js' TUNNEL .",
+    'grep TUNNEL README.md',
+    "rg -g '*.js' TUNNEL",
+    'rg TUNNEL src',
+    "git grep TUNNEL -- '*.js'",
+    "find . -name '*.js' -exec cat {} \\;",
+    'find . -name .env',
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
+test('guard finds the index of the project owning a target, from any cwd in or outside the project', async (t) => {
+  const ctx = setup(t, { plan: false });
+  const project = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-proj-')));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  for (const d of ['.git', 'a', 'b']) mkdirSync(join(project, d));
+  const fake = () => ({ request: async () => 'eyJwcm9qZWN0LXJvb3QifQ' });
+  await runTunnelToken(join(project, 'b'), { account: AID, tunnel: TID, envFile: '../a/.env' }, fake);
+  const envFile = join(project, 'a', '.env');
+  assertDeny(guard({ ...ctx, cwd: project }, read(envFile)), SECRET_REASON);
+  assertDeny(guard({ ...ctx, cwd: project }, read('a/.env')), SECRET_REASON);
+  assertDeny(guard({ ...ctx, cwd: join(project, 'b') }, read('../a/.env')), SECRET_REASON);
+  assertDeny(guard({ ...ctx, cwd: join(project, 'b') }, bash('cat ../a/.env')), SECRET_REASON);
+  // From an unrelated cwd the target's own project index is still read.
+  assertDeny(guard(ctx, read(envFile)), SECRET_REASON);
+  assertDeny(guard(ctx, grep({ path: join(project, 'a') })), SECRET_REASON);
 });

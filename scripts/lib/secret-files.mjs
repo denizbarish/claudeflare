@@ -47,7 +47,7 @@ function writeFd(fd, content, mode) {
 }
 
 // Replaces file with content, never following a link at the file itself.
-export function replaceFile(file, content, mode) {
+function replaceFile(file, content, mode) {
   const stat = lstatOrNull(file);
   refuseLink(file, stat);
   if (stat) {
