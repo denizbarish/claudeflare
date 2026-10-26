@@ -45,7 +45,13 @@
  * @property {(ctx: object, ops: object[]) => string[]} lockoutRisks  Lines start with `Lockout risk:`.
  * @property {(ctx: object, op: object, entry: ProductKind) => string[]} [dependencies]
  *   Descriptions of what still uses the resource (resource_in_use).
- * @property {(op: object, entry: ProductKind, ctx: object, result: object) => object[]} verifyChecks
+ * @property {(op: object, entry: ProductKind, ctx: object, result: object, post: (object|null), deps: object) => object[]} verifyChecks
+ *   Default post-apply checks (verify.mjs Check: { name, run, once? }) for one op that ran.
+ *   ctx is the module's apply-time preflight ctx; rollback plans have none and pass {}, so a
+ *   check that needs ctx is omitted or returns { ok: true, detail: 'skipped: no preflight
+ *   context' } (read-back still runs). result is the stored apply result, post the redacted
+ *   state read after the op (null when unread or deleted), deps { client, fetchImpl, connect,
+ *   readPath }. Op `verify` checks are added by opVerifyChecks; read-back is the module's own.
  * @property {(ops: object[], classified: (object|null)[]) => void} [conflicts]
  *   Product conflict rules; throws plan_conflict. `classified[i]` is
  *   classifyProductOp(ops[i], plan) or null.

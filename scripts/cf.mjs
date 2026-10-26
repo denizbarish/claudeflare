@@ -260,15 +260,33 @@ const APPLY_HINTS = {
   failed: () => 'The first op failed; a REST op wrote nothing, but a failed wrangler op (timed-out deploy, d1 migrations apply) may have partly applied, so check the resource, fix the cause and create a new plan',
   applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
   rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
+  applied_verify_failed: (id, result) => (result.rollback_of
+    ? 'Every op ran but verification failed and nothing was reverted; inspect the resources and create a fresh plan if needed'
+    : `Verification failed and nothing was reverted; ${draftHint(id, result)}`),
 };
+
+function draftHint(id, result) {
+  if (result.rollback_draft) return `review rollback draft ${result.rollback_draft} (claudeflare plan show ${result.rollback_draft}) and approve it to revert`;
+  return `no rollback draft was created (${result.rollback_draft_error ?? 'unknown reason'}); run claudeflare rollback ${id} after fixing the cause`;
+}
+
+// "op <i> <check>: <detail>" for every failed verification check.
+function failedVerifyChecks(result) {
+  return (result.results ?? []).flatMap((r, i) => (r?.verify?.checks ?? [])
+    .filter((c) => !c.ok)
+    .map((c) => `op ${i} ${c.name}: ${c.detail}`));
+}
 
 async function applyCommand(cwd, positional) {
   const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
   if (result.status !== 'applied') {
+    const failed = failedVerifyChecks(result);
     const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';
-    const hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id);
-    throw new CfError(code, `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
+    let hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id, result);
+    if (failed.length && result.status === 'partially_applied' && !result.rollback_of) hint = `${hint}; ${draftHint(result.id, result)}`;
+    const why = [result.error?.message, ...(failed.length ? [`verification failed: ${failed.join('; ')}`] : [])].filter(Boolean).join('; ');
+    throw new CfError(code, `Plan ${result.id} ${result.status}: ${why}`, { hint });
   }
 }
 

@@ -9,6 +9,7 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
+import { redact } from './api.mjs';
 import { baseFor, classifyProductOp } from './products/index.mjs';
 import { driftDetail, productReadPath } from './rest-engine.mjs';
 import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KINDS } from './wrangler-ops.mjs';
@@ -18,10 +19,13 @@ import { executeAccountOps } from './wrangler-exec.mjs';
 import { assertSecretFieldsEnv, executeRestOps, readSecretEnv } from './rest-exec.mjs';
 import { runHealthCheck } from './health-check.mjs';
 import { hasProductOps, LOCKOUT_PREFIX, runProductPreflight } from './product-preflight.mjs';
+import { opVerifyChecks, runVerify } from './verify.mjs';
 
 // Plans whose applied ops may still be reverted by a rollback plan. After an
-// automatic rollback the earlier ops of the plan are still applied.
-const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied', 'applied_check_failed', 'rolled_back_auto']);
+// automatic rollback the earlier ops of the plan are still applied. A failed
+// verification leaves every op applied; createRollbackPlan refuses it only
+// on a rollback plan (no rollback-of-a-rollback chain).
+const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied', 'applied_check_failed', 'rolled_back_auto', 'applied_verify_failed']);
 
 export function snapshotFile(cwd, plan) {
   return join(paths(cwd).snapshots(planStateName(plan)), `${plan.id}.json`);
@@ -201,9 +205,10 @@ function assertRollbackSourceCurrent(cwd, plan) {
 // its own code; a lockout line the plan did not show stops with risk_changed,
 // because approval binds only to the ops hash and the user never saw that
 // line. Lines that disappeared do not stop apply. Rollback plans and plans
-// without product ops (0.2.x) skip this.
+// without product ops (0.2.x) skip this. Returns the per-product ctx the
+// reads produced ({} when skipped), which verification reuses.
 async function assertProductPreflight(client, plan) {
-  if (plan.rollback_of || !hasProductOps(plan)) return;
+  if (plan.rollback_of || !hasProductOps(plan)) return {};
   const report = await runProductPreflight(client, plan, plan.ops);
   const failedCheck = report.checks.find((c) => !c.ok);
   if (failedCheck) {
@@ -219,6 +224,7 @@ async function assertProductPreflight(client, plan) {
       hint: 'Nothing was written; create a new plan with claudeflare plan new so the user approves with these lines in view',
     });
   }
+  return report.ctx ?? {};
 }
 
 // Rollback plans skip product preflight at apply, so their lockout lines are
@@ -257,7 +263,8 @@ function recordOutcome(cwd, plan, outcome, file, now, extra = {}) {
     ...extra,
   };
   const updated = updatePlan(cwd, plan.id, patch);
-  if (outcome.status === 'applied' && plan.rollback_of) {
+  // A failed verification undoes nothing: every op of the rollback ran.
+  if ((outcome.status === 'applied' || outcome.status === 'applied_verify_failed') && plan.rollback_of) {
     updatePlan(cwd, plan.rollback_of, { status: 'rolled_back' });
   }
   return updated;
@@ -334,10 +341,74 @@ async function applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchI
   return recordOutcome(cwd, plan, outcome, file, now, extra);
 }
 
+const VERIFY_STATUSES = new Set(['applied', 'partially_applied']);
+
+function envSecrets(plan, env) {
+  const values = [];
+  for (const op of plan.ops ?? []) {
+    const map = op?.secret_fields_from_env;
+    if (!map || typeof map !== 'object') continue;
+    for (const name of Object.values(map)) if (typeof env?.[name] === 'string' && env[name] !== '') values.push(env[name]);
+  }
+  return values;
+}
+
+// Report-only verification (spec 8) of every product op that ran, while the
+// plan's ops are applied or partially applied. Each op's checks are retried
+// for up to 60 s; the outcome goes to results[i].verify (a non-object result
+// becomes { verify }). Never writes, never throws. Returns true when a check
+// failed. ctxByProduct is the apply-time preflight ctx, {} for rollback plans.
+async function verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep, connect, clock, env }) {
+  if (!VERIFY_STATUSES.has(outcome.status)) return false;
+  const clean = (text) => redact(String(text), undefined, envSecrets(plan, env));
+  let failed = false;
+  for (const [i, op] of (plan.ops ?? []).entries()) {
+    const classified = classifyProductOp(op, plan);
+    const result = outcome.results?.[i];
+    if (!classified || result === null || result === undefined || result?.skipped) continue;
+    let verify;
+    try {
+      const { entry, module } = classified;
+      const readPath = productReadPath(op, classified, result);
+      const checks = opVerifyChecks(op, entry, module, ctxByProduct[module.product] ?? {}, result, outcome.post?.[i] ?? null, {
+        client, fetchImpl, connect, readPath,
+      });
+      if (!checks.length) continue;
+      verify = await runVerify(checks, { sleep, now: clock });
+    } catch (err) {
+      verify = { ok: false, checks: [{ name: 'verify', ok: false, detail: `checks could not run: ${err?.message ?? err}` }] };
+    }
+    verify = { ok: verify.ok, checks: verify.checks.map((c) => ({ ...c, detail: clean(c.detail) })) };
+    outcome.results[i] = result && typeof result === 'object' && !Array.isArray(result) ? { ...result, verify } : { verify };
+    if (!verify.ok) failed = true;
+  }
+  return failed;
+}
+
+// After a failed verification of a normal plan: a rollback draft that needs
+// its own approval. Its id, or why none could be built, goes on the plan.
+async function draftRollback(cwd, client, plan, now, env) {
+  let draft;
+  try {
+    draft = createRollbackPlan(cwd, plan.id, now);
+  } catch (err) {
+    const why = redact(`${err?.code || 'internal'}: ${err?.message ?? err}`, undefined, envSecrets(plan, env));
+    return updatePlan(cwd, plan.id, { rollback_draft_error: why });
+  }
+  const updated = updatePlan(cwd, plan.id, { rollback_draft: draft.id });
+  try {
+    if (hasProductOps(draft)) await addRollbackLockout(cwd, draft, client);
+  } catch {
+    // The draft stays; claudeflare plan show still lists its ops for review.
+  }
+  return updated;
+}
+
 // The plan is read exactly once; that object is approval-checked and executed.
-// deps.runner runs wrangler, deps.fetchImpl and deps.sleep drive health checks,
-// deps.env supplies secret_fields_from_env values.
-export async function applyPlan(cwd, client, id, now = new Date(), { runner = runWrangler, sleep, fetchImpl, env = process.env } = {}) {
+// deps.runner runs wrangler, deps.fetchImpl and deps.sleep drive health checks
+// and verification, deps.env supplies secret_fields_from_env values,
+// deps.connect opens tcp_open connections and deps.clock (ms) times verification.
+export async function applyPlan(cwd, client, id, now = new Date(), { runner = runWrangler, sleep, fetchImpl, env = process.env, connect, clock } = {}) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
   if (hasWranglerOps(plan)) return applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl });
@@ -351,7 +422,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
   // A missing or unsafe secret env var refuses before any request, keeping the approval.
   assertSecretFieldsEnv(plan, env);
   // Refusals here also keep the approval: nothing has been written yet.
-  await assertProductPreflight(client, plan);
+  const ctxByProduct = await assertProductPreflight(client, plan);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);
   const file = writeApplySnapshot(cwd, plan, snapshot);
@@ -365,7 +436,12 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
   writePostFile(cwd, plan, outcome);
   // A drift skip leaves part of the rollback undone.
   if (outcome.status === 'applied' && outcome.results.some((r) => r?.skipped)) outcome.status = 'partially_applied';
-  return recordOutcome(cwd, plan, outcome, file, now);
+  const verifyFailed = await verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep, connect, clock, env });
+  // A partial apply keeps its status so the partial state stays visible.
+  if (verifyFailed && outcome.status === 'applied') outcome.status = 'applied_verify_failed';
+  const recorded = recordOutcome(cwd, plan, outcome, file, now);
+  // Rollback plans are verified but get no draft of their own.
+  return verifyFailed && !plan.rollback_of ? draftRollback(cwd, client, plan, now, env) : recorded;
 }
 
 function readSnapshot(cwd, plan) {
@@ -383,6 +459,11 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
   const plan = readPlan(cwd, id);
   if (!ROLLBACK_SOURCE_STATUSES.has(plan.status)) {
     throw new CfError('not_applied', `Plan ${id} has status ${plan.status}; only plans with applied ops can be rolled back`);
+  }
+  if (plan.rollback_of && plan.status === 'applied_verify_failed') {
+    throw new CfError('not_applied', `Plan ${id} is a rollback of ${plan.rollback_of} whose verification failed; a rollback of a rollback is not created`, {
+      hint: 'Read the current state and create a fresh plan for any change still needed',
+    });
   }
   // Ops that were rolled back automatically or skipped are not applied.
   const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : r));
