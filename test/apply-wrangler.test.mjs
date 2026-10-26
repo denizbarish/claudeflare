@@ -189,6 +189,24 @@ test('missing secret env refuses with secret_env_missing before anything runs', 
   assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
 });
 
+test('a secret env value equal to the API token is invalid_op before anything runs', async (t) => {
+  script({});
+  const saved = { token: process.env.CLOUDFLARE_API_TOKEN, key: process.env.STRIPE_KEY };
+  t.after(() => {
+    for (const [name, value] of [['CLOUDFLARE_API_TOKEN', saved.token], ['STRIPE_KEY', saved.key]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  process.env.CLOUDFLARE_API_TOKEN = 'cf-api-token-value-123';
+  process.env.STRIPE_KEY = 'cf-api-token-value-123';
+  const plan = makePlan([w(['secret', 'put', 'STRIPE_KEY', '--name', 'api'], { worker: 'api', value_from_env: 'STRIPE_KEY' })], 'secret');
+  approve(plan);
+  await assert.rejects(applyPlan(cwd, fakeClient(), plan.id, T0), (e) => e instanceof CfError && e.code === 'invalid_op' && /STRIPE_KEY/.test(e.message) && !e.message.includes('cf-api-token-value-123'));
+  assert.deepEqual(workCalls(), []);
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+});
+
 test('source-uploading op without source_hash is refused before anything runs', async () => {
   script({});
   for (const args of [['deploy', '--name', 'api'], ['pages', 'deploy', 'dist', '--project-name', 'site'], ['d1', 'migrations', 'apply', 'app-db', '--remote']]) {

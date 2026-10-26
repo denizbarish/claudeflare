@@ -4,9 +4,16 @@ const DEFAULT_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const BASE_BACKOFF_MS = 1000;
 const MAX_WAIT_MS = 60_000;
 
-export function redact(text, token) {
-  if (!token) return text;
-  return String(text).split(token).join('[REDACTED]');
+// extra: further secret values (injected or received during an apply). The
+// longest value is replaced first, so a value that contains a shorter one is
+// never left half visible.
+export function redact(text, token, extra = []) {
+  const values = [token, ...(extra ?? [])].filter((v) => typeof v === 'string' && v !== '');
+  if (!values.length) return text;
+  values.sort((a, b) => b.length - a.length);
+  let out = String(text);
+  for (const value of values) out = out.split(value).join('[REDACTED]');
+  return out;
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,7 +75,9 @@ export function createClient({
     }
   }
 
-  async function request(method, path, { query, body } = {}) {
+  // envelope: true returns the whole body ({ result, result_info, ... }) for
+  // paginated reads; otherwise only `result`.
+  async function request(method, path, { query, body, envelope = false } = {}) {
     const url = buildUrl(baseUrl, path, query);
     for (let attempt = 0; ; attempt++) {
       const response = await send(method, url, body);
@@ -80,7 +89,7 @@ export function createClient({
       if (!response.ok || data?.success === false) {
         throw redactError(mapError(response.status, data), token);
       }
-      return data?.result;
+      return envelope ? data : data?.result;
     }
   }
 

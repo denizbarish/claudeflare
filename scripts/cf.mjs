@@ -6,19 +6,23 @@ import { join, resolve } from 'node:path';
 import { createClient, redact } from './lib/api.mjs';
 import { CfError } from './lib/errors.mjs';
 import { paths } from './lib/paths.mjs';
-import { accountTarget, createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
+import { accountTarget, createPlan, listPlans, needsProjectDir, readPlan, slugify, updatePlan } from './lib/plans.mjs';
 import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
-import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
+import { addRollbackLockout, applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
 import { assertR2DeletesEmpty } from './lib/wrangler-exec.mjs';
 import { classifyWranglerOp } from './lib/wrangler-ops.mjs';
 import { migrationRisk, runPreflight } from './lib/preflight.mjs';
+import { hasProductOps } from './lib/product-preflight.mjs';
 import { runTail } from './lib/tail.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
+import { DEFAULT_VARIABLE, runTunnelToken } from './lib/tunnel-token.mjs';
+import { isTokenEndpoint, TUNNEL_TOKEN_REASON } from './lib/token-endpoint.mjs';
+import { applyFailure } from './lib/apply-message.mjs';
 
 const GITIGNORE_ENTRY = '.claudeflare/';
-const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>]';
+const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>] | tunnel-token --account <id> --tunnel <uuid> --env-path <path> [--var TUNNEL_TOKEN]';
 
 function usage(message) {
   return new CfError('usage', message, { hint: `Usage: ${USAGE}` });
@@ -106,6 +110,10 @@ function parseQuery(pairs = []) {
 async function get(positional, flags) {
   const path = arg(positional, 1, 'path');
   if (!path.startsWith('/')) throw usage('Path must start with /');
+  if (/[\u0000- \u007f]/.test(path)) throw new CfError('invalid_op', 'Path must not contain spaces or control characters');
+  // Enforced here, not only in the guard: shell quoting or a path built from
+  // variables never reaches a token endpoint through get.
+  if (isTokenEndpoint(path)) throw new CfError('invalid_input', `${TUNNEL_TOKEN_REASON} claudeflare get refuses ${path}.`);
   return createClient().request('GET', path, { query: parseQuery(flags.query) });
 }
 
@@ -136,7 +144,7 @@ function readDraft(cwd, flags) {
   const scope = draft.scope ?? 'zone';
   if (!PLAN_SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
   if (scope === 'account') {
-    const { account_id, project_dir } = accountTarget(draft);
+    const { account_id, project_dir } = accountTarget(draft, { requireProjectDir: needsProjectDir(draft.ops) });
     return { draft, target: { scope, account_id, project_dir }, resolved: draft.ops };
   }
   const zoneId = String(draft.zone_id);
@@ -146,7 +154,8 @@ function readDraft(cwd, flags) {
 
 async function preflight(cwd, flags) {
   const { target, resolved } = readDraft(cwd, flags);
-  const { ops: _ops, ...report } = await runPreflight(target, resolved, { client: createClient() });
+  // ctx holds the raw account reads product modules gathered; not printed.
+  const { ops: _ops, ctx: _ctx, ...report } = await runPreflight(target, resolved, { client: createClient() });
   printJson(report);
   if (!report.ok) process.exitCode = 1;
 }
@@ -160,22 +169,26 @@ async function planNew(cwd, flags) {
   let resolved = draftOps;
   let risk = draft.risk;
   validateOpTargets(resolved, target);
-  validatePlanOps(resolved);
-  if (target.scope === 'account') {
+  validatePlanOps(resolved, target);
+  // Zone plans run preflight only for product ops; without them they stay as in 0.2.x.
+  let report = null;
+  if (target.scope === 'account' || hasProductOps(target, resolved)) {
     const client = createClient();
     // R2 bucket deletes are refused unless the bucket is verifiably empty.
-    if (hasR2Delete(resolved)) await assertR2DeletesEmpty(client, { account_id: draft.account_id, ops: resolved });
+    if (target.scope === 'account' && hasR2Delete(resolved)) await assertR2DeletesEmpty(client, { account_id: draft.account_id, ops: resolved });
     // Preflight embeds source_hash into source-uploading ops.
-    const report = await runPreflight(target, resolved, { client });
+    report = await runPreflight(target, resolved, { client });
     if (!report.ok) {
       throw new CfError('preflight_failed', `Preflight failed: ${failedChecks(report)}`, {
         hint: 'Run claudeflare preflight --file <draft.json> for the full report, fix the cause and try again',
       });
     }
-    resolved = report.ops;
+    if (target.scope === 'account') resolved = report.ops;
     const pending = migrationRisk(report.pending_migrations);
     if (pending) risk = `${risk ?? ''}${risk ? ' ' : ''}${pending}`;
   }
+  // Lockout lines never refuse a plan; they are stored and shown in the risk.
+  const lockout = report?.lockout_risks;
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
     scope: target.scope,
@@ -185,11 +198,22 @@ async function planNew(cwd, flags) {
     account_name: draft.account_name,
     project_dir: target.project_dir,
     summary: draft.summary,
-    risk: withIrreversibleRisk(risk, resolved),
+    risk: [withIrreversibleRisk(risk, resolved, target, report?.ctx), ...(lockout ?? [])].filter(Boolean).join('\n'),
     ops: target.scope === 'account' ? resolved : draft.ops,
     slug,
+    // Inside the approval hash from creation (hashPlan).
+    ...(lockout ? { lockout_risks: lockout } : {}),
   });
   return updatePlan(cwd, plan.id, { slug });
+}
+
+// Rollback plans get their lockout lines now; apply does not re-run them.
+// The client is created first, so a missing token writes no rollback plan.
+async function rollback(cwd, positional) {
+  const id = arg(positional, 1, 'id');
+  const client = hasProductOps(readPlan(cwd, id)) ? createClient() : null;
+  const created = createRollbackPlan(cwd, id);
+  return client && hasProductOps(created) ? addRollbackLockout(cwd, created, client) : created;
 }
 
 function tail(cwd, flags) {
@@ -199,6 +223,16 @@ function tail(cwd, flags) {
     seconds: flag(flags, 'seconds'),
     status: flags.status?.at(-1),
     accountId: flags.account?.at(-1) ?? process.env.CLOUDFLARE_ACCOUNT_ID,
+  });
+}
+
+// Writes the tunnel token into an env file; prints the path, never the value.
+function tunnelToken(cwd, flags) {
+  return runTunnelToken(cwd, {
+    account: flag(flags, 'account'),
+    tunnel: flag(flags, 'tunnel'),
+    envFile: flag(flags, 'env-path'),
+    variable: flags.var?.at(-1) ?? DEFAULT_VARIABLE,
   });
 }
 
@@ -240,20 +274,16 @@ function report(cwd, flags) {
   return { file, overall: scores.overall, domains: scores.domains };
 }
 
-const APPLY_HINTS = {
-  partially_applied: (id) => `Run claudeflare rollback ${id} to revert the ops that succeeded`,
-  failed: () => 'The first op failed; a REST op wrote nothing, but a failed wrangler op (timed-out deploy, d1 migrations apply) may have partly applied, so check the resource, fix the cause and create a new plan',
-  applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
-  rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
-};
-
 async function applyCommand(cwd, positional) {
   const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
+  // Advisory lockout lines first found at apply did not stop it (Ruling 27);
+  // one plain line each on stderr so the user sees them. An error, if any,
+  // stays the last stderr line.
+  for (const line of result.advisory_lockout ?? []) process.stderr.write(`${line}\n`);
   if (result.status !== 'applied') {
-    const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';
-    const hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id);
-    throw new CfError(code, `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
+    const { code, message, hint } = applyFailure(result);
+    throw new CfError(code, message, { hint });
   }
 }
 
@@ -267,10 +297,11 @@ async function main(argv) {
     case 'plan': return printJson(await plan(cwd, positional, flags));
     case 'snapshot': return printJson(await snapshot(cwd, positional));
     case 'apply': return applyCommand(cwd, positional);
-    case 'rollback': return printJson(createRollbackPlan(cwd, arg(positional, 1, 'id')));
+    case 'rollback': return printJson(await rollback(cwd, positional));
     case 'report': return printJson(report(cwd, flags));
     case 'preflight': return preflight(cwd, flags);
     case 'tail': return printJson(await tail(cwd, flags));
+    case 'tunnel-token': return printJson(await tunnelToken(cwd, flags));
     default: throw usage(command ? `Unknown command: ${command}` : 'Missing command');
   }
 }

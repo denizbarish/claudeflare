@@ -1,0 +1,13 @@
+[
+  {
+    "id": "55555555-2222-4333-8444-555555555551",
+    "features": ["ha-origin", "management_logs"],
+    "version": "2026.9.0",
+    "arch": "linux_amd64",
+    "config_version": 4,
+    "run_at": "2026-10-26T08:00:00.000000Z",
+    "conns": [
+      { "colo_name": "fra06", "id": "44444444-2222-4333-8444-555555555551", "is_pending_reconnect": false, "origin_ip": "192.0.2.10", "opened_at": "2026-10-26T08:00:00.000000Z", "client_id": "55555555-2222-4333-8444-555555555551", "client_version": "2026.9.0" }
+    ]
+  }
+]

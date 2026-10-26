@@ -1,6 +1,7 @@
 // Preflight for plan drafts: validates ops and, for account plans, checks
 // wrangler, account access, config bindings, a dry-run build, pending D1
-// migrations and the source hash. Writes nothing to Cloudflare, but the
+// migrations and the source hash. Product (v3) ops of either scope add the
+// checks of product-preflight.mjs. Writes nothing to Cloudflare, but the
 // dry-run runs the project's own build locally. `plan new` runs the same
 // checks and stores the returned ops (with source_hash, source_paths and
 // pending_migrations embedded) in the plan.
@@ -14,6 +15,7 @@ import { assertAccountAccess } from './apply.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { assertWranglerVersion, failureMessage, runWrangler } from './wrangler.mjs';
 import { applyEnv, configBindings, readWranglerConfig } from './wrangler-config.mjs';
+import { hasProductOps, runProductPreflight } from './product-preflight.mjs';
 import { parseWranglerOp, SOURCE_KINDS, WORKER_BUILD_KINDS } from './wrangler-ops.mjs';
 
 const KV_ID = /^[0-9a-f]{32}$/;
@@ -239,6 +241,18 @@ async function pendingMigrations(runner, target, { file, config }, op, created) 
   return { database: parsed.name, files: names.map((name) => readSql(dir, name)) };
 }
 
+// Product (v3) ops add their checks plus lockout_risks, dependencies and the
+// per-product ctx (for kind notes; never printed). Nothing is added without
+// product ops, so zone and v2 reports stay as before.
+async function addProductPreflight(client, target, ops, result) {
+  if (!hasProductOps(target, ops)) return;
+  const report = await runProductPreflight(client, target, ops);
+  result.checks.push(...report.checks);
+  result.lockout_risks = report.lockout_risks;
+  result.dependencies = report.dependencies;
+  result.ctx = report.ctx;
+}
+
 // target: { scope, zone_id } or { scope: 'account', account_id, project_dir }.
 // ops: draft ops with {zone_id} already resolved.
 export async function runPreflight(target, draftOps, { client, runner = runWrangler } = {}) {
@@ -248,14 +262,15 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
   const ops = (draftOps ?? []).map(stripComputed);
   try {
     validateOpTargets(ops, target);
-    validatePlanOps(ops);
+    validatePlanOps(ops, target);
     add('ops', true, `${ops.length} op(s) valid`);
   } catch (err) {
     add('ops', false, errorText(err));
     return result;
   }
   if (target.scope !== 'account') {
-    result.ok = true;
+    await addProductPreflight(client, target, ops, result);
+    result.ok = checks.every((c) => c.ok);
     result.ops = ops;
     return result;
   }
@@ -275,6 +290,7 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
   } catch (err) {
     add('account', false, errorText(err));
   }
+  await addProductPreflight(client, target, ops, result);
 
   const sourceOps = wranglerOps.filter((op) => SOURCE_KINDS.has(parseWranglerOp(op).kind));
   if (!sourceOps.length) {

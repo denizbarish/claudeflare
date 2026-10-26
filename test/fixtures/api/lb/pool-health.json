@@ -1,0 +1,19 @@
+{
+  "pool_id": "b0000000000000000000000000000001",
+  "pop_health": {
+    "Amsterdam, NL": {
+      "healthy": true,
+      "origins": [
+        { "192.0.2.10": { "healthy": true, "failure_reason": "No failure reasons", "response_code": 200, "rtt": "21.5ms" } },
+        { "192.0.2.11": { "healthy": true, "failure_reason": "No failure reasons", "response_code": 200, "rtt": "22.0ms" } }
+      ]
+    },
+    "Ashburn, VA, US": {
+      "healthy": true,
+      "origins": [
+        { "192.0.2.10": { "healthy": true, "failure_reason": "No failure reasons", "response_code": 200, "rtt": "88.1ms" } },
+        { "192.0.2.11": { "healthy": true, "failure_reason": "No failure reasons", "response_code": 200, "rtt": "87.4ms" } }
+      ]
+    }
+  }
+}

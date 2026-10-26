@@ -1,0 +1,51 @@
+{
+  "GET /accounts": [
+    { "id": "0123456789abcdef0123456789abcdef", "name": "Acme", "type": "standard" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef": { "id": "0123456789abcdef0123456789abcdef", "name": "Acme" },
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/organizations": {
+    "auth_domain": "example-team.cloudflareaccess.com", "name": "Example Team", "session_duration": "24h", "created_at": "2026-01-10T09:00:00Z", "updated_at": "2026-09-01T12:00:00Z"
+  },
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/rules": [
+    { "id": "aaaaaaaa-1111-4000-8000-000000000001", "name": "Allow partner portal", "description": "", "action": "allow", "enabled": true, "filters": ["dns"], "traffic": "any(dns.domains[*] == \"partner.example.com\")", "identity": "", "device_posture": "", "precedence": 10, "rule_settings": {}, "version": 1, "read_only": false, "source_account": "", "warning_status": null, "created_at": "2026-05-02T08:00:00Z", "updated_at": "2026-05-02T08:00:00Z", "deleted_at": null },
+    { "id": "aaaaaaaa-1111-4000-8000-000000000002", "name": "Block security threats", "description": "Malware and phishing categories", "action": "block", "enabled": true, "filters": ["dns"], "traffic": "any(dns.security_category[*] in {68 178 80 83 176 175 117 131 134 151 153})", "identity": "", "device_posture": "", "precedence": 20, "rule_settings": { "block_page_enabled": false }, "version": 3, "read_only": false, "source_account": "", "warning_status": null, "created_at": "2026-05-02T08:05:00Z", "updated_at": "2026-08-14T11:30:00Z", "deleted_at": null },
+    { "id": "aaaaaaaa-1111-4000-8000-000000000003", "name": "Block listed domains", "description": "Ads and trackers", "action": "block", "enabled": true, "filters": ["dns"], "traffic": "any(dns.domains[*] in $bbbbbbbb-1111-4000-8000-000000000001)", "identity": "", "device_posture": "", "precedence": 30, "rule_settings": { "block_page_enabled": false }, "version": 2, "read_only": false, "source_account": "", "warning_status": null, "created_at": "2026-06-11T10:00:00Z", "updated_at": "2026-06-11T10:00:00Z", "deleted_at": null }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/lists": [
+    { "id": "bbbbbbbb-1111-4000-8000-000000000001", "name": "Blocked domains", "description": "Domains blocked for every user", "type": "DOMAIN", "count": 3, "created_at": "2026-06-11T09:55:00Z", "updated_at": "2026-10-26T07:58:12Z" },
+    { "id": "bbbbbbbb-1111-4000-8000-000000000002", "name": "Old office IPs", "description": "", "type": "IP", "count": 1, "created_at": "2026-02-01T09:00:00Z", "updated_at": "2026-02-01T09:00:00Z" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/lists/bbbbbbbb-1111-4000-8000-000000000001": { "id": "bbbbbbbb-1111-4000-8000-000000000001", "name": "Blocked domains", "description": "Domains blocked for every user", "type": "DOMAIN", "count": 3, "created_at": "2026-06-11T09:55:00Z", "updated_at": "2026-10-26T07:58:12Z" },
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/lists/bbbbbbbb-1111-4000-8000-000000000001/items": [
+    { "value": "ads.example.net", "description": "", "created_at": "2026-06-11T09:55:00Z" },
+    { "value": "tracker.example.org", "description": "analytics", "created_at": "2026-06-11T09:55:00Z" },
+    { "value": "example.net", "description": "popup ads", "created_at": "2026-10-26T07:58:12Z" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/lists/bbbbbbbb-1111-4000-8000-000000000002/items": [
+    { "value": "192.0.2.0/24", "created_at": "2026-02-01T09:00:00Z" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/configuration": {
+    "settings": { "tls_decrypt": { "enabled": false }, "antivirus": { "enabled_download_phase": false, "enabled_upload_phase": false, "fail_closed": false }, "block_page": { "enabled": false }, "activity_log": { "enabled": true } },
+    "created_at": "2026-03-01T09:00:00Z", "updated_at": "2026-08-14T11:30:00Z"
+  },
+  "GET /accounts/0123456789abcdef0123456789abcdef/gateway/locations": [
+    { "id": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001", "name": "Head office", "client_default": true, "ecs_support": false, "networks": [{ "network": "198.51.100.0/24" }], "created_at": "2026-03-01T09:00:00Z", "updated_at": "2026-03-01T09:00:00Z" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/identity_providers": [
+    { "id": "eeeeeeee-0000-4000-8000-000000000001", "name": "Okta", "type": "okta", "config": { "client_id": "0oa000000000000000000", "okta_account": "https://example-org.okta.com", "claims": [] } }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/logs/audit (since and before around 2026-10-26)": [
+    { "id": "77777777-0000-4000-8000-000000000001", "action": { "type": "update", "result": "success", "time": "2026-10-26T07:58:12Z" }, "actor": { "email": "it-admin@example.com", "type": "user" }, "resource": { "type": "gateway.list", "id": "bbbbbbbb-1111-4000-8000-000000000001", "product": "gateway" }, "metadata": { "name": "Blocked domains", "items_added": ["example.net"] } }
+  ],
+  "POST /client/v4/graphql (gatewayResolverQueriesAdaptiveGroups for accountTag 0123456789abcdef0123456789abcdef, blocked and allowed DNS queries by queryName, resolverDecision and policyId, 2026-10-26 06:00 to 12:00 UTC)": {
+    "data": { "viewer": { "accounts": [ { "gatewayResolverQueriesAdaptiveGroups": [
+      { "count": 1840, "dimensions": { "queryName": "crm.example.net", "resolverDecision": "blockedByPolicy", "policyId": "aaaaaaaa-1111-4000-8000-000000000003", "datetimeHour": "2026-10-26T08:00:00Z" } },
+      { "count": 1215, "dimensions": { "queryName": "mail.example.net", "resolverDecision": "blockedByPolicy", "policyId": "aaaaaaaa-1111-4000-8000-000000000003", "datetimeHour": "2026-10-26T08:00:00Z" } },
+      { "count": 402, "dimensions": { "queryName": "ads.example.net", "resolverDecision": "blockedByPolicy", "policyId": "aaaaaaaa-1111-4000-8000-000000000003", "datetimeHour": "2026-10-26T08:00:00Z" } },
+      { "count": 96, "dimensions": { "queryName": "static.example.net", "resolverDecision": "blockedByPolicy", "policyId": "aaaaaaaa-1111-4000-8000-000000000003", "datetimeHour": "2026-10-26T08:00:00Z" } },
+      { "count": 3120, "dimensions": { "queryName": "partner.example.com", "resolverDecision": "allowedByQueryName", "policyId": "aaaaaaaa-1111-4000-8000-000000000001", "datetimeHour": "2026-10-26T08:00:00Z" } },
+      { "count": 37, "dimensions": { "queryName": "crm.example.net", "resolverDecision": "allowedOnNoPolicyMatch", "policyId": "", "datetimeHour": "2026-10-26T07:00:00Z" } }
+    ] } ] } },
+    "errors": null
+  }
+}

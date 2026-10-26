@@ -20,7 +20,9 @@ function redirectTarget(response, url) {
   }
 }
 
-async function tryOnce(fetchImpl, url, timeoutMs) {
+// One GET without redirect follow: { status, location }; both null on a
+// network error or timeout. verify.mjs reuses it.
+export async function tryOnce(fetchImpl, url, timeoutMs = DEFAULT_TIMEOUT_MS) {
   try {
     const response = await fetchImpl(url, {
       method: 'GET',

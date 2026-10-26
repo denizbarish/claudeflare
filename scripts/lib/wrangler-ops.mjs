@@ -222,7 +222,10 @@ export const DATA_LOSS_TYPES = new Set(['kv', 'queue', 'd1']);
 const EXECUTOR_FLAGS = new Set(['--yes', '-y', '--message', '-m', '--skip-confirmation']);
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 // Credentials and claudeflare's own settings must never become a secret value.
-const RESERVED_ENV_PREFIXES = ['CLOUDFLARE_', 'WRANGLER_', 'CLAUDEFLARE_', 'ANTHROPIC_'];
+// Env names a plan may never read a value from: claudeflare's own credentials
+// and settings (wrangler value_from_env, REST secret_fields_from_env).
+export const RESERVED_ENV_PREFIXES = ['CLOUDFLARE_', 'WRANGLER_', 'CLAUDEFLARE_', 'ANTHROPIC_', 'CF_API'];
+export const isReservedEnvName = (name) => RESERVED_ENV_PREFIXES.some((prefix) => String(name).startsWith(prefix));
 const PRINTABLE = /^[\x20-\x7e]*$/;
 const FLAG_LIKE = /^--?[a-z][a-z0-9-]*$/i;
 // --define KEY:VALUE, KEY a JS identifier path (no module or path mapping).
@@ -466,7 +469,7 @@ function assertSecretPut(parsed, op, reject) {
   const name = parsed.positionals[0];
   if (op.value_from_env !== name) reject('needs value_from_env equal to the secret name');
   if (!ENV_NAME.test(name)) reject('needs a secret name matching ^[A-Z_][A-Z0-9_]*$ (it is also the value_from_env name)');
-  if (RESERVED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+  if (isReservedEnvName(name)) {
     reject(`secret name and value_from_env must not start with ${RESERVED_ENV_PREFIXES.join(', ')}`);
   }
 }

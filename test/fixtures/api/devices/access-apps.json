@@ -1,0 +1,19 @@
+[
+  {
+    "id": "aaaaaaaa-2222-4000-8000-000000000001",
+    "name": "wiki",
+    "type": "self_hosted",
+    "domain": "wiki.example.com",
+    "policies": [
+      {
+        "id": "bbbbbbbb-2222-4000-8000-000000000001",
+        "name": "Employees on managed laptops",
+        "decision": "allow",
+        "include": [{ "email_domain": { "domain": "example.com" } }],
+        "exclude": [],
+        "require": [{ "device_posture": { "integration_uid": "dddddddd-2222-4000-8000-000000000001" } }],
+        "reusable": true
+      }
+    ]
+  }
+]

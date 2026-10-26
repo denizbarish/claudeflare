@@ -115,6 +115,45 @@ test('cli get prints the result and passes query parameters', async (t) => {
   assert.equal(seen.auth, `Bearer ${TOKEN}`);
 });
 
+test('cli get refuses every token endpoint shape before any request', async (t) => {
+  const cwd = tempDir(t, 'claudeflare-cli-');
+  const seen = [];
+  const base = await stubServer(t, (req, res) => {
+    seen.push(req.url);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ success: true, result: 'eyJTRUNSRVQtVE9LRU4ifQ' }));
+  });
+  const A = 'abcdef0123456789abcdef0123456789';
+  const T = 'c1744f8b-faa1-48a4-9e5c-02ac921467fa';
+  for (const path of [
+    `/accounts/${A}/cfd_tunnel/${T}/token`,
+    `/accounts/${A}/warp_connector/${T}/token`,
+    `/accounts/${A}/tunnels/${T}/token/`,
+    `/client/v4/accounts/${A}/cfd_tunnel/${T}/token`,
+    `//accounts/${A}/cfd_tunnel/${T}/token`,
+    `/accounts/${A}/cfd_tunnel/${T}/x/../token`,
+    `/accounts/${A}/CFD_TUNNEL/${T}/%74oken`,
+    `/accounts/${A}/cfd_tunnel/${T}%2ftoken`,
+    `/accounts/${A}/cfd_tunnel/${T}/token?x=1`,
+  ]) {
+    const res = await run(cwd, ['get', path], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+    assert.equal(res.code, 1, path);
+    assert.equal(res.stdout, '');
+    const { error } = JSON.parse(res.stderr);
+    assert.equal(error.code, 'invalid_input', path);
+    assert.match(error.message, /claudeflare tunnel-token/);
+  }
+  // Ruling 36: control characters are refused outright; an encoded tab still names the token endpoint.
+  for (const [path, code] of [[`/accounts/${A}/cfd_tunnel/${T}/tok\ten`, 'invalid_op'], [`/zones/x y`, 'invalid_op'], [`/accounts/${A}/cfd_tunnel/${T}/tok%09en`, 'invalid_input']]) {
+    const res = await run(cwd, ['get', path], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+    assert.equal(res.code, 1, path);
+    assert.equal(JSON.parse(res.stderr).error.code, code, JSON.stringify(path));
+  }
+  assert.deepEqual(seen, []);
+  const ok = await run(cwd, ['get', `/accounts/${A}/cfd_tunnel/${T}`], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+  assert.equal(ok.code, 0, ok.stderr);
+});
+
 test('cli errors print JSON on stderr, exit code 1, no token in output', async (t) => {
   const cwd = tempDir(t, 'claudeflare-cli-');
   const base = await stubServer(t, (req, res) => {

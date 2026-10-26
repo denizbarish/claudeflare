@@ -1,0 +1,9 @@
+{
+  "b0000000000000000000000000000001": {
+    "healthy": false,
+    "origins": [
+      { "192.0.2.10": { "healthy": false, "failure_reason": "TCP connection failed", "response_code": 0, "rtt": "0ms" } },
+      { "192.0.2.11": { "healthy": false, "failure_reason": "TCP connection failed", "response_code": 0, "rtt": "0ms" } }
+    ]
+  }
+}

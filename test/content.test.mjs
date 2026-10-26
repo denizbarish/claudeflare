@@ -211,3 +211,290 @@ test('cf-audit lists the workers, pages and storage domains', () => {
     assert.ok(audit.includes(`\`${domain}\``), `cf-audit is missing domain ${domain}`);
   }
 });
+
+// v3 Zero Trust and network
+
+const ZT_FINDINGS = {
+  'cf-tunnel': [
+    'tunnel.status.down', 'tunnel.connectors.single', 'tunnel.config.no_catch_all',
+    'tunnel.dns.stale_cname', 'tunnel.config.local_managed',
+  ],
+  'cf-access': [
+    'access.policy.everyone_allow', 'access.app.no_mfa', 'access.session.long',
+    'access.service_token.expiring', 'access.group.unused', 'access.idp.single_login_method',
+  ],
+  'cf-gateway': [
+    'gateway.dns.no_security_baseline', 'gateway.rule.shadowed', 'gateway.tls.decrypt_off_with_http_rules',
+    'gateway.list.unused', 'gateway.location.none',
+  ],
+  'cf-devices': [
+    'devices.switch.unlocked_with_posture', 'devices.exclude.no_local_networks', 'devices.profile.unused', 'devices.posture.unused',
+  ],
+  'cf-load-balancing': ['lb.pool.no_monitor', 'lb.monitor.interval_short', 'lb.fallback.missing', 'lb.pool.single_origin'],
+  'cf-spectrum': ['spectrum.app.no_ip_access_rules', 'spectrum.app.proxy_protocol_off', 'spectrum.app.tls_off'],
+};
+
+for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
+  test(`${folder} has the four domain sections in order, every finding id and sources`, () => {
+    assertDomainSkill(folder, ids, [...DOMAIN_SECTIONS, '## Sources']);
+  });
+}
+
+test('cf-tunnel documents tunnel-token with --env-path and the connector templates', () => {
+  const file = 'skills/cf-tunnel/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'claudeflare tunnel-token', '--env-path', 'TUNNEL_TOKEN', 'cloudflare/cloudflared:<pinned tag>',
+    'tunnel --no-autoupdate run', 'restart: unless-stopped', 'replicas: 2', 'EnvironmentFile=', 'kubectl create secret',
+    '"config_src": "cloudflare"', 'confirm_name', 'Lockout risk:', '1016', '1033',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  assert.ok(!/tunnel-token[^\n]*--env-file/.test(text), `${file} documents --env-file for tunnel-token`);
+});
+
+test('cf-audit lists the tunnel domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-tunnel`'), 'cf-audit does not name cf-tunnel');
+  assert.ok(audit.includes('`tunnel`'), 'cf-audit is missing domain tunnel');
+});
+
+test('cf-access documents secret_fields_from_env, the service token secret file and the lockout lines', () => {
+  const file = 'skills/cf-access/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'secret_fields_from_env', '"config.client_secret"', '.claudeflare/secrets/', 'shown only once', '[redacted]',
+    'confirm_name', 'Lockout risk:', 'resource_in_use', 'not_entitled', 'new AUD', 'cloudflareaccess.com', '"expect": "access_login"',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  assert.ok(!/"client_secret":\s*"[^<]/.test(text), `${file} shows a literal client_secret`);
+});
+
+test('cf-audit lists the access domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-access`'), 'cf-audit does not name cf-access');
+  assert.ok(audit.includes('`access`'), 'cf-audit is missing domain access');
+});
+
+test('cf-gateway documents rule order, list limits, the lockout lines and the honest verification note', () => {
+  const file = 'skills/cf-gateway/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'precedence', 'plan_conflict', 'too_large', 'resource_in_use', 'not_entitled', 'confirm_name', 'Lockout risk:',
+    'could not analyze traffic expression of rule', 'cloudflareaccess.com', 'cloudflareclient.com', 'dig ',
+    'filtering itself is only verified from a device behind Gateway', 'PATCH `/gateway/configuration`',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the gateway domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-gateway`'), 'cf-audit does not name cf-gateway');
+  assert.ok(audit.includes('`gateway`'), 'cf-audit is missing domain gateway');
+});
+
+test('cf-devices documents the mode switch, the lockout lines, the MDM templates and the secret placeholder rule', () => {
+  const file = 'skills/cf-devices/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'plan_conflict', 'resource_in_use', 'not_entitled', 'invalid_op', 'confirm_name', 'Lockout risk:', 'switch_locked', 'disable_for_time',
+    'cloudflareaccess.com', '{created_id}', 'device behavior is only verified on a device', 'mdm.xml', 'com.cloudflare.warp.plist',
+    'auth_client_secret', 'REPLACE_WITH_SERVICE_TOKEN_CLIENT_SECRET', 'Explain the steps by default',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  // Every secret field in a template is the placeholder, never a value.
+  for (const m of text.matchAll(/auth_client_secret(?:<\/key>\s*<string>|"\s*:\s*")([^<"]*)/g)) {
+    assert.equal(m[1], 'REPLACE_WITH_SERVICE_TOKEN_CLIENT_SECRET', `${file} shows a literal auth_client_secret`);
+  }
+  assert.ok([...text.matchAll(/auth_client_secret(?:<\/key>\s*<string>|"\s*:\s*")/g)].length >= 3, `${file} lacks an MDM template per OS`);
+});
+
+test('cf-audit lists the devices domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-devices`'), 'cf-audit does not name cf-devices');
+  assert.ok(audit.includes('`devices`'), 'cf-audit is missing domain devices');
+});
+
+test('cf-load-balancing documents both scopes, the preview, the lockout lines and the Healthy wait', () => {
+  const file = 'skills/cf-load-balancing/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    '"scope": "account"', '/zones/{zone_id}/load_balancers', 'not_entitled', 'missing_permission', 'resource_in_use', 'invalid_op',
+    'confirm_name', 'Lockout risk:', 'references', 'referrer', '/preview', 'preview skipped:', 'never blocks a plan',
+    'pop_health', 'minimum_origins', 'rollback_drift', 'new id',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the load_balancing domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-load-balancing`'), 'cf-audit does not name cf-load-balancing');
+  assert.ok(audit.includes('`load_balancing`'), 'cf-audit is missing domain load_balancing');
+});
+
+test('cf-load-balancing and cf-core tell the agent to show every advisory_lockout line after apply', () => {
+  for (const file of ['skills/cf-load-balancing/SKILL.md', 'skills/cf-core/SKILL.md']) {
+    assert.ok(/After apply, show the user every `advisory_lockout` line/.test(read(file)), `${file} does not say to show advisory_lockout lines`);
+  }
+});
+
+test('cf-spectrum documents the plan table, page=1, the delete note, the TCP check and the refusals', () => {
+  const file = 'skills/cf-spectrum/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    '/zones/{zone_id}/spectrum/apps', 'page=1', 'not_entitled', 'missing_permission', 'invalid_op', 'confirm_name', '`dns.name`',
+    'Free', 'Pro', 'Business', 'Enterprise', '`ssh`', '`minecraft`', '`rdp`', 'tcp/22', 'tcp/25565', 'tcp/3389',
+    'new id', 'new anycast IPs', '`edge_ips.type` is `static`', 'rollback_drift', 'skipped', 'UDP', '"expect": "tcp_open"', 'Zone Settings',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the spectrum domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-spectrum`'), 'cf-audit does not name cf-spectrum');
+  assert.ok(audit.includes('`spectrum`'), 'cf-audit is missing domain spectrum');
+});
+
+// v3 troubleshooting, core docs and release
+
+const ZT_TREES = [
+  'access-redirect-loop', 'access-403', 'access-jwt-invalid', 'tunnel-1016', 'tunnel-1033', 'tunnel-502',
+  'gateway-overblocking', 'warp-private-route', 'lb-no-healthy-pool', 'spectrum-no-connect',
+];
+
+for (const tree of ZT_TREES) {
+  test(`cf-zt-troubleshoot tree ${tree} exists with Evidence, Hypotheses, Fix and Sources in order`, () => {
+    const file = `skills/cf-zt-troubleshoot/trees/${tree}.md`;
+    const text = read(file);
+    assert.ok(text.startsWith('# '), `${file} has no title`);
+    assertHeadingsInOrder(text, ['## Evidence', '## Hypotheses', '## Fix', '## Sources'], file);
+  });
+}
+
+test('cf-zt-troubleshoot links every tree, reads logs and never reads a tunnel token', () => {
+  const file = 'skills/cf-zt-troubleshoot/SKILL.md';
+  const text = read(file);
+  for (const tree of ZT_TREES) assert.ok(text.includes(`trees/${tree}.md`), `${file} does not link trees/${tree}.md`);
+  for (const needle of ['access/logs/access_requests', 'path: "/client/v4/graphql"', 'claudeflare tunnel-token', 'Lockout risk:']) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  const trees = ZT_TREES.map((t) => read(`skills/cf-zt-troubleshoot/trees/${t}.md`)).join('\n');
+  assert.ok(!/path: "[^"]*cfd_tunnel\/[^"/]+\/token"/.test(text + trees), 'a cf-zt-troubleshoot example reads a tunnel token');
+});
+
+test('cf-core documents the v3 op fields, statuses, codes and tunnel-token', () => {
+  const core = read('skills/cf-core/SKILL.md');
+  for (const needle of [
+    'secret_fields_from_env', 'confirm_name', 'Lockout risk:', 'claudeflare tunnel-token', '--env-path',
+    'risk_changed', 'rollback_drift', 'applied_verify_failed', 'rollback_draft', 'advisory_lockout',
+    'not_entitled', 'missing_permission', 'resource_in_use', 'too_large', 'plan_conflict', 'invalid_op', 'secret_env_missing',
+    '"expect": "access_login"', 'tunnel_serving', 'pool_healthy', 'tcp_open',
+    'cf-zt-troubleshoot',
+  ]) {
+    assert.ok(core.includes(needle), `cf-core is missing ${needle}`);
+  }
+  assert.ok(!/tunnel-token[^\n]*--env-file/.test(core), 'cf-core documents --env-file for tunnel-token');
+  assert.match(core, /may omit `project_dir` only when it holds no `wrangler` op/);
+  assert.ok(!/`project_dir` is absolute;/.test(core), 'cf-core still says project_dir is always required');
+  assert.match(core, /secret file could not be written/);
+});
+
+test('cf-audit names the six v3 domains and the full audit scope rules', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  for (const domain of ['access', 'tunnel', 'gateway', 'devices', 'load_balancing', 'spectrum']) {
+    assert.ok(audit.includes(`\`${domain}\``), `cf-audit is missing domain ${domain}`);
+  }
+  assert.match(audit, /A full account audit includes `access`, `tunnel`, `gateway` and `devices`/);
+  assert.match(audit, /A full zone audit includes `load_balancing` and `spectrum`/);
+  assert.match(frontmatter(audit, 'skills/cf-audit/SKILL.md').description, /Zero Trust/);
+});
+
+test('README documents Zero Trust, tunnel-token with --env-path, lockout and the guard limits', () => {
+  const readme = read('README.md');
+  for (const needle of [
+    '## Zero Trust and network', 'claudeflare tunnel-token', '--env-path', 'Lockout risk:', 'risk_changed',
+    'applied_verify_failed', 'cf-zt-troubleshoot', 'xargs', 'sudo',
+  ]) {
+    assert.ok(readme.includes(needle), `README is missing ${needle}`);
+  }
+  // Within one code span or command line: the guard list names compose --env-file on the same line.
+  assert.ok(!/tunnel-token[^`\n]*--env-file/.test(readme), 'README documents --env-file for tunnel-token');
+});
+
+test('token template lists every v3 permission in its Read and Edit form', () => {
+  const doc = read('docs/token-template.md');
+  for (const name of [
+    'Access: Apps and Policies', 'Access: Organizations, Identity Providers, and Groups', 'Access: Service Tokens',
+    'Cloudflare Tunnel', 'Cloudflare One Networks', 'Zero Trust', 'Load Balancing: Monitors and Pools', 'Load Balancers',
+  ]) {
+    for (const form of ['Read', 'Edit']) assert.ok(doc.includes(`${name} ${form}`), `token template is missing ${name} ${form}`);
+  }
+  assert.ok(doc.includes('Cloudflare One Connectors'), 'token template does not name Cloudflare One Connectors');
+  assert.match(doc, /Zone Settings Edit[^\n]*Spectrum/);
+});
+
+const ZT_EVALS = ['zt-access-plan', 'tunnel-token-not-leaked', 'diagnose-gateway-overblocking', 'tunnel-delete-risk'];
+// Token-shaped values: JWT-like base64 tunnel tokens, service token secrets, bearer strings.
+const TOKEN_LIKE = /eyJ[A-Za-z0-9_-]{16,}|"(?:token|tunnel_secret|client_secret|credentials_file|password)"\s*:\s*"[^"[<]/;
+// 32 hex ids the product fixtures use: the sequence, one repeated character
+// with a last digit, or a two-character pattern repeated.
+const isFakeId = (id) => id === '0123456789abcdef0123456789abcdef' || /^fedcba9876543210fedcba987654321[0-9]$/.test(id) ||
+  /^(.)\1{30}[0-9a-f]$/.test(id) || /^(..)\1{13}[0-9a-f]{4}$/.test(id);
+
+for (const name of ZT_EVALS) {
+  test(`eval ${name} follows the case layout with fake data and no token-like value`, () => {
+    const dir = `evals/${name}`;
+    const prompt = read(`${dir}/prompt.md`);
+    const fm = frontmatter(prompt, `${dir}/prompt.md`);
+    assert.ok(fm.description, `${dir}/prompt.md has no description`);
+    assert.match(prompt, /^allowed_tools: \[/m, `${dir}/prompt.md has no allowed_tools`);
+    const graders = list(`${dir}/graders`).filter((e) => e.name.endsWith('.md'));
+    assert.ok(graders.length >= 2, `${dir} has fewer than two graders`);
+    for (const g of graders) assert.match(read(`${dir}/graders/${g.name}`), /^---\ntype: (?:llm|regex|tool_used)\n/, `${dir}/graders/${g.name} has no type`);
+    assert.ok(graders.some((g) => g.name === 'no-mcp-write.md'), `${dir} has no no-mcp-write grader`);
+    assert.match(read(`${dir}/mocks/cloudflare/execute.md`), /\{\{file:fixtures\/snapshot\.json\}\}/);
+    const snapshot = read(`${dir}/mocks/cloudflare/fixtures/snapshot.json`);
+    JSON.parse(snapshot);
+    for (const text of [prompt, snapshot]) {
+      assert.ok(!TOKEN_LIKE.test(text), `${dir} holds a token-like value`);
+      for (const id of text.match(/\b[0-9a-f]{32}\b/g) ?? []) {
+        assert.ok(isFakeId(id), `${dir} uses an id that is not one of the fake fixture ids: ${id}`);
+      }
+    }
+  });
+}
+
+test('every new eval grades token-like values and the Access plan eval grades its Lockout risk line', () => {
+  const graders = (name) => list(`evals/${name}/graders`).map((e) => read(`evals/${name}/graders/${e.name}`)).join('\n');
+  for (const name of ZT_EVALS) {
+    assert.ok(graders(name).includes('eyJ'), `evals/${name} has no grader for a token-like value`);
+  }
+  assert.ok(graders('zt-access-plan').includes('Lockout risk:'), 'evals/zt-access-plan has no grader for Lockout risk:');
+  assert.ok(graders('tunnel-token-not-leaked').includes('CANARY'), 'evals/tunnel-token-not-leaked has no canary grader');
+});
+
+// The harness compiles `pattern` with the grader's `flags` (default none). The
+// leak checks must fail on a token on any line, also if `m` is ever added.
+test('leak graders reject a token on any line and accept a clean reply, with and without the m flag', () => {
+  const files = [
+    ...ZT_EVALS.map((name) => `evals/${name}/graders/no-token-like-value.md`),
+    'evals/tunnel-token-not-leaked/graders/no-token-in-reply.md',
+  ];
+  const leaked = 'x\neyJhIjoiMDEyMzQ1Njc4OWFi\nmore';
+  const clean = 'x\nThe token went to .env through claudeflare tunnel-token.\nmore';
+  for (const file of files) {
+    const fields = frontmatter(read(file), file);
+    assert.equal(fields.type, 'regex', `${file} is not a regex grader`);
+    const pattern = JSON.parse(fields.pattern);
+    for (const flags of [fields.flags ?? '', 'm']) {
+      const re = new RegExp(pattern, flags);
+      assert.ok(!re.test(leaked), `${file} (flags "${flags}") passes a reply with a token on line 2`);
+      assert.ok(re.test(clean), `${file} (flags "${flags}") fails a clean reply`);
+    }
+  }
+});

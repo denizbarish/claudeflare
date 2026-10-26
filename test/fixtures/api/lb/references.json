@@ -1,0 +1,18 @@
+{
+  "b0000000000000000000000000000001": [
+    { "reference_type": "referrer", "resource_id": "c0000000000000000000000000000001", "resource_name": "www.example.com", "resource_type": "load_balancer" },
+    { "reference_type": "referral", "resource_id": "a0000000000000000000000000000001", "resource_name": "Login page monitor", "resource_type": "monitor" }
+  ],
+  "b0000000000000000000000000000002": [
+    { "reference_type": "referrer", "resource_id": "c0000000000000000000000000000001", "resource_name": "www.example.com", "resource_type": "load_balancer" },
+    { "reference_type": "referral", "resource_id": "a0000000000000000000000000000001", "resource_name": "Login page monitor", "resource_type": "monitor" }
+  ],
+  "b0000000000000000000000000000003": [
+    { "reference_type": "referrer", "resource_id": "c0000000000000000000000000000002", "resource_name": "api.example.com", "resource_type": "load_balancer" }
+  ],
+  "a0000000000000000000000000000001": [
+    { "reference_type": "referrer", "resource_id": "b0000000000000000000000000000001", "resource_name": "web-primary", "resource_type": "pool" },
+    { "reference_type": "referrer", "resource_id": "b0000000000000000000000000000002", "resource_name": "web-backup", "resource_type": "pool" }
+  ],
+  "a0000000000000000000000000000002": []
+}

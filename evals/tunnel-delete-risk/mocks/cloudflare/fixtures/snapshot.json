@@ -1,0 +1,152 @@
+{
+  "GET /accounts": [
+    {
+      "id": "0123456789abcdef0123456789abcdef",
+      "name": "Acme",
+      "type": "standard"
+    }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "name": "Acme"
+  },
+  "GET /zones (query name=example.com, or no query)": [
+    {
+      "id": "fedcba9876543210fedcba9876543210",
+      "name": "example.com",
+      "status": "active",
+      "plan": {
+        "legacy_id": "free"
+      },
+      "account": {
+        "id": "0123456789abcdef0123456789abcdef",
+        "name": "Acme"
+      }
+    }
+  ],
+  "GET /zones/fedcba9876543210fedcba9876543210/dns_records": [
+    {
+      "id": "66666666666666666666666666666661",
+      "zone_id": "fedcba9876543210fedcba9876543210",
+      "name": "app.example.com",
+      "type": "CNAME",
+      "content": "11111111-2222-4333-8444-555555555551.cfargotunnel.com",
+      "proxied": true,
+      "ttl": 1
+    },
+    {
+      "id": "66666666666666666666666666666662",
+      "zone_id": "fedcba9876543210fedcba9876543210",
+      "name": "wiki.example.com",
+      "type": "CNAME",
+      "content": "11111111-2222-4333-8444-555555555551.cfargotunnel.com",
+      "proxied": true,
+      "ttl": 1
+    },
+    {
+      "id": "66666666666666666666666666666665",
+      "zone_id": "fedcba9876543210fedcba9876543210",
+      "name": "example.com",
+      "type": "A",
+      "content": "192.0.2.30",
+      "proxied": true,
+      "ttl": 1
+    }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/cfd_tunnel": [
+    {
+      "id": "11111111-2222-4333-8444-555555555551",
+      "account_tag": "0123456789abcdef0123456789abcdef",
+      "created_at": "2026-10-01T09:00:00.000000Z",
+      "deleted_at": null,
+      "name": "web",
+      "status": "healthy",
+      "remote_config": true,
+      "config_src": "cloudflare",
+      "tun_type": "cfd_tunnel",
+      "connections": [
+        {
+          "colo_name": "fra06",
+          "id": "44444444-2222-4333-8444-555555555551",
+          "is_pending_reconnect": false,
+          "origin_ip": "192.0.2.10",
+          "opened_at": "2026-10-26T08:00:00.000000Z",
+          "client_id": "55555555-2222-4333-8444-555555555551",
+          "client_version": "2026.9.0"
+        }
+      ],
+      "conns_active_at": "2026-10-26T08:00:00.000000Z",
+      "conns_inactive_at": null
+    }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/cfd_tunnel/11111111-2222-4333-8444-555555555551/configurations": {
+    "account_id": "0123456789abcdef0123456789abcdef",
+    "tunnel_id": "11111111-2222-4333-8444-555555555551",
+    "version": 4,
+    "source": "cloudflare",
+    "created_at": "2026-10-20T12:00:00.000000Z",
+    "config": {
+      "ingress": [
+        {
+          "hostname": "app.example.com",
+          "service": "http://localhost:3000",
+          "originRequest": {}
+        },
+        {
+          "hostname": "wiki.example.com",
+          "service": "http://localhost:8080",
+          "originRequest": {}
+        },
+        {
+          "service": "http_status:404"
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      }
+    }
+  },
+  "GET /accounts/0123456789abcdef0123456789abcdef/cfd_tunnel/11111111-2222-4333-8444-555555555551/connections": [
+    {
+      "id": "55555555-2222-4333-8444-555555555551",
+      "version": "2026.9.0",
+      "arch": "linux_amd64",
+      "config_version": 4,
+      "run_at": "2026-10-26T08:00:00.000000Z",
+      "conns": [
+        {
+          "colo_name": "fra06",
+          "id": "44444444-2222-4333-8444-555555555551",
+          "is_pending_reconnect": false,
+          "origin_ip": "192.0.2.10",
+          "opened_at": "2026-10-26T08:00:00.000000Z"
+        }
+      ]
+    }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/cfd_tunnel/11111111-2222-4333-8444-555555555551": {
+    "id": "11111111-2222-4333-8444-555555555551",
+    "account_tag": "0123456789abcdef0123456789abcdef",
+    "created_at": "2026-10-01T09:00:00.000000Z",
+    "deleted_at": null,
+    "name": "web",
+    "status": "healthy",
+    "remote_config": true,
+    "config_src": "cloudflare",
+    "tun_type": "cfd_tunnel",
+    "connections": [
+      {
+        "colo_name": "fra06",
+        "id": "44444444-2222-4333-8444-555555555551",
+        "is_pending_reconnect": false,
+        "origin_ip": "192.0.2.10",
+        "opened_at": "2026-10-26T08:00:00.000000Z",
+        "client_id": "55555555-2222-4333-8444-555555555551",
+        "client_version": "2026.9.0"
+      }
+    ],
+    "conns_active_at": "2026-10-26T08:00:00.000000Z",
+    "conns_inactive_at": null
+  },
+  "GET /accounts/0123456789abcdef0123456789abcdef/teamnet/routes": []
+}

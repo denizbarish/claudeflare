@@ -1,0 +1,4 @@
+[
+  { "id": "66666666666666666666666666666661", "zone_id": "fedcba9876543210fedcba9876543210", "zone_name": "example.com", "name": "app.example.com", "type": "CNAME", "content": "11111111-2222-4333-8444-555555555551.cfargotunnel.com", "proxied": true, "ttl": 1 },
+  { "id": "66666666666666666666666666666662", "zone_id": "fedcba9876543210fedcba9876543210", "zone_name": "example.com", "name": "wiki.example.com", "type": "CNAME", "content": "11111111-2222-4333-8444-555555555551.cfargotunnel.com", "proxied": true, "ttl": 1 }
+]

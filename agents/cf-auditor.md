@@ -1,6 +1,6 @@
 ---
 name: cf-auditor
-description: Read-only Cloudflare auditor for one domain of one zone (for example ssl or cache) or of one account (workers, pages, storage). Dispatched in parallel by the cf-audit skill; returns only a JSON object with the findings in the cf-audit finding format and the checks it could not read. Never changes anything.
+description: Read-only Cloudflare auditor for one domain of one zone (for example ssl or cache) or of one account (workers, pages, storage, access, tunnel, gateway, devices, load_balancing). Dispatched in parallel by the cf-audit skill; returns only a JSON object with the findings in the cf-audit finding format and the checks it could not read. Never changes anything.
 tools: Read, Bash, ToolSearch, mcp__plugin_claudeflare_cloudflare__search, mcp__plugin_claudeflare_cloudflare__execute, mcp__plugin_claudeflare_cloudflare__docs
 ---
 
@@ -43,6 +43,6 @@ Each element of `findings` follows the cf-audit finding format:
 - `id`: stable `<domain>.<area>.<problem>`, lowercase. `domain`: the domain you were given.
 - `severity`: critical (outage, data exposure or open attack surface), high (significant security or performance loss), medium (best practice gap with measurable impact), low (polish).
 - `plan_tier`: lowest plan that supports the fix (`free`, `pro`, `business`, `enterprise`).
-- `fix`: plan ops `{ "method", "path", "body"? }` with `{zone_id}` in paths, or for account domains wrangler ops `{ "kind": "wrangler", "args": [...] }` in the cf-core 5.2.2 format, or `[]` when the fix is origin-side, manual, a code change, or above the plan. Never a Page Rule create.
+- `fix`: plan ops `{ "method", "path", "body"? }` with `{zone_id}` in paths, or for account domains wrangler ops `{ "kind": "wrangler", "args": [...] }` in the cf-core 5.2.2 format or product ops under `/accounts/{account_id}/...` in the cf-core 5.2.4 format, or `[]` when the fix is origin-side, manual, a code change, or above the plan. Never a Page Rule create.
 - Report only what you observed. If nothing is wrong, `findings` is `[]`.
 - `unread`: every checklist check or API path you could not read (denied, failed, truncated or skipped), one string each. If a read failed, do not guess its value; leave that check out of `findings` and list it here. Use `[]` only when every check was read.

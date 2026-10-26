@@ -1,0 +1,22 @@
+{
+  "id": "11111111-2222-4333-8444-555555555552",
+  "account_tag": "0123456789abcdef0123456789abcdef",
+  "created_at": "2026-10-26T10:00:00.000000Z",
+  "deleted_at": null,
+  "name": "api",
+  "connections": [],
+  "conns_active_at": null,
+  "conns_inactive_at": null,
+  "tun_type": "cfd_tunnel",
+  "metadata": {},
+  "status": "inactive",
+  "remote_config": true,
+  "config_src": "cloudflare",
+  "credentials_file": {
+    "AccountTag": "0123456789abcdef0123456789abcdef",
+    "TunnelID": "11111111-2222-4333-8444-555555555552",
+    "TunnelName": "api",
+    "TunnelSecret": "RkFLRS1UVU5ORUwtU0VDUkVULU5PVC1SRUFMLTAwMDAwMDAw"
+  },
+  "token": "eyJhIjoiRkFLRS1UT0tFTi1OT1QtUkVBTCIsInQiOiJmYWtlIn0"
+}

@@ -6,6 +6,8 @@ import { classify } from './resources.mjs';
 import { CfError } from './errors.mjs';
 import { runWrangler } from './wrangler.mjs';
 import { captureWranglerEntry, inverseForWrangler, noteCreated } from './wrangler-snapshot.mjs';
+import { classifyProductOp } from './products/index.mjs';
+import { captureProductEntry, inverseForProduct, withDriftPrecheck } from './rest-engine.mjs';
 
 const DNS_FIELDS = [
   'type', 'name', 'content', 'data', 'ttl', 'proxied', 'priority', 'comment', 'tags', 'settings',
@@ -99,6 +101,12 @@ export async function captureSnapshot(client, plan, { runner = runWrangler } = {
       entries.push({ op_index: i, op_kind: 'wrangler', ...entry });
       continue;
     }
+    // v3 product kinds take precedence over the v1 zone kinds.
+    const product = classifyProductOp(op, plan);
+    if (product) {
+      entries.push({ op_index: i, op_kind: 'product', ...(await captureProductEntry(client, op, product, plan)) });
+      continue;
+    }
     const { kind, invertible, readPath } = classify(op);
     const reader = READERS[kind];
     const before = reader ? await reader(client, op, readPath) : null;
@@ -147,17 +155,25 @@ const INVERTERS = {
 // ops on the same ruleset, so they are not mistaken for this op's new rule.
 export function inverseFor(entry, applyResult, options = {}) {
   if (entry.op_kind === 'wrangler') return inverseForWrangler(entry, applyResult);
+  if (entry.op_kind === 'product') return inverseForProduct(entry, applyResult, options.record ?? null);
   const inverter = INVERTERS[entry.kind];
   if (!entry.invertible || !inverter) return [];
   return inverter(entry, applyResult, options);
 }
 
+// Entry kinds whose rollback_ambiguous leaves the op out instead of failing.
+const PARTIAL_KINDS = new Set(['wrangler', 'product']);
+
 // results[i] is the apply result of op i, or null/undefined if it was not applied.
 // Inverses are computed in apply order (to attribute created rule ids), then
-// emitted in reverse. A wrangler op whose inverse cannot be built (no version
-// or namespace id in its result) is left out and its reason pushed to
-// options.unresolved, so the plan's other ops can still be rolled back.
-export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
+// emitted in reverse. A wrangler or product op whose inverse cannot be built
+// (no version, namespace or created id in its result, an unknown kind) is left
+// out and its reason pushed to options.unresolved, so the plan's other ops can
+// still be rolled back.
+// options.post: the source plan's post file ops (record per op index), or null
+// when the file is missing. When given, product inverses carry a drift
+// precheck (withDriftPrecheck); v1 and wrangler inverses never do.
+export function buildRollbackOps(snapshot, results, { unresolved = [], post } = {}) {
   const createdRuleIds = new Map();
   const perEntry = [];
   for (const entry of snapshot.entries) {
@@ -166,13 +182,17 @@ export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
     const knownRuleIds = createdRuleIds.get(entry.path) ?? [];
     let inverse;
     try {
-      inverse = inverseFor(entry, result, { knownRuleIds });
+      inverse = inverseFor(entry, result, { knownRuleIds, record: post?.[entry.op_index] ?? null });
     } catch (err) {
-      if (entry.op_kind !== 'wrangler' || !(err instanceof CfError) || err.code !== 'rollback_ambiguous') throw err;
+      if (!PARTIAL_KINDS.has(entry.op_kind) || !(err instanceof CfError) || err.code !== 'rollback_ambiguous') throw err;
       unresolved.push(err.message);
       continue;
     }
-    if (entry.kind === 'rule_create' && inverse.length) {
+    if (entry.op_kind === 'product' && post !== undefined) {
+      const applied = snapshot.entries.filter((e) => results[e?.op_index] !== null && results[e?.op_index] !== undefined);
+      inverse = withDriftPrecheck(entry, inverse, post?.[entry.op_index] ?? null, applied);
+    }
+    if (entry.op_kind !== 'product' && entry.kind === 'rule_create' && inverse.length) {
       createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);
     }
     perEntry.push(inverse);

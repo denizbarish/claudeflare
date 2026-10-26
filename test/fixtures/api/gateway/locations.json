@@ -1,0 +1,16 @@
+[
+  {
+    "id": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c001",
+    "name": "Head office",
+    "client_default": true,
+    "ecs_support": false,
+    "networks": [{ "network": "198.51.100.0/24" }],
+    "doh_subdomain": "a1b2c3d4e5",
+    "ip": "2001:db8:100::1",
+    "ipv4_destination": "172.64.36.1",
+    "ipv4_destination_backup": "172.64.36.2",
+    "dns_destination_ips_id": "0e4a32c6-6fb8-4858-9296-98f51631e8e6",
+    "created_at": "2026-03-01T09:00:00Z",
+    "updated_at": "2026-03-01T09:00:00Z"
+  }
+]

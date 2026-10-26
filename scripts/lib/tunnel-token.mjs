@@ -1,0 +1,151 @@
+// claudeflare tunnel-token: reads a tunnel token and writes it into an env
+// file. The token is never printed, logged or put in an error message; the
+// env file is recorded in secret-files.json so the guard keeps the agent from
+// reading it back. Not a Cloudflare write, so no plan; the endpoint needs
+// Tunnel Write, so it runs with the same token as apply.
+
+import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { closeSync, constants, fchmodSync, openSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { createClient, redact } from './api.mjs';
+import { CfError } from './errors.mjs';
+import { secretProjectRoot } from './project-root.mjs';
+import { lstatOrNull, readOrEmpty, recordGlobalSecretFile, recordSecretFile, refuseLink } from './secret-files.mjs';
+
+export const DEFAULT_VARIABLE = 'TUNNEL_TOKEN';
+const VARIABLE = /^[A-Z_][A-Z0-9_]*$/;
+const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
+const TUNNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SINGLE_LINE = /^[^\r\n\0]+$/;
+const NEW_FILE_MODE = 0o600;
+const OTHERS_MASK = 0o077;
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+
+const lineFor = (name) => new RegExp(`^(\\s*(?:export\\s+)?)${name}\\s*=`);
+
+// Refuses a symlink or a non-file at the env file path; returns its lstat or null.
+function envFileStat(file) {
+  const stat = lstatOrNull(file);
+  refuseLink(file, stat);
+  if (stat && !stat.isFile()) throw new Error(`${file} is not a regular file`);
+  return stat;
+}
+
+// Writes content to a new temp file in the same folder (O_EXCL | O_NOFOLLOW,
+// final mode set before any byte lands) and renames it over file, so a
+// failure never leaves file half written or missing.
+function atomicWrite(file, content, mode) {
+  const temp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`);
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, mode);
+  try {
+    try {
+      fchmodSync(fd, mode);
+      writeSync(fd, content);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, file);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
+  }
+}
+
+// Creates file with mode 0600 or rewrites it keeping its mode and line
+// endings: every NAME= line (also `export NAME=`) gets the new value, other
+// lines stay, and NAME is appended when absent. Never follows a symlink.
+export function writeEnvVar(file, name, value) {
+  if (typeof name !== 'string' || !VARIABLE.test(name)) throw new TypeError(`Invalid variable name: ${JSON.stringify(name)}`);
+  if (typeof value !== 'string' || !SINGLE_LINE.test(value)) throw new TypeError('The value must be a non-empty single-line string');
+  const stat = envFileStat(file);
+  const content = stat ? readOrEmpty(file) : '';
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/);
+  const pattern = lineFor(name);
+  let found = false;
+  const next = lines.map((line) => {
+    const match = pattern.exec(line);
+    if (!match) return line;
+    found = true;
+    return `${match[1]}${name}=${value}`;
+  });
+  if (!found) next.push(`${name}=${value}`);
+  atomicWrite(file, `${next.join(eol)}${eol}`, stat ? stat.mode & 0o777 : NEW_FILE_MODE);
+}
+
+// True when git ignores file; false outside a git repo or without git.
+export function isGitIgnored(file) {
+  const res = spawnSync('git', ['check-ignore', '-q', '--', basename(file)], { cwd: dirname(file), stdio: 'ignore' });
+  return res.status === 0;
+}
+
+// True when dir is inside a git work tree; false outside one or without git.
+function isInsideGitWorkTree(dir) {
+  const res = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return res.status === 0 && res.stdout.trim() === 'true';
+}
+
+function validate({ account, tunnel, variable }) {
+  if (!ACCOUNT_ID.test(account)) throw new CfError('invalid_input', `Invalid --account ${JSON.stringify(account)}; expected a 32 character hex account id`);
+  if (!TUNNEL_ID.test(tunnel)) throw new CfError('invalid_input', `Invalid --tunnel ${JSON.stringify(tunnel)}; expected a tunnel UUID`);
+  if (!VARIABLE.test(variable)) throw new CfError('invalid_input', `Invalid --var ${JSON.stringify(variable)}; expected ${VARIABLE.source}`);
+}
+
+// Everything that can be checked without the token is checked first, so a
+// bad path never costs a token read. Returns the canonical file path and its stat.
+function prepareFile(cwd, envFile) {
+  const abs = resolve(cwd, envFile);
+  let dir;
+  try {
+    dir = realpathSync(dirname(abs));
+    if (!statSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
+  } catch (err) {
+    throw new CfError('invalid_input', `Cannot use ${abs}: ${err.code === 'ENOENT' ? 'its directory does not exist' : err.message}`);
+  }
+  const file = join(dir, basename(abs));
+  let stat;
+  try {
+    stat = envFileStat(file);
+  } catch (err) {
+    throw new CfError('invalid_input', err.message);
+  }
+  // Inside a git work tree an unignored env file is one `git add -A` away
+  // from a pushed token. Outside a repo nothing changes (a warning only).
+  if (isInsideGitWorkTree(dir) && !isGitIgnored(file)) {
+    throw new CfError('invalid_input', `${file} is inside a git work tree and is not ignored by git, so a commit could publish the token; nothing was read or written`, {
+      hint: `Add ${basename(file)} (or a pattern matching it) to .gitignore, check it with "git check-ignore ${file}", then run claudeflare tunnel-token again`,
+    });
+  }
+  return { file, stat };
+}
+
+function modeWarning(file, stat) {
+  const mode = stat ? stat.mode & 0o777 : NEW_FILE_MODE;
+  if (!(mode & OTHERS_MASK)) return null;
+  return `${file} has mode 0${mode.toString(8)}, so group or other users can read the token; run chmod 600 on it`;
+}
+
+export async function runTunnelToken(cwd, { account, tunnel, envFile, variable = DEFAULT_VARIABLE }, makeClient = createClient) {
+  validate({ account, tunnel, variable });
+  const { file, stat } = prepareFile(cwd, envFile);
+  const value = await makeClient().request('GET', `/accounts/${account}/cfd_tunnel/${tunnel}/token`);
+  if (typeof value !== 'string' || !SINGLE_LINE.test(value)) {
+    throw new CfError('invalid_response', 'The tunnel token response is not a non-empty single-line string; nothing was written');
+  }
+  try {
+    // Recorded first: a stale entry is harmless, an unlisted secret is not.
+    recordSecretFile(secretProjectRoot(file, cwd), file);
+    recordGlobalSecretFile(file);
+    writeEnvVar(file, variable, value);
+  } catch (err) {
+    const message = redact(String(err?.message ?? err), process.env.CLOUDFLARE_API_TOKEN, [value]);
+    throw new CfError('write_failed', `Writing ${variable} failed: ${message}`);
+  }
+  const gitignored = isGitIgnored(file);
+  const out = { file, variable, gitignored };
+  if (!gitignored) out.gitignore_warning = `${file} is not ignored by git; add it to .gitignore before committing`;
+  const warning = modeWarning(file, stat);
+  if (warning) out.mode_warning = warning;
+  return out;
+}
