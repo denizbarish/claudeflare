@@ -355,8 +355,9 @@ function envSecrets(plan, env) {
 
 // Report-only verification (spec 8) of every product op that ran, while the
 // plan's ops are applied or partially applied. Each op's checks are retried
-// for up to 60 s; the outcome goes to results[i].verify (a non-object result
-// becomes { verify }). Never writes, never throws. Returns true when a check
+// for up to 60 s; the outcome goes to results[i].verify. A non-object result
+// (true, an array) becomes { value, verify }; createRollbackPlan unwraps it.
+// Never writes, never throws. Returns true when a check
 // failed. ctxByProduct is the apply-time preflight ctx, {} for rollback plans.
 async function verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep, connect, clock, env }) {
   if (!VERIFY_STATUSES.has(outcome.status)) return false;
@@ -379,36 +380,63 @@ async function verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep
       verify = { ok: false, checks: [{ name: 'verify', ok: false, detail: `checks could not run: ${err?.message ?? err}` }] };
     }
     verify = { ok: verify.ok, checks: verify.checks.map((c) => ({ ...c, detail: clean(c.detail) })) };
-    outcome.results[i] = result && typeof result === 'object' && !Array.isArray(result) ? { ...result, verify } : { verify };
+    outcome.results[i] = isPlainResult(result) ? { ...result, verify } : { value: result, verify };
     if (!verify.ok) failed = true;
   }
   return failed;
 }
 
+function isPlainResult(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// The apply result as executeRestOps returned it: a { value, verify } wrapper
+// of a non-object result is undone; object results keep their verify key.
+function applyResultOf(result) {
+  if (!isPlainResult(result) || isPlainResult(result.value)) return result;
+  const keys = Object.keys(result);
+  return keys.length === 2 && 'value' in result && 'verify' in result ? result.value : result;
+}
+
 // After a failed verification of a normal plan: a rollback draft that needs
 // its own approval. Its id, or why none could be built, goes on the plan.
-async function draftRollback(cwd, client, plan, now, env) {
+// When its lockout analysis fails, the draft carries a "could not run" line so
+// it is never approved without a lockout warning in view.
+async function draftRollback(cwd, client, plan, now, env, addLockout) {
+  const clean = (err) => redact(`${err?.code || 'internal'}: ${err?.message ?? err}`, undefined, envSecrets(plan, env));
   let draft;
   try {
     draft = createRollbackPlan(cwd, plan.id, now);
   } catch (err) {
-    const why = redact(`${err?.code || 'internal'}: ${err?.message ?? err}`, undefined, envSecrets(plan, env));
-    return updatePlan(cwd, plan.id, { rollback_draft_error: why });
+    return updatePlan(cwd, plan.id, { rollback_draft_error: clean(err) });
   }
   const updated = updatePlan(cwd, plan.id, { rollback_draft: draft.id });
+  if (!hasProductOps(draft)) return updated;
   try {
-    if (hasProductOps(draft)) await addRollbackLockout(cwd, draft, client);
-  } catch {
-    // The draft stays; claudeflare plan show still lists its ops for review.
+    await addLockout(cwd, draft, client);
+    return updated;
+  } catch (err) {
+    const why = clean(err);
+    const line = `${LOCKOUT_PREFIX} lockout analysis could not run (${why}); review the ops before approving.`;
+    const base = String(draft.risk ?? '').split('\n').filter((l) => l && !l.startsWith(LOCKOUT_PREFIX));
+    let detail = `lockout analysis of draft ${draft.id} could not run: ${why}`;
+    try {
+      updatePlan(cwd, draft.id, { lockout_risks: [line], risk: [...base, line].join('\n') });
+    } catch (writeErr) {
+      detail += `; the warning could not be stored on the draft either (${clean(writeErr)}), review it with care`;
+    }
+    return updatePlan(cwd, plan.id, { rollback_draft_error: detail });
   }
-  return updated;
 }
 
 // The plan is read exactly once; that object is approval-checked and executed.
 // deps.runner runs wrangler, deps.fetchImpl and deps.sleep drive health checks
 // and verification, deps.env supplies secret_fields_from_env values,
 // deps.connect opens tcp_open connections and deps.clock (ms) times verification.
-export async function applyPlan(cwd, client, id, now = new Date(), { runner = runWrangler, sleep, fetchImpl, env = process.env, connect, clock } = {}) {
+// deps.addLockout (tests) replaces addRollbackLockout for the rollback draft.
+export async function applyPlan(cwd, client, id, now = new Date(), {
+  runner = runWrangler, sleep, fetchImpl, env = process.env, connect, clock, addLockout = addRollbackLockout,
+} = {}) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
   if (hasWranglerOps(plan)) return applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl });
@@ -441,7 +469,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
   if (verifyFailed && outcome.status === 'applied') outcome.status = 'applied_verify_failed';
   const recorded = recordOutcome(cwd, plan, outcome, file, now);
   // Rollback plans are verified but get no draft of their own.
-  return verifyFailed && !plan.rollback_of ? draftRollback(cwd, client, plan, now, env) : recorded;
+  return verifyFailed && !plan.rollback_of ? draftRollback(cwd, client, plan, now, env, addLockout) : recorded;
 }
 
 function readSnapshot(cwd, plan) {
@@ -466,7 +494,7 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
     });
   }
   // Ops that were rolled back automatically or skipped are not applied.
-  const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : r));
+  const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : applyResultOf(r)));
   const unresolved = [];
   const snapshot = readSnapshot(cwd, plan);
   // Only product (v3) entries get a drift baseline; v1 and v2 rollbacks are unchanged.

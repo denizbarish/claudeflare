@@ -28,6 +28,7 @@ const T0 = new Date('2026-10-26T10:00:00Z');
 // The fake product's default checks are set per test.
 let moduleChecks = () => [];
 const seen = [];
+const inverseSaw = [];
 const VX = {
   product: 'vx',
   kinds: [
@@ -43,6 +44,16 @@ const VX = {
     {
       kind: 'vx_app_delete', product: 'vx', scope: 'account', methods: ['DELETE'], pattern: /^\/vx\/apps\/([0-9a-f-]{36})$/,
       resource: (m) => ({ type: 'vx_app', id: m[1] }), readOnlyFields: ['id'], inverse: 'none', destructive: true, nameField: 'name',
+    },
+    {
+      kind: 'vx_list_put', product: 'vx', scope: 'account', methods: ['PUT'], pattern: /^\/vx\/lists\/([0-9a-f-]{36})$/,
+      resource: (m) => ({ type: 'vx_list', id: m[1] }), readOnlyFields: [], destructive: false,
+      read: (m, base) => `${base}/vx/lists/${m[1]}`,
+      // Array resources: the engine's put_before needs an object before state.
+      inverse: (snap, applyResult) => {
+        inverseSaw.push(applyResult);
+        return [{ method: 'PUT', path: snap.path, body: snap.before }];
+      },
     },
   ],
   probePath: (base) => `${base}/vx/apps`,
@@ -359,7 +370,7 @@ test('failed check on a rollback plan creates no draft', async (t) => {
   assert.equal(rolled.results[0].verify.ok, false);
   assert.equal(rolled.results[0].verify.checks[0].detail, 'still there {}', 'rollback plans verify with an empty ctx');
   assert.equal(rolled.rollback_draft, undefined);
-  assert.equal(rolled.results[0].id, undefined, 'a DELETE result without a body becomes { verify }');
+  assert.equal(rolled.results[0].value, true, 'a DELETE result without a body is kept as { value, verify }');
   // Every rollback op ran, so the source counts as rolled back.
   assert.equal(readPlan(cwd, plan.id).status, 'rolled_back');
   assert.throws(() => createRollbackPlan(cwd, rollback.id, T0), (err) => err.code === 'not_applied' && /rollback of a rollback/.test(err.message));
@@ -401,4 +412,47 @@ test('plans without product ops get no verification', async (t) => {
   assert.equal(applied.status, 'applied');
   assert.equal(applied.results[0].verify, undefined);
   assert.equal(seen.length, 0);
+});
+
+test('a draft whose lockout analysis fails carries a could-not-run lockout line', async (t) => {
+  const SECRET = 'lockout-s3cr3t-value';
+  const op = { ...appUpdate, secret_fields_from_env: { token: 'VX_TOKEN' } };
+  const { cwd, plan } = setup(t, [op]);
+  approve(cwd, plan);
+  moduleChecks = () => [failing()];
+  const clock = fakeClock();
+  const client = fakeClient({
+    [`GET ${BASE}/vx/apps/${ID}`]: { id: ID, name: 'old' },
+    [`PUT ${BASE}/vx/apps/${ID}`]: { id: ID, name: 'wiki2' },
+  });
+  const addLockout = async () => { throw new CfError('internal', `analysis exploded near ${SECRET}`); };
+  const applied = await applyPlan(cwd, client, plan.id, T0, { env: { VX_TOKEN: SECRET }, sleep: clock.sleep, clock: clock.now, addLockout });
+  assert.equal(applied.status, 'applied_verify_failed');
+  const draft = readPlan(cwd, applied.rollback_draft);
+  const line = 'Lockout risk: lockout analysis could not run (internal: analysis exploded near [REDACTED]); review the ops before approving.';
+  assert.deepEqual(draft.lockout_risks, [line]);
+  assert.equal(draft.risk.split('\n').at(-1), line);
+  assert.match(applied.rollback_draft_error, /lockout analysis of draft .* could not run: internal: analysis exploded near \[REDACTED\]/);
+  assert.equal(JSON.stringify([applied, draft]).includes(SECRET), false);
+});
+
+test('an array result survives verification and still rolls back', async (t) => {
+  const LIST = '11111111-4e5f-6789-abcd-ef0123456789';
+  const path = `${BASE}/vx/lists/${LIST}`;
+  const { cwd, plan } = setup(t, [{ method: 'PUT', path, body: [{ address: '10.0.0.0/8' }] }]);
+  approve(cwd, plan);
+  moduleChecks = () => [failing()];
+  const clock = fakeClock();
+  const client = fakeClient({
+    [`GET ${path}`]: [{ address: '192.168.0.0/16' }],
+    [`PUT ${path}`]: [{ address: '10.0.0.0/8' }],
+  });
+  const applied = await applyPlan(cwd, client, plan.id, T0, { env: {}, sleep: clock.sleep, clock: clock.now });
+  assert.equal(applied.status, 'applied_verify_failed');
+  assert.deepEqual(applied.results[0].value, [{ address: '10.0.0.0/8' }]);
+  assert.equal(applied.results[0].verify.ok, false);
+  assert.equal(applied.rollback_draft_error, undefined, applied.rollback_draft_error);
+  const draft = readPlan(cwd, applied.rollback_draft);
+  assert.deepEqual(draft.ops.map((o) => [o.method, o.path, o.body]), [['PUT', path, [{ address: '192.168.0.0/16' }]]]);
+  assert.deepEqual(inverseSaw.at(-1), [{ address: '10.0.0.0/8' }], 'the rollback inverse sees the original array, not the wrapper');
 });
