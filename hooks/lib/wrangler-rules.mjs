@@ -67,12 +67,11 @@ const isWranglerScript = (token) => /(?:^|\/)wrangler(?:\.m?js)?$|(?:^|\/)wrangl
 const SAFE_HEADS = new Set([
   'grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'ls', 'echo', 'printf', 'which', 'type', 'wc', 'file', 'stat', 'diff', 'jq',
 ]);
-// Commands that run a quoted argument as a command line: their quoted text
-// is checked like a command. Under any other head only $(...) and `...` run.
-const SHELL_RUNNERS = new Set([
-  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'ssh', 'su', 'sudo', 'xargs', 'watch', 'nohup', 'time', 'timeout',
-  'env', 'exec', 'command', 'nice', 'npx', 'pnpx', 'bunx',
-]);
+// Commands whose quoted arguments are data (messages, patterns, bodies):
+// under them only $(...) and `...` run. Quoted text under any other head is
+// checked as a command (fail closed). git -c alias and rg --pre can run a
+// command, but only by deliberate construction.
+const QUOTED_DATA_HEADS = new Set([...SAFE_HEADS, 'git', 'gh', 'rg']);
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
 const DIR_FLAGS = new Set(['--prefix', '-C', '--dir', '--cwd']);
 const MAX_NESTING = 3;
@@ -261,8 +260,7 @@ export function decideWrangler(command, { cwd = process.cwd(), depth = 0 } = {})
     deeper.push(...scriptBodies(tokens, dir));
   }
   for (const { text, head } of nested) {
-    // Only command runners run their quoted text; elsewhere just $(...) and `...`.
-    const runs = head && !SHELL_RUNNERS.has(baseName(head)) ? text.split(/\$\(|`/).slice(1) : [text];
+    const runs = head && QUOTED_DATA_HEADS.has(baseName(head)) ? text.split(/\$\(|`/).slice(1) : [text];
     deeper.push(...runs.map((part) => ({ text: part, cwd: dir })));
   }
   const relevant = deeper.filter(({ text }) => /wrangler|\b(?:npm|pnpm|yarn|bun)\b/.test(text.replace(/\\\n|['"\\]/g, '')));
