@@ -13,7 +13,7 @@ claudeflare never runs commands on your origin server. Origin-side fixes (nginx,
 
 ## Requirements
 
-- Claude Code with plugin support
+- Claude Code with plugin support (CLI, desktop or Cowork). In claude.ai chat, plugin hooks do not run, so the guard and the approval step are off there: use the MCP server read-only in chat and make changes from Claude Code.
 - Node.js 18 or later
 - A Cloudflare account. An API token is needed only to apply changes.
 - For Workers, Pages and storage changes: wrangler 4 as a dependency of your project (`npm i -D wrangler@4`). claudeflare runs that local copy, never a global wrangler or `npx`.
