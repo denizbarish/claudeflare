@@ -1,0 +1,9 @@
+{
+  "bbbbbbbb-1111-4000-8000-000000000001": [
+    { "value": "ads.example.net", "description": "", "created_at": "2026-06-11T09:55:00Z" },
+    { "value": "tracker.example.org", "description": "analytics", "created_at": "2026-06-11T09:55:00Z" }
+  ],
+  "bbbbbbbb-1111-4000-8000-000000000002": [
+    { "value": "192.0.2.0/24", "created_at": "2026-02-01T09:00:00Z" }
+  ]
+}

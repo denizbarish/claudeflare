@@ -223,6 +223,10 @@ const ZT_FINDINGS = {
     'access.policy.everyone_allow', 'access.app.no_mfa', 'access.session.long',
     'access.service_token.expiring', 'access.group.unused', 'access.idp.single_login_method',
   ],
+  'cf-gateway': [
+    'gateway.dns.no_security_baseline', 'gateway.rule.shadowed', 'gateway.tls.decrypt_off_with_http_rules',
+    'gateway.list.unused', 'gateway.location.none',
+  ],
 };
 
 for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
@@ -266,4 +270,22 @@ test('cf-audit lists the access domain', () => {
   const audit = read('skills/cf-audit/SKILL.md');
   assert.ok(audit.includes('`cf-access`'), 'cf-audit does not name cf-access');
   assert.ok(audit.includes('`access`'), 'cf-audit is missing domain access');
+});
+
+test('cf-gateway documents rule order, list limits, the lockout lines and the honest verification note', () => {
+  const file = 'skills/cf-gateway/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'precedence', 'plan_conflict', 'too_large', 'resource_in_use', 'not_entitled', 'confirm_name', 'Lockout risk:',
+    'could not analyze traffic expression of rule', 'cloudflareaccess.com', 'cloudflareclient.com', 'dig ',
+    'filtering itself is only verified from a device behind Gateway', 'PATCH `/gateway/configuration`',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the gateway domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-gateway`'), 'cf-audit does not name cf-gateway');
+  assert.ok(audit.includes('`gateway`'), 'cf-audit is missing domain gateway');
 });

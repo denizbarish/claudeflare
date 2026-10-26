@@ -31,11 +31,14 @@ function parentPath(path) {
 export async function captureProductEntry(client, op, classified) {
   const { entry, match, base } = classified;
   const path = String(op.path);
-  const wantsRead = READ_BEFORE.has(entry.inverse) || (typeof entry.read === 'function' && entry.inverse !== 'delete_created');
+  const capture = typeof entry.capture === 'function' ? entry.capture : null;
+  const wantsRead = READ_BEFORE.has(entry.inverse) || capture !== null || (typeof entry.read === 'function' && entry.inverse !== 'delete_created');
   const readPath = entry.read ? entry.read(match, base) : path.split('?')[0];
   // Snapshots store only non-secret fields (spec 5.1): secret and redacted
-  // paths are omitted, so default inverse bodies never carry them either.
-  const read = wantsRead ? await client.request('GET', readPath) : null;
+  // paths are omitted, so default inverse bodies never carry them either. A
+  // kind whose state spans more than one read (a Gateway list and its items)
+  // supplies its own capture.
+  const read = wantsRead ? await (capture ? capture(client, readPath) : client.request('GET', readPath)) : null;
   const before = read === null ? null : omitPaths(read, [...(entry.secretFields ?? []), ...(entry.redact ?? [])]);
   const out = {
     product: entry.product,

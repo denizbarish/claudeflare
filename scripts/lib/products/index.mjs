@@ -5,6 +5,7 @@
 
 import { matchKind } from './match.mjs';
 import { ACCESS } from './access.mjs';
+import { GATEWAY } from './gateway.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
 /**
@@ -21,6 +22,10 @@ import { TUNNEL } from './tunnel.mjs';
  *   Conflict key; null when the op names no existing resource (a create).
  * @property {(m: RegExpExecArray, base: string) => string} [read]        Before-read path.
  * @property {(m: RegExpExecArray, base: string) => string} [collection]  POST path for `recreate`.
+ * @property {(client: object, readPath: string) => Promise<object>} [capture]  Builds the
+ *   before state when one GET of readPath does not hold it all (a Gateway list and its
+ *   items); the engine then always takes a snapshot. Post-apply and drift reads stay a
+ *   plain GET of readPath.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
  *   A function is called as inverse(snapshotEntry, applyResult) and returns ops. An op may
@@ -37,6 +42,7 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {(ctx: object, op: object) => string[]} [notes]  Extra risk lines.
  * @property {(op: object) => string[]} [validate]  Body problems; any one makes the op
  *   invalid_op at plan new, preflight and apply. Messages name field paths, never values.
+ *   It may instead throw a CfError with a code of its own (too_large for a Gateway list).
  */
 
 /**
@@ -150,3 +156,4 @@ export function classifyProductOp(op, plan) {
 // Product modules shipped with claudeflare.
 registerProduct(TUNNEL);
 registerProduct(ACCESS);
+registerProduct(GATEWAY);

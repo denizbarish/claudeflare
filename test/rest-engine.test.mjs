@@ -40,6 +40,12 @@ const rt = {
         return [{ method: 'POST', path: `${entry.path.slice(0, -4)}/undo`, body: { run: applyResult.run_id } }];
       },
     },
+    {
+      kind: 'rt_bundle_update', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/bundles\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_bundle', id: m[1] }), readOnlyFields: ['id'], destructive: false,
+      redact: ['token'],
+      capture: async (client, readPath) => ({ ...(await client.request('GET', readPath)), items: await client.request('GET', `${readPath}/items`) }),
+      inverse: (entry) => [{ method: 'PUT', path: entry.path, body: { name: entry.before.name, items: entry.before.items } }],
+    },
   ],
   probePath: (base) => `${base}/rt/things`,
   gather: async () => ({}),
@@ -75,6 +81,17 @@ const ambiguous = (err) => err instanceof CfError && err.code === 'rollback_ambi
 test('kindByName finds a registered kind and returns null for an unknown name', () => {
   assert.equal(kindByName('rt_thing_update').inverse, 'put_before');
   assert.equal(kindByName('no_such_kind'), null);
+});
+
+test('a kind capture builds the before state from several reads; secret and redact paths are still omitted', async () => {
+  const op = { method: 'PUT', path: `${BASE}/rt/bundles/${ID}`, body: { name: 'b', items: [{ value: 'y' }] } };
+  const { entry, client } = await entryFor(op, {
+    [`GET ${BASE}/rt/bundles/${ID}`]: { id: ID, name: 'a', token: 'tok-secret' },
+    [`GET ${BASE}/rt/bundles/${ID}/items`]: [{ value: 'x' }],
+  });
+  assert.deepEqual(client.calls.map((c) => c.path), [`${BASE}/rt/bundles/${ID}`, `${BASE}/rt/bundles/${ID}/items`]);
+  assert.deepEqual(entry.before, { id: ID, name: 'a', items: [{ value: 'x' }] });
+  assert.deepEqual(inverseForProduct(entry, {}), [{ method: 'PUT', path: op.path, body: { name: 'a', items: [{ value: 'x' }] } }]);
 });
 
 test('delete_created takes no snapshot and deletes the id from the apply result', async () => {

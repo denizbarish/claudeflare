@@ -1,0 +1,21 @@
+[
+  {
+    "id": "eeeeeeee-0000-4000-8000-000000000001",
+    "name": "Okta",
+    "type": "okta",
+    "config": {
+      "client_id": "0oa000000000000000000",
+      "okta_account": "https://example-org.okta.com",
+      "claims": []
+    }
+  },
+  {
+    "id": "eeeeeeee-0000-4000-8000-000000000003",
+    "name": "Microsoft Entra ID",
+    "type": "azureAD",
+    "config": {
+      "client_id": "00000000-0000-4000-8000-0000000000aa",
+      "directory_id": "00000000-0000-4000-8000-0000000000bb"
+    }
+  }
+]
