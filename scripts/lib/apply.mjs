@@ -9,7 +9,7 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
-import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES } from './wrangler-ops.mjs';
+import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KINDS } from './wrangler-ops.mjs';
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { executeAccountOps } from './wrangler-exec.mjs';
@@ -177,7 +177,13 @@ async function assertAccountAccess(client, plan) {
 
 function assertSourceUnchanged(plan) {
   for (const [index, op] of (plan.ops ?? []).entries()) {
-    if (op?.kind !== 'wrangler' || op.source_hash === undefined) continue;
+    if (op?.kind !== 'wrangler') continue;
+    if (op.source_hash === undefined) {
+      if (!SOURCE_KINDS.has(classifyWranglerOp(op).kind)) continue;
+      throw new CfError('source_hash_missing', `Op ${index} (wrangler ${op.args.slice(0, 2).join(' ')}) uploads project files but carries no source_hash`, {
+        hint: 'Create the plan with claudeflare plan new so the source hash is embedded, then approve it again',
+      });
+    }
     const extraPaths = op.source_paths ?? [];
     if (!Array.isArray(extraPaths) || !extraPaths.every((p) => typeof p === 'string')) {
       throw new CfError('invalid_op', `Op ${index} (wrangler) source_paths must be an array of strings`);

@@ -173,6 +173,8 @@ const ALLOWLIST = [
 const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete']);
 export const DELETE_KINDS = new Set(['resource_delete', 'worker_delete']);
 export const DEPLOY_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
+// Kinds that upload project files; apply refuses them without a source_hash.
+export const SOURCE_KINDS = new Set(['worker_deploy', 'pages_deploy', 'd1_migrations_apply']);
 // Deletes whose contents are lost with the resource (R2 deletes are refused
 // at preflight when the bucket is not empty).
 export const DATA_LOSS_TYPES = new Set(['kv', 'queue', 'd1']);

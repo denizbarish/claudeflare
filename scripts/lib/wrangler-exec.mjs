@@ -12,7 +12,6 @@ import { inverseFor } from './snapshot.mjs';
 const ACCOUNT_ID = /^[a-f0-9]{32}$/;
 const R2_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const KV_NAMESPACE_ID = /^[a-f0-9]{32}$/;
-const D1_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TARGET_FLAGS = ['--config', '--env'];
 const VERSION_EVENT_TYPES = new Set(['deploy', 'version-deploy']);
 
@@ -63,19 +62,6 @@ async function kvEmpty(client, accountId, id) {
   return { empty: keys.length === 0 };
 }
 
-// D1: GET /accounts/{account_id}/d1/database?name=<name> (exact match filtered
-// here), then GET /accounts/{account_id}/d1/database/{database_id} and its num_tables.
-async function d1Empty(client, accountId, name) {
-  const list = await client.request('GET', `/accounts/${accountId}/d1/database`, { query: { name } });
-  const matches = (Array.isArray(list) ? list : []).filter((db) => db?.name === name);
-  if (matches.length !== 1 || typeof matches[0].uuid !== 'string' || !D1_UUID.test(matches[0].uuid)) {
-    return { empty: null, reason: `D1 database ${name} could not be identified uniquely` };
-  }
-  const db = await client.request('GET', `/accounts/${accountId}/d1/database/${matches[0].uuid}`);
-  if (typeof db?.num_tables !== 'number') return { empty: null, reason: `D1 database ${name} reported no table count` };
-  return { empty: db.num_tables === 0 };
-}
-
 async function probeEmpty(client, plan, parsed) {
   const accountId = plan.account_id;
   switch (parsed?.type) {
@@ -84,7 +70,7 @@ async function probeEmpty(client, plan, parsed) {
     case 'kv':
       return kvEmpty(client, accountId, parsed.name);
     case 'd1':
-      return d1Empty(client, accountId, parsed.name);
+      return { empty: null, reason: `the API has no reliable emptiness signal for D1 database ${parsed.name} (num_tables is deprecated)` };
     case 'queue':
       return { empty: null, reason: `the API has no reliable emptiness signal for queue ${parsed.name}` };
     default:
@@ -146,6 +132,7 @@ async function checkOnlyPlanVersions(runner, plan, op, notes) {
   }
   if (!Array.isArray(deployments)) return skip('deployments list did not return a list');
   const versions = deployments.flatMap((d) => (Array.isArray(d?.versions) ? d.versions : [null]));
+  if (versions.length === 0) return skip(`Worker ${parsed.name} lists no deployed versions`);
   const foreign = versions.some((v) => typeof v?.version_id !== 'string' || !expected.has(v.version_id));
   return foreign ? skip(`Worker ${parsed.name} has versions this plan did not create`) : null;
 }

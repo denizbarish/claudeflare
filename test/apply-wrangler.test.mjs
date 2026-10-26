@@ -24,7 +24,6 @@ const V_PREV = '22222222-2222-4222-8222-222222222222';
 const V_NEW = '44444444-4444-4444-8444-444444444444';
 const V_OTHER = '55555555-5555-4555-8555-555555555555';
 const KV_ID = '0f2ac74b498b48028cb68387c421e279';
-const D1_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const HEALTH = { url: 'https://api.example.com/health', expect_status: 200 };
 const ENV_KEYS = [
   'CLAUDEFLARE_WRANGLER', 'FAKE_WRANGLER_SCRIPT', 'FAKE_WRANGLER_LOG', 'CLOUDFLARE_API_TOKEN',
@@ -32,6 +31,8 @@ const ENV_KEYS = [
 ];
 
 const w = (args, extra = {}) => ({ kind: 'wrangler', args, ...extra });
+// Deploy op with the source hash plan new would embed.
+const dep = (extra = {}) => w(['deploy', '--name', 'api'], { source_hash: computeSourceHash(cwd), ...extra });
 
 let cwd;
 let aux;
@@ -135,7 +136,7 @@ function healthDeps(statuses) {
 
 test('happy deploy records the version id from ND-JSON and status applied', async () => {
   script({});
-  const plan = makePlan([w(['deploy', '--name', 'api'], { worker: 'api', health_check: HEALTH })]);
+  const plan = makePlan([dep({ worker: 'api', health_check: HEALTH })]);
   approve(plan);
   const { fetched, deps } = healthDeps([200]);
   const result = await applyPlan(cwd, fakeClient(), plan.id, T0, deps);
@@ -188,9 +189,22 @@ test('missing secret env refuses with secret_env_missing before anything runs', 
   assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
 });
 
+test('source-uploading op without source_hash is refused before anything runs', async () => {
+  script({});
+  for (const args of [['deploy', '--name', 'api'], ['pages', 'deploy', 'dist', '--project-name', 'site'], ['d1', 'migrations', 'apply', 'app-db', '--remote']]) {
+    rmSync(join(cwd, '.claudeflare'), { recursive: true, force: true });
+    mkdirSync(join(cwd, 'dist'), { recursive: true });
+    const plan = makePlan([w(args)]);
+    approve(plan);
+    await assert.rejects(applyPlan(cwd, fakeClient(), plan.id, T0), (e) => e instanceof CfError && e.code === 'source_hash_missing');
+    assert.deepEqual(workCalls(), []);
+    assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+  }
+});
+
 test('account the token cannot read refuses with account_mismatch before anything runs', async () => {
   script({});
-  const plan = makePlan([w(['deploy', '--name', 'api'])]);
+  const plan = makePlan([dep()]);
   approve(plan);
   const client = fakeClient({
     [`GET /accounts/${AID}`]: () => {
@@ -205,13 +219,13 @@ test('account the token cannot read refuses with account_mismatch before anythin
 
 test('approval is checked before wrangler runs at all', async () => {
   script({});
-  const plan = makePlan([w(['deploy', '--name', 'api'])]);
+  const plan = makePlan([dep()]);
   await assert.rejects(applyPlan(cwd, fakeClient(), plan.id, T0), (e) => e instanceof CfError && e.code === 'not_approved');
   assert.deepEqual(calls(), []);
 });
 
 test('failed health check with on_failed_check rollback runs exactly one rollback and sets rolled_back_auto', async () => {
-  const plan = makePlan([w(['deploy', '--name', 'api'], { health_check: HEALTH, on_failed_check: 'rollback' })]);
+  const plan = makePlan([dep({ health_check: HEALTH, on_failed_check: 'rollback' })]);
   const rollbackKey = ['rollback', V_PREV, '--name', 'api', '--yes', '--message', `claudeflare ${plan.id}`].join(' ');
   script({ [rollbackKey]: { events: [] } });
   approve(plan);
@@ -229,7 +243,7 @@ test('failed health check with on_failed_check rollback runs exactly one rollbac
 test('failed health check without on_failed_check sets applied_check_failed and runs no rollback', async () => {
   script({});
   const plan = makePlan([
-    w(['deploy', '--name', 'api'], { health_check: HEALTH }),
+    dep({ health_check: HEALTH }),
     w(['d1', 'create', 'later-db']),
   ]);
   approve(plan);
@@ -250,11 +264,11 @@ test('failed health check without on_failed_check sets applied_check_failed and 
 });
 
 test('first deploy auto rollback deletes the Worker only while it holds just the plan version', async () => {
-  for (const [listed, expectDelete] of [[[V_NEW], true], [[V_NEW, V_OTHER], false]]) {
+  for (const [listed, expectDelete] of [[[V_NEW], true], [[V_NEW, V_OTHER], false], [[], false]]) {
     rmSync(join(cwd, '.claudeflare'), { recursive: true, force: true });
     rmSync(process.env.FAKE_WRANGLER_LOG, { force: true });
     script({});
-    const plan = makePlan([w(['deploy', '--name', 'api'], { health_check: HEALTH, on_failed_check: 'rollback' })]);
+    const plan = makePlan([dep({ health_check: HEALTH, on_failed_check: 'rollback' })]);
     approve(plan);
     const runnerCalls = [];
     let listCount = 0;
@@ -278,7 +292,7 @@ test('first deploy auto rollback deletes the Worker only while it holds just the
     } else {
       assert.equal(result.status, 'applied_check_failed');
       assert.deepEqual(deletes, []);
-      assert.match(result.error.rollback_error, /versions this plan did not create/);
+      assert.match(result.error.rollback_error, /versions this plan did not create|lists no deployed versions/);
       assert.ok(result.risk_notes.some((n) => n.startsWith('rollback_ambiguous:')));
     }
   }
@@ -293,7 +307,7 @@ test('wrangler non-zero exit records wrangler_failed with partial or failed stat
       events: [{ type: 'command-failed', version: 1, message: 'Build failed with 1 error' }],
     },
   });
-  const plan = makePlan([w(['d1', 'create', 'app-db']), w(['deploy', '--name', 'api'])]);
+  const plan = makePlan([w(['d1', 'create', 'app-db']), dep()]);
   approve(plan);
   const result = await applyPlan(cwd, fakeClient(), plan.id, T0);
   assert.equal(result.status, 'partially_applied');
@@ -303,7 +317,7 @@ test('wrangler non-zero exit records wrangler_failed with partial or failed stat
   assert.deepEqual(result.results[0], { events: [] });
   assert.equal(result.results[1], null);
 
-  const first = makePlan([w(['deploy', '--name', 'api'])], 'deploy-two');
+  const first = makePlan([dep()], 'deploy-two');
   approve(first);
   const failed = await applyPlan(cwd, fakeClient(), first.id, T0);
   assert.equal(failed.status, 'failed');
@@ -327,7 +341,7 @@ test('secret value reaches wrangler stdin only and is redacted from failures', a
 });
 
 // Kv create: the new namespace id comes from a follow-up list by exact title.
-// Rollback then skips the non-empty bucket and the unverifiable queue.
+// Rollback then skips the non-empty bucket and the unverifiable queue and D1 database.
 test('rollback of creates deletes empty resources and skips non-empty or unverifiable ones with a risk line', async () => {
   script({
     'r2 bucket create assets': { events: [] },
@@ -355,24 +369,20 @@ test('rollback of creates deletes empty resources and skips non-empty or unverif
   const client = fakeClient({
     [`GET /accounts/${AID}/r2/buckets/assets/objects`]: [{ key: 'logo.png' }],
     [`GET /accounts/${AID}/storage/kv/namespaces/${KV_ID}/keys`]: [],
-    [`GET /accounts/${AID}/d1/database`]: [{ name: 'app-db-2', uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { name: 'app-db', uuid: D1_UUID }],
-    [`GET /accounts/${AID}/d1/database/${D1_UUID}`]: { uuid: D1_UUID, name: 'app-db', num_tables: 0 },
   });
   rmSync(process.env.FAKE_WRANGLER_LOG, { force: true });
   const done = await applyPlan(cwd, client, rollback.id, T0);
   assert.equal(done.status, 'applied');
-  assert.deepEqual(workCalls(), [
-    ['d1', 'delete', 'app-db', '-y'],
-    ['kv', 'namespace', 'delete', '--namespace-id', KV_ID, '-y'],
-  ]);
+  assert.deepEqual(workCalls(), [['kv', 'namespace', 'delete', '--namespace-id', KV_ID, '-y']]);
   const r2Probe = client.requests.find((r) => r.path.endsWith('/objects'));
   assert.deepEqual(r2Probe.opts.query, { per_page: 1 });
   const kvProbe = client.requests.find((r) => r.path.endsWith('/keys'));
   assert.deepEqual(kvProbe.opts.query, { limit: 10 });
-  assert.equal(client.requests.some((r) => r.path.includes('queues')), false);
+  assert.equal(client.requests.some((r) => r.path.includes('queues') || r.path.includes('/d1/')), false);
   const skippedCodes = done.results.filter((r) => r?.skipped).map((r) => r.skipped);
-  assert.deepEqual(skippedCodes, ['rollback_not_empty', 'rollback_not_empty']);
-  assert.equal(done.risk_notes.length, 2);
+  assert.deepEqual(skippedCodes, ['rollback_not_empty', 'rollback_not_empty', 'rollback_not_empty']);
+  assert.equal(done.risk_notes.length, 3);
+  assert.ok(done.risk_notes.some((n) => /^rollback_not_empty: .*d1 app-db cannot be verified/.test(n)));
   assert.ok(done.risk_notes.some((n) => /^rollback_not_empty: .*r2 assets is not empty/.test(n)));
   assert.ok(done.risk_notes.some((n) => /^rollback_not_empty: .*queue jobs cannot be verified/.test(n)));
   assert.equal(readPlan(cwd, plan.id).status, 'rolled_back');
