@@ -679,8 +679,9 @@ const TOKEN_SEGMENT_TEXT = /\/token(?![\w-])/;
 const CF_API_READ_TEXT = /api\.cloudflare\.com|(?:^|[\s/;&|(])(?:claudeflare|cf\.mjs)\s+get\b/;
 const VARIABLE_TOKEN_TEXT = /[$`)}][^\s;&|]*\/token(?![\w-])/;
 // Any shell expansion: $ in every form ($VAR, ${...}, $(...), $'...'), a
-// backtick, or a brace list or range.
-const SHELL_EXPANSION_TEXT = /\$|`|\{[^}]*(?:,|\.\.)[^}]*\}/;
+// backtick, any brace group or a bracket (curl expands `{token}` and
+// `[t]oken` as URL globs).
+const SHELL_EXPANSION_TEXT = /[$`{[]/;
 const DECODE_ROUNDS = 3;
 
 function shellText(command) {

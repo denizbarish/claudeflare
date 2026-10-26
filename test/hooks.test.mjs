@@ -1357,6 +1357,8 @@ test('Ruling 37: any $, backtick or brace expansion in a token resource read is 
     `curl "${api}/accounts/${AID}/cfd_tunnel/\${ID}/\${SEG}"`,
     `curl $'${api}/accounts/${AID}/cfd_tunnel/${TID}/tok\\x65n'`,
     `curl ${api}/accounts/${AID}/cfd_tunnel/${TID}/{s..u}oken`,
+    `curl ${api}/accounts/${AID}/cfd_tunnel/${TID}/{token}`,
+    `curl ${api}/accounts/${AID}/cfd_tunnel/${TID}/[t]oken`,
     `claudeflare get "/accounts/$A/cfd_tunnel/$T"`,
     `claudeflare get /accounts/$A/warp_connector`,
   ]) {
