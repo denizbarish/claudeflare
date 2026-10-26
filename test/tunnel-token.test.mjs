@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -8,6 +8,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listSecretFiles } from '../scripts/lib/secret-files.mjs';
 import { isGitIgnored, runTunnelToken, writeEnvVar } from '../scripts/lib/tunnel-token.mjs';
+
+// In-process calls write the per-user index: keep it out of the real key dir.
+const KEY_DIR = mkdtempSync(join(tmpdir(), 'claudeflare-tt-key-'));
+process.env.CLAUDEFLARE_KEY_DIR = KEY_DIR;
+after(() => rmSync(KEY_DIR, { recursive: true, force: true }));
 
 const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
 const TOKEN = 'tok-tunnel-token-API-123';

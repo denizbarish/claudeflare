@@ -723,7 +723,7 @@ test('Bash cat of a listed env file is denied', (t) => {
     'cp deploy/.env /tmp/x',
     "sh -c 'tail deploy/.env'",
     'cat .claudeflare/secrets/x.json',
-    'ls .claudeflare/secrets',
+    'echo .claudeflare/secrets',
     // Case-insensitive filesystems: case variants name the same folder.
     ...(process.platform === 'darwin' ? ['cat .ClaudeFlare/Secrets/x.json'] : []),
     'while read -r line; do echo "$line"; done < deploy/.env',
@@ -734,12 +734,18 @@ test('Bash cat of a listed env file is denied', (t) => {
   }
   // The basename with a read verb is enough: the guard cannot follow every cd.
   assertDeny(guard(ctx, bash('cat .env')), SECRET_REASON);
-  // Programs handed the file may use it; only reads into the conversation are denied.
+  // Only programs that consume the file without printing it are allowed.
   for (const cmd of [
     'cat other.env', 'cat deploy/.env.example', 'ls deploy', 'npm test', 'echo .env', 'git add .env.example',
-    'git add deploy/.env', 'docker compose --env-file deploy/.env up -d', 'systemctl restart cloudflared',
+    'git add deploy/.env', 'git -C . add deploy/.env', 'git rm --cached deploy/.env', 'git status deploy/.env',
+    'git check-ignore -q deploy/.env', 'git ls-files deploy/.env',
+    'docker compose --env-file deploy/.env up -d', `docker run --env-file=${ctx.envFile} img`, 'podman compose --env-file deploy/.env up',
+    'docker-compose --env-file deploy/.env up', 'systemctl restart cloudflared',
     `claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path deploy/.env`,
+    `node bin/cf.mjs tunnel-token --account ${AID} --tunnel ${TID} --env-path ${ctx.envFile}`,
     `cloudflared tunnel --no-autoupdate run --token-file ${ctx.envFile}`,
+    'chmod 600 deploy/.env', 'chown me deploy/.env', 'ls -l deploy/.env', 'stat deploy/.env', 'test -f deploy/.env', '[ -f deploy/.env ]',
+    'rm deploy/.env', 'ls .claudeflare/secrets', 'rm -rf .claudeflare/secrets',
   ]) {
     assert.equal(guard(ctx, bash(cmd)), null, cmd);
   }
@@ -904,4 +910,87 @@ test('guard finds the index of the project owning a target, from any cwd in or o
   // From an unrelated cwd the target's own project index is still read.
   assertDeny(guard(ctx, read(envFile)), SECRET_REASON);
   assertDeny(guard(ctx, grep({ path: join(project, 'a') })), SECRET_REASON);
+});
+
+test('Bash naming a secret path is denied by default outside the consumer allowlist', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'vim deploy/.env',
+    'diff deploy/.env deploy/.env.example',
+    'git diff deploy/.env',
+    'git show HEAD:deploy/.env deploy/.env',
+    'docker cp deploy/.env box:/tmp/x',
+    'docker run -e X=1 img cat deploy/.env',
+    `node -e "require('fs').readFileSync('${ctx.envFile}')"`,
+    `python3 -c "print(open('${ctx.envFile}').read())"`,
+    'echo $(nl deploy/.env)',
+    'echo `nl deploy/.env`',
+    'nl < deploy/.env',
+    "sh -c 'nl deploy/.env'",
+    'claudeflare plan new --file deploy/.env',
+    'npx dotenv -e deploy/.env -- node -p process.env',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+test('Bash cd is followed only when unconditional and top level', (t) => {
+  const ctx = secretSetup(t);
+  mkdirSync(join(ctx.cwd, 'src'));
+  for (const cmd of ['cd src && grep -r x .', 'cd src; rg x', 'cd src\nrg x', 'cd src || exit 1; rg x']) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+  for (const cmd of [
+    '(cd src); grep -r x .',
+    'test -d src || cd src && grep -r x .',
+    'cd src & grep -r x .',
+    'cd src | grep -r x .',
+    'cd "$D" && rg x',
+    '{ cd src; } ; rg x',
+    'cd deploy && nl .env',
+    '(cd deploy && nl .env)',
+    'cd src && (cd ../deploy && nl .env)',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+test('find expressions with operators the guard does not model can match every file', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    "find . -name '*.js' -o -name x -exec cat {} \\;",
+    "find . -name '*.js' -or -type f -exec cat {} +",
+    "find . -path './src/*' -exec cat {} \\;",
+    "find . -regex '.*js' -exec cat {} \\;",
+    "find . -not -name '*.js' -exec cat {} \\;",
+    "find . \\( -name '*.js' \\) -exec cat {} \\;",
+    "find . -name '*.js' , -name x -exec cat {} \\;",
+    "find . -wholename '*.js' -exec cat {} \\;",
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  assert.equal(guard(ctx, bash("find . -type f -name '*.js' -exec cat {} \\;")), null);
+});
+
+test('Grep globs with whitespace or commas count as unmodeled', (t) => {
+  const ctx = secretSetup(t);
+  for (const g of ['*.md .env', '*.md,.env', '*.md\t.env']) {
+    assertDeny(guard(ctx, grep({ glob: g })), SECRET_REASON);
+  }
+});
+
+test('the per-user index covers an env file outside any project index', async (t) => {
+  const ctx = setup(t, { plan: false });
+  const runner = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-runner-')));
+  const loose = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-loose-')));
+  t.after(() => {
+    rmSync(runner, { recursive: true, force: true });
+    rmSync(loose, { recursive: true, force: true });
+  });
+  const fake = () => ({ request: async () => 'eyJwZXItdXNlciJ9' });
+  await runTunnelToken(runner, { account: AID, tunnel: TID, envFile: join(loose, '.env') }, fake);
+  assert.equal(existsSync(join(loose, '.claudeflare')), false);
+  assert.ok(existsSync(join(ctx.keyDir, 'secret-files.json')));
+  assertDeny(guard(ctx, read(join(loose, '.env'))), SECRET_REASON);
+  assertDeny(guard(ctx, bash(`nl ${join(loose, '.env')}`)), SECRET_REASON);
 });

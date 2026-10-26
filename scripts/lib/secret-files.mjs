@@ -10,6 +10,7 @@
 
 import { chmodSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { keyDir } from './approval-key.mjs';
 import { paths } from './paths.mjs';
 
 const SAFE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
@@ -97,19 +98,39 @@ export function writeSecretFile(cwd, name, data) {
   return file;
 }
 
-export function listSecretFiles(cwd) {
-  const content = readOrEmpty(paths(cwd).secretFilesIndex);
+function readIndex(file) {
+  const content = readOrEmpty(file);
   if (content === '') return [];
   const index = JSON.parse(content);
   return Array.isArray(index?.files) ? index.files.filter((f) => typeof f === 'string') : [];
 }
 
-export function recordSecretFile(cwd, absPath) {
+function addToIndex(dir, dirMode, file, absPath) {
   if (typeof absPath !== 'string' || !isAbsolute(absPath)) {
     throw new TypeError(`Secret file path must be absolute: ${JSON.stringify(absPath)}`);
   }
-  const files = listSecretFiles(cwd);
+  const files = readIndex(file);
   if (files.includes(absPath)) return;
-  realDir(paths(cwd).root, 0o755);
-  replaceFile(paths(cwd).secretFilesIndex, `${JSON.stringify({ files: [...files, absPath] }, null, 2)}\n`, 0o600);
+  realDir(dir, dirMode);
+  replaceFile(file, `${JSON.stringify({ files: [...files, absPath] }, null, 2)}\n`, 0o600);
+}
+
+export function listSecretFiles(cwd) {
+  return readIndex(paths(cwd).secretFilesIndex);
+}
+
+export function recordSecretFile(cwd, absPath) {
+  addToIndex(paths(cwd).root, 0o755, paths(cwd).secretFilesIndex, absPath);
+}
+
+// Per-user index in the approval key dir (guarded like the key): the guard
+// finds a secret file here even when no project index is in reach.
+export const globalSecretIndex = () => join(keyDir(), 'secret-files.json');
+
+export function listGlobalSecretFiles() {
+  return readIndex(globalSecretIndex());
+}
+
+export function recordGlobalSecretFile(absPath) {
+  addToIndex(keyDir(), 0o700, globalSecretIndex(), absPath);
 }

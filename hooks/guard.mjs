@@ -196,6 +196,11 @@ function isApiWrite(command) {
   return methods.some((m) => m !== 'GET') || CURL_BODY.test(command);
 }
 
+function bashReadsSecretIn(command, cwd) {
+  const rawFiles = secretFilesFor(cwd, bashPaths(command, cwd));
+  return bashReadsSecret(command, cwd, { files: rawFiles.map(canonicalPath), rawFiles }, { canonical: canonicalPath, isInside });
+}
+
 function decideBash(toolInput, cwd) {
   const command = typeof toolInput.command === 'string' ? toolInput.command : '';
   const decisions = [
@@ -203,7 +208,7 @@ function decideBash(toolInput, cwd) {
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
     TUNNEL_TOKEN_TEXT.test(command) ? deny(TUNNEL_TOKEN_REASON) : null,
-    bashReadsSecret(command, cwd, secretFiles(cwd, bashPaths(command, cwd)), { canonical: canonicalPath, isInside }) ? deny(SECRET_REASON) : null,
+    bashReadsSecretIn(command, cwd) ? deny(SECRET_REASON) : null,
   ].filter(Boolean);
   const cloudflared = decideCloudflared(command);
   if (cloudflared) decisions.push(deny(cloudflared));

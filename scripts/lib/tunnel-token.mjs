@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { createClient, redact } from './api.mjs';
 import { CfError } from './errors.mjs';
 import { secretProjectRoot } from './project-root.mjs';
-import { lstatOrNull, readOrEmpty, recordSecretFile, refuseLink } from './secret-files.mjs';
+import { lstatOrNull, readOrEmpty, recordGlobalSecretFile, recordSecretFile, refuseLink } from './secret-files.mjs';
 
 export const DEFAULT_VARIABLE = 'TUNNEL_TOKEN';
 const VARIABLE = /^[A-Z_][A-Z0-9_]*$/;
@@ -121,6 +121,7 @@ export async function runTunnelToken(cwd, { account, tunnel, envFile, variable =
   try {
     // Recorded first: a stale entry is harmless, an unlisted secret is not.
     recordSecretFile(secretProjectRoot(file, cwd), file);
+    recordGlobalSecretFile(file);
     writeEnvVar(file, variable, value);
   } catch (err) {
     const message = redact(String(err?.message ?? err), process.env.CLOUDFLARE_API_TOKEN, [value]);

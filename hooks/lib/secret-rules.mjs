@@ -1,12 +1,14 @@
 // Secret files and tunnel tokens: claudeflare writes credentials to disk
 // (.claudeflare/secrets/*, env files from `claudeflare tunnel-token`) and lists
-// them in .claudeflare/secret-files.json. These rules keep the agent from
-// reading them back and from putting a literal tunnel token on a cloudflared
-// command line. Same threat model as the rest of the guard: string checks
-// catch model mistakes, not deliberate evasion.
+// them in .claudeflare/secret-files.json and in the per-user index next to
+// the approval key. These rules keep the agent from reading them back and
+// from putting a literal tunnel token on a cloudflared command line. Same
+// threat model as the rest of the guard: string checks catch model mistakes,
+// not deliberate evasion.
 import { readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import { keyDir } from '../../scripts/lib/approval-key.mjs';
 import { STATE_DIR, claudeflareRoot } from '../../scripts/lib/project-root.mjs';
 import { parseShell } from './wrangler-rules.mjs';
 
@@ -20,13 +22,19 @@ export const CLOUDFLARED_REASON =
 const INDEX_FILE = 'secret-files.json';
 const SECRETS_TEXT = '.claudeflare/secrets';
 const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
+// Commands that print a file: with one of these as the head, a secret file's
+// bare name is enough to deny (the guard cannot follow every cd).
 const READ_VERBS = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'rg', 'sed', 'awk', 'cp', 'mv', 'base64', 'xxd', 'od', 'strings', 'source', '.']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+// Programs that consume a secret file without printing it. Everything else
+// that names a secret path is denied.
+const CONSUMERS = new Set(['cloudflared', 'systemctl', 'chmod', 'chown', 'ls', 'stat', 'test', '[', 'rm']);
+const GIT_CONSUMERS = new Set(['add', 'rm', 'status', 'check-ignore', 'ls-files']);
+const CONTAINER_TOOLS = new Set(['docker', 'docker-compose', 'podman']);
 // Words that run the next word as the command.
 const PREFIX_HEADS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'xargs']);
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const INPUT_REDIRECT = /^\d*<$/;
-const INPUT_REDIRECT_PATH = /^\d*<([^<(&].*)$/;
+const REDIRECT_PREFIX = /^\d*[<>]+&?/;
 const TOKEN_ASSIGNMENT = /^TUNNEL_TOKEN=(.*)$/;
 const TOKEN_FLAG = /^--?token$/;
 const TOKEN_FLAG_VALUE = /^--?token=(.*)$/;
@@ -35,9 +43,9 @@ const MAX_NESTING = 3;
 
 // Secret files
 
-function readIndex(root) {
+function readIndexFile(file) {
   try {
-    const index = JSON.parse(readFileSync(join(root, STATE_DIR, INDEX_FILE), 'utf8'));
+    const index = JSON.parse(readFileSync(file, 'utf8'));
     return Array.isArray(index?.files) ? index.files.filter((f) => typeof f === 'string' && isAbsolute(f)) : [];
   } catch {
     return [];
@@ -53,23 +61,29 @@ function secretsDirFiles(root) {
   }
 }
 
-// Secret files of the session cwd and of the projects that own cwd and each
-// target (nearest ancestor holding .claudeflare): the index plus whatever
-// sits in the secrets folder. Missing or invalid files count as empty.
+// Secret files from the per-user index, the session cwd and the projects that
+// own cwd and each target (nearest ancestor holding .claudeflare): indexes
+// plus whatever sits in each secrets folder. Missing or invalid files count
+// as empty.
 export function secretFilesFor(cwd, targets = []) {
   const roots = new Set([resolve(cwd)]);
   for (const start of [cwd, ...targets]) {
     const root = claudeflareRoot(start);
     if (root) roots.add(root);
   }
-  return [...new Set([...roots].flatMap((root) => [...readIndex(root), ...secretsDirFiles(root)]))];
+  const files = [
+    ...readIndexFile(join(keyDir(), INDEX_FILE)),
+    ...[...roots].flatMap((root) => [...readIndexFile(join(root, STATE_DIR, INDEX_FILE)), ...secretsDirFiles(root)]),
+  ];
+  return [...new Set(files)];
 }
 
 // True only for a positive glob the guard fully models (literal characters,
 // `*`, `?`, leading directory parts) whose last segment cannot match name.
-// Anything else (`!`, braces, classes, `**` in the last segment) can match.
+// Anything else (`!`, braces, classes, whitespace or commas that may list
+// several globs, `**` in the last segment) can match.
 export function globExcludes(glob, name) {
-  if (typeof glob !== 'string' || glob === '' || glob.startsWith('!') || /[{}[\]\\]/.test(glob)) return false;
+  if (typeof glob !== 'string' || glob === '' || glob.startsWith('!') || /[{}[\]\\,\s]/.test(glob)) return false;
   const segment = glob.split('/').at(-1);
   if (segment === '' || segment.includes('**')) return false;
   const source = [...segment].map((c) => (c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[.+^$()|]/g, '\\$&'))).join('');
@@ -87,15 +101,94 @@ function allCommands(command, depth = 0) {
   return [...commands, ...nested.flatMap(({ text }) => allCommands(text, depth + 1))];
 }
 
-// Each command with the directory it runs in, following `cd`.
-function commandsWithDir(command, cwd) {
-  let dir = resolve(cwd);
-  const out = [];
-  for (const tokens of allCommands(command)) {
-    if (tokens[0] === 'cd') dir = resolve(dir, expandHome(tokens[1] ?? homedir()));
-    else out.push({ tokens, dir });
+function skipQuoted(command, i) {
+  const quote = command[i];
+  let j = i + 1;
+  while (j < command.length && command[j] !== quote) j += quote === '"' && command[j] === '\\' ? 2 : 1;
+  return j;
+}
+
+// Splits at top-level list operators (&&, ||, ;, newline, |, &), outside
+// quotes, backticks and parentheses. Each part keeps the operator before and after it.
+function topLevelParts(command) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  let before = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === "'" || c === '"' || c === '`') {
+      i = skipQuoted(command, i);
+      continue;
+    }
+    if (c === '\\') {
+      i++;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    if (depth > 0) continue;
+    let op = null;
+    if (command.startsWith('&&', i) || command.startsWith('||', i)) op = command.slice(i, i + 2);
+    else if (c === '&' && /[<>]/.test(command[i - 1] ?? '')) op = null;
+    else if (c === '&' && command[i + 1] === '>') op = null;
+    else if (';\n|&'.includes(c)) op = c;
+    if (!op) continue;
+    parts.push({ text: command.slice(start, i), before, after: op });
+    before = op;
+    i += op.length - 1;
+    start = i + 1;
   }
-  return out;
+  parts.push({ text: command.slice(start), before, after: null });
+  return parts;
+}
+
+function cdTarget(tokens, dir) {
+  const arg = tokens[1];
+  if (arg === undefined) return homedir();
+  if (arg.startsWith('-') || arg.includes('$') || arg.includes('`')) return null;
+  return resolve(dir, expandHome(arg));
+}
+
+const LIST_START = new Set([null, ';', '\n', '&']);
+const FOLLOW_BEFORE = new Set([null, ';', '\n', '&', '&&']);
+
+// Each command with the directories it may run in. A cd is followed only when
+// it is an unconditional top-level command joined by && or ; (not in a
+// subshell, a pipeline, after ||, or backgrounded). Any other cd makes the
+// directory uncertain: then every command is checked against the original
+// cwd and every cd target.
+function commandsWithDirs(command, cwd) {
+  const start = resolve(cwd);
+  let dir = start;
+  let uncertain = false;
+  let afterOr = false;
+  const targets = [];
+  const out = [];
+  for (const part of topLevelParts(command)) {
+    if (LIST_START.has(part.before)) afterOr = false;
+    if (part.before === '||') afterOr = true;
+    const commands = allCommands(part.text);
+    const trimmed = part.text.trim();
+    const followable = !afterOr && FOLLOW_BEFORE.has(part.before) && !['|', '&'].includes(part.after) &&
+      commands.length === 1 && !trimmed.startsWith('(') && !trimmed.startsWith('{');
+    for (const tokens of commands) {
+      if (tokens[0] !== 'cd') {
+        out.push({ tokens, dir });
+        continue;
+      }
+      const target = cdTarget(tokens, dir);
+      if (followable && target) {
+        dir = target;
+        targets.push(target);
+      } else {
+        uncertain = true;
+        if (target) targets.push(target);
+      }
+    }
+  }
+  const union = [...new Set([start, ...targets, ...out.map((o) => o.dir)])];
+  return out.map(({ tokens, dir: at }) => ({ tokens, dirs: uncertain ? [...new Set([at, ...union])] : [at] }));
 }
 
 function headIndex(tokens) {
@@ -104,31 +197,51 @@ function headIndex(tokens) {
   return i;
 }
 
-// Path candidates in a word: --opt=file gives both forms.
+// Path candidates in a word: redirections (<file, 2>file) and --opt=file.
 function wordPaths(word) {
-  const eq = word.indexOf('=');
-  return eq >= 0 ? [word, word.slice(eq + 1)] : [word];
+  const bare = word.replace(REDIRECT_PREFIX, '');
+  const eq = bare.indexOf('=');
+  return (eq >= 0 ? [bare, bare.slice(eq + 1)] : [bare]).filter((p) => p !== '' && !p.startsWith('$'));
 }
 
-// Files read through `< file`, `2<file` and `$(<file)`.
-function redirectedPaths(tokens) {
-  const out = [];
-  tokens.forEach((token, i) => {
-    if (INPUT_REDIRECT.test(token) && tokens[i + 1] !== undefined) out.push(tokens[i + 1]);
-    const attached = INPUT_REDIRECT_PATH.exec(token);
-    if (attached) out.push(attached[1]);
-  });
-  return out;
-}
-
-// Every path a command mentions, resolved: the guard reads the index of the
-// project that owns each one.
+// Every path a command mentions, resolved in each directory it may run in:
+// the guard reads the index of the project that owns each one.
 export function bashPaths(command, cwd) {
-  return commandsWithDir(command, cwd).flatMap(({ tokens, dir }) => tokens
+  return commandsWithDirs(command, cwd).flatMap(({ tokens, dirs }) => tokens
     .flatMap(wordPaths)
-    .map((word) => word.replace(/^\d*[<>]+/, ''))
-    .filter((word) => word !== '' && !word.startsWith('-') && !word.startsWith('$'))
-    .map((word) => resolve(dir, expandHome(word))));
+    .filter((word) => !word.startsWith('-'))
+    .flatMap((word) => dirs.map((dir) => resolve(dir, expandHome(word)))));
+}
+
+function isClaudeflare(word) {
+  return word !== undefined && (basename(word) === 'claudeflare' || word.endsWith('cf.mjs'));
+}
+
+// Which tokens of a command a consumer program takes without printing:
+// 'all', a set of token indexes (docker --env-file values) or none.
+function consumedTokens(tokens) {
+  const at = headIndex(tokens);
+  const head = tokens[at];
+  if (head === undefined) return new Set();
+  const name = basename(head);
+  if (CONSUMERS.has(name) || CLOUDFLARED.test(head)) return 'all';
+  const args = tokens.slice(at + 1);
+  if (name === 'git') {
+    let i = 0;
+    while (i < args.length && args[i].startsWith('-')) i += ['-C', '-c'].includes(args[i]) ? 2 : 1;
+    return GIT_CONSUMERS.has(args[i]) ? 'all' : new Set();
+  }
+  const cli = isClaudeflare(head) ? 0 : name === 'node' && isClaudeflare(args[0]) ? 1 : -1;
+  if (cli >= 0) return args[cli] === 'tunnel-token' ? 'all' : new Set();
+  if (CONTAINER_TOOLS.has(name)) {
+    const allowed = new Set();
+    tokens.forEach((token, i) => {
+      if (token === '--env-file') allowed.add(i + 1);
+      if (token.startsWith('--env-file=')) allowed.add(i);
+    });
+    return allowed;
+  }
+  return new Set();
 }
 
 // Recursive search commands
@@ -179,7 +292,9 @@ const AG_LONG = new Set(['file-search-regex', 'ignore', 'ignore-dir', 'after', '
 const ACK_LONG = new Set(['type', 'type-set', 'type-add', 'ignore-dir', 'ignore-file', 'after-context', 'before-context', 'context', 'max-count']);
 const GIT_GREP_LONG = new Set(['regexp', 'file', 'after-context', 'before-context', 'context', 'max-count', 'max-depth', 'threads']);
 const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir']);
-const FIND_NEGATION = new Set(['!', '-not']);
+// find operators the guard does not model: with any of them, -name filters
+// prove nothing and the expression can match every file.
+const FIND_UNMODELED = new Set(['-o', '-or', ',', '-path', '-wholename', '-ipath', '-iwholename', '-regex', '-iregex', '-not', '!', '(', ')', '-prune', '-lname', '-ilname']);
 
 // Pattern first unless given with -e/-f; the rest are roots (cwd by default).
 function grepLike(args, shortValue, longValue, dir) {
@@ -200,9 +315,11 @@ function findSearch(args, dir) {
   let i = 0;
   while (['-H', '-L', '-P'].includes(args[i]) || /^-O\d*$/.test(args[i] ?? '')) i++;
   const roots = [];
-  while (i < args.length && !args[i].startsWith('-') && args[i] !== '(' && !FIND_NEGATION.has(args[i])) roots.push(resolve(dir, expandHome(args[i++])));
-  const negated = args.some((a) => FIND_NEGATION.has(a));
-  const globs = negated ? [] : args.flatMap((a, j) => (a === '-name' || a === '-iname' ? [args[j + 1] ?? ''] : []));
+  while (i < args.length && !args[i].startsWith('-') && !FIND_UNMODELED.has(args[i])) roots.push(resolve(dir, expandHome(args[i++])));
+  // Only the expression before -exec filters which files reach it.
+  const expression = args.slice(i, exec);
+  const modeled = !expression.some((a) => FIND_UNMODELED.has(a));
+  const globs = modeled ? expression.flatMap((a, j) => (a === '-name' || a === '-iname' ? [expression[j + 1] ?? ''] : [])) : [];
   return { roots: withDefault(roots, dir), globs };
 }
 
@@ -242,27 +359,44 @@ function searchReaches(search, files, isInside) {
     !(search.globs.length && search.globs.every((glob) => globExcludes(glob, basename(file)))));
 }
 
-// files: canonical absolute paths. canonical and isInside: the guard's path
-// helpers. A secret path is denied under a read verb or an input redirection
-// (a program handed the file, such as docker --env-file or git add, may use
-// it); a recursive search is denied when its root holds a secret file.
-export function bashReadsSecret(command, cwd, files, { canonical, isInside }) {
-  const text = CASE_INSENSITIVE_FS ? command.toLowerCase() : command;
-  if (text.includes(SECRETS_TEXT)) return true;
-  if (!files.length) return false;
+function inSecretsDir(canonicalPath) {
+  const parts = canonicalPath.split(sep);
+  return parts.some((part, i) => part === '.claudeflare' && parts[i + 1] === 'secrets');
+}
+
+// Deny by default: a command that names a secret file or the secrets folder
+// (as an argument, a redirection, inside $(...), backticks or sh -c) is
+// denied unless its program only consumes the file (CONSUMERS, git add/rm/
+// status/check-ignore/ls-files, docker/podman --env-file, claudeflare
+// tunnel-token). files: canonical absolute paths; rawFiles: as indexed.
+// canonical and isInside: the guard's path helpers.
+export function bashReadsSecret(command, cwd, { files, rawFiles = [] }, { canonical, isInside }) {
+  const fold = (text) => (CASE_INSENSITIVE_FS ? text.toLowerCase() : text);
+  const absolutes = [...new Set([...files, ...rawFiles.map(fold)])];
   // Names compare case-insensitively: when unsure, match (deny).
   const names = new Set(files.map((file) => basename(file).toLowerCase()));
-  for (const { tokens, dir } of commandsWithDir(command, cwd)) {
-    const head = tokens[headIndex(tokens)];
-    const verb = head !== undefined && READ_VERBS.has(basename(head));
-    const candidates = verb ? tokens.flatMap(wordPaths) : redirectedPaths(tokens);
-    for (const candidate of candidates) {
-      if (candidate === '' || candidate.startsWith('$')) continue;
-      if (files.includes(canonical(resolve(dir, expandHome(candidate))))) return true;
-      if (verb && names.has(basename(candidate).toLowerCase())) return true;
+  for (const { tokens, dirs } of commandsWithDirs(command, cwd)) {
+    const consumed = consumedTokens(tokens);
+    if (consumed !== 'all') {
+      const text = fold(tokens.filter((_, i) => !consumed.has(i)).join(' '));
+      if (text.includes(SECRETS_TEXT) || absolutes.some((file) => text.includes(file))) return true;
+      const head = tokens[headIndex(tokens)];
+      const verb = head !== undefined && READ_VERBS.has(basename(head));
+      for (const [i, word] of tokens.entries()) {
+        if (consumed.has(i)) continue;
+        for (const candidate of wordPaths(word)) {
+          if (verb && names.has(basename(candidate).toLowerCase())) return true;
+          for (const dir of dirs) {
+            const path = canonical(resolve(dir, expandHome(candidate)));
+            if (files.includes(path) || inSecretsDir(path)) return true;
+          }
+        }
+      }
     }
-    const search = searchOf(tokens, dir);
-    if (search && searchReaches(search, files, isInside)) return true;
+    for (const dir of dirs) {
+      const search = searchOf(tokens, dir);
+      if (search && searchReaches(search, files, isInside)) return true;
+    }
   }
   return false;
 }
