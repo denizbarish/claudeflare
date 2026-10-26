@@ -3,7 +3,7 @@
 
 import { CfError } from './errors.mjs';
 import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, isReservedEnvName, RESERVED_ENV_PREFIXES, validateWranglerOp } from './wrangler-ops.mjs';
-import { classifyProductOp } from './products/index.mjs';
+import { classifyProductOp, zoneProductPathOwner } from './products/index.mjs';
 import { getPath } from './products/fields.mjs';
 
 const ID = '[A-Za-z0-9]+';
@@ -351,6 +351,9 @@ export function validateOpTargets(ops, plan) {
       reject('targets zone-scoped Access; use the account form /accounts/<account_id>/access/... on an account plan');
     } else if (!path.startsWith(prefix)) {
       reject(`must target this plan's zone (${prefix}...)`);
+    } else {
+      const owner = zoneProductPathOwner(op, plan);
+      if (owner) reject(`targets a path the ${owner.product} module manages; use ${owner.methods.join(' or ')} (PUT sends the whole resource)`);
     }
     if (method === 'POST' && PAGE_RULES.test(path)) reject('would create a Page Rule; use the modern rule types');
     if (product) {

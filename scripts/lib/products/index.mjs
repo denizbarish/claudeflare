@@ -52,7 +52,9 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
  *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.
- * @property {string} [nameField]       Live field `confirm_name` is compared with at preflight.
+ * @property {string|((before: object) => string)} [nameField]  Live field `confirm_name` is
+ *   compared with at preflight, or a function of the live resource (a monitor without a
+ *   description is confirmed by its id).
  * @property {string[]} [secretFields]  Body paths that must come from `secret_fields_from_env`.
  * @property {string[]} [redact]        Response paths redacted before anything is stored.
  * @property {string[]} [secretSink]    Response paths holding a secret the user must fetch out of band.
@@ -77,6 +79,9 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.
  * @property {(ctx: object, ops: object[]) => string[]} lockoutRisks  Lines start with `Lockout risk:`.
+ * @property {(line: string) => boolean} [advisoryLockout]  True for a lockout line that rests on
+ *   an asynchronous read (the Load Balancing pool preview), so it may appear at apply without
+ *   having been shown at plan new; apply then does not stop with risk_changed for it.
  * @property {(ctx: object, op: object, entry: ProductKind) => string[]} [dependencies]
  *   Descriptions of what still uses the resource (resource_in_use).
  * @property {(op: object, entry: ProductKind, ctx: object, result: object, post: (object|null), deps: object) => object[]} verifyChecks
@@ -169,6 +174,24 @@ export function classifyProductOp(op, plan) {
   for (const module of PRODUCTS) {
     const hit = matchKind(module.kinds, op.method, scope, rest);
     if (hit) return { ...hit, module, base };
+  }
+  return null;
+}
+
+// Zone plans accept other zone writes under the v1 open policy (spec 4.3),
+// but a path a zone product kind owns must go through that kind (Ruling 26):
+// returns { product, methods } when the op's path matches a zone kind's
+// pattern while no kind takes its method, else null. GET is never refused.
+export function zoneProductPathOwner(op, plan) {
+  if (!plan || plan.scope === 'account' || !op || typeof op !== 'object' || 'kind' in op) return null;
+  if (String(op.method ?? '').toUpperCase() === 'GET' || classifyProductOp(op, plan)) return null;
+  const path = String(op.path ?? '');
+  const base = baseFor(plan);
+  if (!path.startsWith(`${base}/`)) return null;
+  const rest = path.split('?')[0].slice(base.length);
+  for (const module of PRODUCTS) {
+    const owners = module.kinds.filter((k) => k.scope === 'zone' && k.pattern.test(rest));
+    if (owners.length) return { product: module.product, methods: [...new Set(owners.flatMap((k) => k.methods))] };
   }
   return null;
 }

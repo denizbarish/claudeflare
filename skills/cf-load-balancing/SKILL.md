@@ -62,13 +62,13 @@ Use the change protocol from cf-core: draft, `claudeflare preflight --file draft
 
 | Op | Path | Rollback |
 |---|---|---|
-| Monitor create, update, delete (account plan) | POST `/accounts/ACCOUNT_ID/load_balancers/monitors`, PUT or DELETE `.../monitors/MONITOR_ID` (delete takes `confirm_name` = `description`) | Delete the new monitor; PUT the old monitor; re-create with a new id |
+| Monitor create, update, delete (account plan) | POST `/accounts/ACCOUNT_ID/load_balancers/monitors`, PUT or DELETE `.../monitors/MONITOR_ID` (delete takes `confirm_name` = `description`, or the monitor id when the description is empty) | Delete the new monitor; PUT the old monitor; re-create with a new id |
 | Pool create, update, delete (account plan) | POST `/accounts/ACCOUNT_ID/load_balancers/pools`, PUT or DELETE `.../pools/POOL_ID` (delete takes `confirm_name` = `name`) | Delete the new pool; PUT the old pool; re-create with a new id |
 | Load balancer create, update, delete (zone plan) | POST `/zones/ZONE_ID/load_balancers`, PUT or DELETE `.../load_balancers/LB_ID` (delete takes `confirm_name` = `name`, the hostname) | Delete the new load balancer; PUT the old one; re-create with a new id |
 
 Every rollback first re-reads the resource and compares it with the state recorded after apply; a change made since then skips that inverse with `rollback_drift`.
 
-Refused at `plan new` (`invalid_op`): a monitor body with an unknown `type` or a non-numeric `interval`, `timeout`, `retries` or `port`; a pool body without `name` or a non-empty `origins` list, an origin without `address`, a `weight` outside 0 to 1, a non-boolean `enabled`, `minimum_origins` below 1, a `monitor` that is not a monitor id; a load balancer body without `name`, a non-empty `default_pools` list of pool ids or a `fallback_pool`; Cloudflare-set fields (`id`, `created_on`, `modified_on`, `disabled_at`); PATCH on monitors and pools; an account plan with a zone path or a zone plan with an account path. Refused at preflight (`resource_in_use`): deleting a monitor or pool whose `references` list a `referrer` (a pool using the monitor, a load balancer using the pool). Pools the same plan deletes or moves to another monitor before the monitor delete do not count. A pool still used by a load balancer needs a zone plan that removes it from the load balancer first.
+Refused at `plan new` (`invalid_op`): a monitor body with an unknown `type` or a non-numeric `interval`, `timeout`, `retries` or `port`; a pool body without `name` or a non-empty `origins` list, an origin without `address`, a `weight` outside 0 to 1, a non-boolean `enabled`, `minimum_origins` below 1, a `monitor` that is not a monitor id; a load balancer body without `name`, a non-empty `default_pools` list of pool ids or a `fallback_pool`; Cloudflare-set fields (`id`, `created_on`, `modified_on`, `disabled_at`); PATCH on monitors and pools; PATCH on a load balancer (zone plans refuse any write to a load balancer path that is not the POST, PUT or DELETE above: use PUT with the whole load balancer); an account plan with a zone path or a zone plan with an account path. Refused at preflight (`resource_in_use`): deleting a monitor or pool whose `references` list a `referrer` (a pool using the monitor, a load balancer using the pool). Pools the same plan deletes or moves to another monitor before the monitor delete do not count. A pool still used by a load balancer needs a zone plan that removes it from the load balancer first.
 
 ### Attach a monitor to a pool (the usual request)
 
@@ -109,7 +109,7 @@ These never refuse a plan; they are shown at `plan new` and checked again at app
 1. A pool update that leaves no enabled origin, or sets `minimum_origins` above the enabled origins: the pool goes critical. The line names the load balancers that use it.
 2. A pool update that disables the last usable pool of a load balancer (every other pool of it is disabled or critical too): visitors get errors.
 3. A load balancer create or update whose pools are all disabled or without enough enabled origins.
-4. A load balancer with one pool that the preview found critical.
+4. A load balancer with one pool that the preview found critical. The failure reasons are in the preview note, not in the line. Because the preview runs asynchronously, this line is advisory: if it first appears at apply, apply shows it but does not stop with `risk_changed`.
 
 ### Notes on deletes
 

@@ -185,7 +185,11 @@ test('every Load Balancing kind classifies in its own scope with its inverse', (
     assert.equal(c.base, baseFor(plan));
     assert.equal(c.entry.inverse, inverse, kind);
     assert.equal(c.entry.destructive, kind.endsWith('_delete'), kind);
-    if (kind.endsWith('_delete')) assert.equal(c.entry.nameField, kind === 'lb_monitor_delete' ? 'description' : 'name', kind);
+    if (kind.endsWith('_delete') && kind !== 'lb_monitor_delete') assert.equal(c.entry.nameField, 'name', kind);
+    if (kind === 'lb_monitor_delete') {
+      assert.equal(c.entry.nameField({ id: M1, description: 'Login page monitor' }), 'Login page monitor');
+      assert.equal(c.entry.nameField({ id: M1, description: '' }), M1);
+    }
   }
   assert.equal(baseFor(ZONE), ZB);
   // A kind never matches in the other scope.
@@ -311,7 +315,7 @@ test('a load balancer with no usable pool, or whose only pool is critical in pre
   // One pool, previewed critical (P1 is new to the load balancer here).
   const only = await preflight(fakeApi(), ZONE, [createLb(lbBody(LB1, { name: 'shop.example.com', default_pools: [P1], fallback_pool: P1 }))]);
   assert.equal(only.lockout_risks.length, 1, JSON.stringify(only.lockout_risks));
-  assert.match(only.lockout_risks[0], /^Lockout risk: load balancer shop\.example\.com has one pool, web-primary .*critical \(TCP connection failed\)/);
+  assert.match(only.lockout_risks[0], /^Lockout risk: load balancer shop\.example\.com has one pool, web-primary .*preview found it critical;/);
   const healthy = { [P1]: { healthy: true, origins: [] } };
   assert.deepEqual((await preflight(fakeApi({ previewResult: healthy }), ZONE, [createLb(lbBody(LB1, { name: 'shop.example.com', default_pools: [P1], fallback_pool: P1 }))])).lockout_risks, []);
   // Two pools: a critical preview is a note, not a lockout line.
@@ -482,4 +486,75 @@ test('zone plans: a load balancer delete names the hostname, rolls back by re-cr
   approve(second.cwd, back, T1);
   assert.equal((await applyPlan(second.cwd, zoneApi, back.id, T1, fastVerify())).status, 'applied');
   assert.equal(zoneApi.store.get(`${ZB}/load_balancers/${LB1}`).ttl, 30);
+});
+
+// Fix round 1
+
+test('Ruling 27: a preview-only lockout line found at apply is advisory and does not stop apply', async (t) => {
+  const op = createLb(lbBody(LB1, { name: 'shop.example.com', default_pools: [P1], fallback_pool: P1 }));
+  // Plan new: the preview has no result yet, so no line.
+  const atPlan = await preflight(fakeApi({ previewResult: {} }), ZONE, [op]);
+  assert.deepEqual(atPlan.lockout_risks, []);
+  const { cwd, plan } = setup(t, [op], { zone: true, lockout_risks: atPlan.lockout_risks });
+  approve(cwd, plan);
+  // Apply: the preview now finds P1 critical.
+  const api = fakeApi();
+  const fresh = await preflight(fakeApi(), ZONE, [op]);
+  assert.equal(fresh.lockout_risks.length, 1);
+  assert.deepEqual(fresh.advisory_lockout, fresh.lockout_risks);
+  assert.ok(!/TCP connection failed/.test(fresh.lockout_risks[0]), 'failure reasons stay in the note');
+  const applied = await applyPlan(cwd, api, plan.id, T0, fastVerify());
+  assert.equal(applied.status, 'applied', JSON.stringify(applied));
+  assert.ok(api.store.has(`${ZB}/load_balancers/${NEW_LB}`));
+
+  // A new line that does not rest on the preview still stops apply.
+  const dead = updateLb(LB2, lbBody(LB2, { ttl: 60 }));
+  const second = setup(t, [dead], { zone: true, lockout_risks: [] });
+  approve(second.cwd, second.plan);
+  const api2 = fakeApi();
+  api2.store.set(`${LBA}/pools/${P3}`, { ...pool(P3), enabled: false });
+  await assert.rejects(() => applyPlan(second.cwd, api2, second.plan.id, T0, fastVerify()), (e) => e.code === 'risk_changed' && /no usable pool/.test(e.message));
+  assert.deepEqual(api2.writes(), []);
+});
+
+test('Ruling 26: a zone write on a load balancer path with a method no kind takes is refused; other zone writes stay open', () => {
+  for (const op of [
+    { method: 'PATCH', path: `${ZB}/load_balancers/${LB1}`, body: { ttl: 60 } },
+    { method: 'PUT', path: `${ZB}/load_balancers`, body: {} },
+    { method: 'POST', path: `${ZB}/load_balancers/${LB1}`, body: {} },
+  ]) {
+    assert.throws(() => validateOpTargets([op], ZONE), (e) => e.code === 'invalid_op' && /load_balancing module/.test(e.message), `${op.method} ${op.path}`);
+  }
+  assert.throws(() => validateOpTargets([{ method: 'PATCH', path: `${ZB}/load_balancers/${LB1}`, body: {} }], ZONE), /use PUT or DELETE/);
+  validateOpTargets([
+    { method: 'POST', path: `${ZB}/dns_records`, body: {} },
+    { method: 'PATCH', path: `${ZB}/settings/ssl`, body: { value: 'strict' } },
+    { method: 'PATCH', path: `${ZB}/load_balancers_custom/x`, body: {} },
+    { method: 'GET', path: `${ZB}/load_balancers/${LB1}` },
+  ], ZONE);
+});
+
+test('Ruling 28: a monitor without a description is confirmed by its id; preview ids and a monitorless PUT are handled', async () => {
+  const api = fakeApi();
+  api.store.set(`${LBA}/monitors/${M2}`, { ...api.store.get(`${LBA}/monitors/${M2}`), description: '' });
+  const byId = await preflight(api, ACCOUNT, [deleteMonitor(M2, M2)]);
+  assert.deepEqual(failed(byId), []);
+  const wrong = await preflight(api, ACCOUNT, [deleteMonitor(M2, '')]);
+  assert.equal(failed(wrong)[0]?.name, 'confirm_name');
+  // With a description, the description is the name.
+  assert.deepEqual(failed(await preflight(fakeApi(), ACCOUNT, [deleteMonitor(M2, 'Unused TCP probe')])), []);
+  assert.equal(failed(await preflight(fakeApi(), ACCOUNT, [deleteMonitor(M2, M2)]))[0]?.name, 'confirm_name');
+
+  // A PUT without monitor leaves the pool without one: no preview is sent.
+  const { monitor: _m, ...noMonitor } = poolBody(P1);
+  const plain = fakeApi();
+  const report = await preflight(plain, ACCOUNT, [updatePool(P1, noMonitor)]);
+  assert.deepEqual(plain.writes(), []);
+  assert.match(report.ctx.load_balancing.preview[P1].skipped, /no monitor/);
+  // A stored monitor id that is not 32 hex never reaches a path.
+  const odd = fakeApi();
+  odd.store.set(`${LBA}/pools/${P3}`, { ...pool(P3), monitor: '../x' });
+  const zoneReport = await preflight(odd, ZONE, [updateLb(LB2, lbBody(LB2, { ttl: 60 }))]);
+  assert.match(zoneReport.ctx.load_balancing.preview[P3].skipped, /not 32 hex/);
+  assert.ok(!odd.calls.some((c) => c.path.includes('../x')));
 });

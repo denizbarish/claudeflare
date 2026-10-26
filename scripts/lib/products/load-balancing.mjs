@@ -150,10 +150,11 @@ function crud(shared, { prefix, collection, type, readOnlyFields, validate, name
 }
 
 const KINDS = [
-  // A monitor has no name; its description is what the dashboard lists.
+  // A monitor has no name: confirm_name is its description, or its id when
+  // the description is empty (Ruling 28).
   ...crud(account, {
     prefix: 'lb_monitor', collection: '/load_balancers/monitors', type: 'lb_monitor', readOnlyFields: MONITOR_READ_ONLY,
-    validate: validateMonitor, nameField: 'description', notes: { delete: (ctx, op) => notesMonitorDelete(ctx, op) },
+    validate: validateMonitor, nameField: (m) => (nonEmpty(m?.description) ? m.description : m?.id), notes: { delete: (ctx, op) => notesMonitorDelete(ctx, op) },
   }),
   ...crud(account, {
     prefix: 'lb_pool', collection: '/load_balancers/pools', type: 'lb_pool', readOnlyFields: POOL_READ_ONLY,
@@ -236,6 +237,7 @@ function failureReasons(result) {
 // skip reason. Errors that are not CfErrors are bugs and propagate.
 async function runPreview(client, acc, poolId, monitorId) {
   if (!monitorId) return { skipped: 'the pool has no monitor to probe with' };
+  if (!ID_ONLY.test(monitorId)) return { skipped: 'the pool names a monitor id that is not 32 hex characters' };
   try {
     const monitor = await client.request('GET', `${acc}/load_balancers/monitors/${monitorId}`);
     const started = await client.request('POST', `${acc}/load_balancers/pools/${poolId}/preview`, { body: omitPaths(monitor ?? {}, MONITOR_READ_ONLY) });
@@ -298,7 +300,8 @@ async function gatherAccount(client, base, items) {
 
   for (const p of updates) {
     if (p.id in ctx.preview) continue;
-    const monitor = 'monitor' in (p.op.body ?? {}) ? p.op.body.monitor : ctx.pools[p.id]?.monitor;
+    // PUT replaces the whole pool: a body without monitor leaves it without one.
+    const monitor = p.op.body?.monitor;
     ctx.preview[p.id] = await runPreview(client, base, p.id, nonEmpty(monitor) ? monitor : null);
   }
   return ctx;
@@ -381,10 +384,20 @@ function lbLines(ctx, p, body) {
   }
   const only = refs.length === 1 ? ctx?.preview?.[refs[0]] : null;
   if (only?.healthy === false) {
-    const why = only.reasons?.length ? ` (${list(only.reasons)})` : '';
-    lines.push(`${LOCKOUT_PREFIX} load balancer ${name} has one pool, ${poolLabel(ctx, refs[0])}, and the preview found it critical${why}; ${name} fails for every visitor while it is. Fix the origins or add a healthy pool. ${HINT}`);
+    // No failure reasons here (they stay in the preview note): the line must
+    // read the same whenever the preview finds the pool critical.
+    lines.push(`${LOCKOUT_PREFIX} load balancer ${name} has one pool, ${poolLabel(ctx, refs[0])}, ${PREVIEW_CRITICAL}; ${name} fails for every visitor while it is. Fix the origins or add a healthy pool. ${HINT}`);
   }
   return lines;
+}
+
+// Ruling 27: the preview runs asynchronously, so plan new often sees no
+// result while apply sees one. A line that rests on the preview alone is
+// advisory: apply shows it but does not stop with risk_changed for it.
+const PREVIEW_CRITICAL = 'and the preview found it critical';
+
+function advisoryLockout(line) {
+  return typeof line === 'string' && line.startsWith(`${LOCKOUT_PREFIX} load balancer `) && line.includes(PREVIEW_CRITICAL);
 }
 
 function lockoutRisks(ctx, ops) {
@@ -509,5 +522,6 @@ export const LOAD_BALANCING = {
   gather,
   dependencies,
   lockoutRisks,
+  advisoryLockout,
   verifyChecks,
 };

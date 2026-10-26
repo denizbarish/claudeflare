@@ -221,7 +221,9 @@ async function assertProductPreflight(client, plan) {
   }
   // A product plan without lockout_risks (hand-made) showed no lines.
   const shown = new Set(Array.isArray(plan.lockout_risks) ? plan.lockout_risks : []);
-  const added = report.lockout_risks.filter((line) => !shown.has(line));
+  // Advisory lines (an asynchronous preview result, Ruling 27) never stop apply.
+  const advisory = new Set(report.advisory_lockout ?? []);
+  const added = report.lockout_risks.filter((line) => !shown.has(line) && !advisory.has(line));
   if (added.length) {
     throw new CfError('risk_changed', `Plan ${plan.id}: new lockout risk found since the plan was made:\n${added.join('\n')}`, {
       hint: 'Nothing was written; create a new plan with claudeflare plan new so the user approves with these lines in view',

@@ -60,7 +60,9 @@ async function confirmNames(client, items, add) {
       problems.push({ code: failureCode(err), text: `op ${index}: could not read ${readPath} (${err.message})` });
       continue;
     }
-    const live = getPath(before, entry.nameField);
+    // nameField may be a function of the live resource (a monitor without a
+    // description is confirmed by its id).
+    const live = typeof entry.nameField === 'function' ? entry.nameField(before) : getPath(before, entry.nameField);
     if (op.confirm_name !== live) {
       problems.push({ code: 'invalid_op', text: `op ${index}: confirm_name ${JSON.stringify(op.confirm_name)} does not match the live name ${JSON.stringify(live ?? null)}` });
     }
@@ -137,7 +139,10 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
 
   const lines = module.lockoutRisks(ctx, ops) ?? [];
   for (const line of lines) {
-    if (typeof line === 'string' && line.trim()) out.lockout_risks.push(asLockoutLine(line));
+    if (typeof line !== 'string' || !line.trim()) continue;
+    const flat = asLockoutLine(line);
+    out.lockout_risks.push(flat);
+    if (module.advisoryLockout?.(flat)) out.advisory_lockout.push(flat);
   }
   return null;
 }
@@ -146,14 +151,17 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
 // Failed checks carry `code` (not_entitled, missing_permission,
 // resource_in_use, invalid_op, ...) so apply can throw it unchanged.
 // `unanalyzed` lists { product, detail } for products whose lockout analysis
-// did not run. options.alwaysLockout: see productChecks.
+// did not run. `advisory_lockout` holds the lockout lines a module marks as
+// advisory (advisoryLockout): apply does not stop with risk_changed for them.
+// options.alwaysLockout: see productChecks.
 export async function runProductPreflight(client, plan, ops, options = {}) {
-  const out = { checks: [], lockout_risks: [], dependencies: {}, ctx: {}, unanalyzed: [] };
+  const out = { checks: [], lockout_risks: [], advisory_lockout: [], dependencies: {}, ctx: {}, unanalyzed: [] };
   const add = (name, ok, detail, code) => out.checks.push(ok ? { name, ok, detail } : { name, ok, detail, code });
   for (const [module, items] of groupByProduct(plan, ops ?? [])) {
     const detail = await productChecks(client, module, items, out, add, options);
     if (detail !== null) out.unanalyzed.push({ product: module.product, detail });
   }
   out.lockout_risks = [...new Set(out.lockout_risks)];
+  out.advisory_lockout = [...new Set(out.advisory_lockout)];
   return out;
 }
