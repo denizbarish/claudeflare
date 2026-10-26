@@ -10,6 +10,7 @@ import { readPlan } from '../scripts/lib/plans.mjs';
 import { inspectCode } from './lib/inspect-code.mjs';
 import { isAllowedCall } from './lib/allowed-call.mjs';
 import { trimPeriod } from './lib/plan-text.mjs';
+import { decideWrangler } from './lib/wrangler-rules.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -162,6 +163,8 @@ function decideBash(toolInput, cwd) {
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
   ].filter(Boolean);
+  const wrangler = decideWrangler(command);
+  if (wrangler) decisions.push(deny(wrangler));
   if (decisions.length === 0) return null;
   // Any deny wins, so an ask for a valid apply never hides another part of the command.
   const denied = decisions.find((d) => d.permissionDecision === 'deny');
