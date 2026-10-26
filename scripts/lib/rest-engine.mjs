@@ -147,8 +147,9 @@ export function withDriftPrecheck(entry, ops, record) {
   const group = entry.group ?? tagged ?? (ops.length > 1 ? `op-${entry.op_index}` : undefined);
   const grouped = group === undefined ? {} : { group };
   const state = record?.state;
-  // Read-only and secret fields never take part in the comparison.
-  const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
+  // Read-only and secret fields never take part in the comparison, nor do
+  // fields the kind leaves to other kinds (driftIgnore).
+  const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(kind.driftIgnore ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
   let first;
   // A whole-list resource (device split tunnel entries) has an array state.
   if (!kind || !isState(state) || typeof record.read !== 'string' || record.op_index !== entry.op_index) {

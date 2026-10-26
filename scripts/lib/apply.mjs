@@ -151,6 +151,9 @@ export function withIrreversibleRisk(risk, ops, plan, ctxByProduct = {}) {
   const notes = [];
   const lines = ops.flatMap((op) => {
     if (op?.kind === 'wrangler') return wranglerRiskLines(op);
+    // A rollback op aimed at a re-created resource (created_id_from) only
+    // classifies once its id is known; rollback plans are never rolled back.
+    if (op && typeof op === 'object' && 'created_id_from' in op) return [];
     const product = plan ? classifyProductOp(op, plan) : null;
     if (product) {
       notes.push(...(product.entry.notes?.(ctxByProduct[product.module.product] ?? {}, op) ?? []));

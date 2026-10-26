@@ -182,7 +182,7 @@ iOS, Android and ChromeOS (managed app configuration; the MDM tool takes the sam
 }
 ```
 
-For interactive enrollment leave out `auth_client_id` and `auth_client_secret`. Settings in the MDM file override the device profile on that device, so keep `switch_locked` in the file consistent with the profile; a locked switch without admin override codes has the same lockout risk as line 3.
+For interactive enrollment leave out `auth_client_id` and `auth_client_secret`. Settings in the MDM file override the device profile on that device, so keep `switch_locked` in the file consistent with the profile; a locked switch without admin override codes leaves users unable to turn WARP off when it breaks their connection, until an admin changes the file.
 
 ## Traps
 

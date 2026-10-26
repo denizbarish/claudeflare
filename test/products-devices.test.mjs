@@ -359,6 +359,9 @@ test('profile delete rollback re-creates the profile and puts its saved lists on
     `PUT ${D}/policy/${CREATED_ID}/include`,
     `PUT ${D}/policy/${CREATED_ID}/fallback_domains`,
   ]);
+  // Ops aimed at the re-created profile get no Not reversible line.
+  assert.ok(!rollback.risk.includes(CREATED_ID), rollback.risk);
+  assert.ok(!/Not reversible/.test(rollback.risk), rollback.risk);
   const [recreate, include, fallback] = rollback.ops;
   const saved = fx('profiles')[0];
   for (const field of ['policy_id', 'default', 'gateway_unique_id', 'target_tests', 'fallback_domains', 'exclude', 'lists']) assert.ok(!(field in recreate.body), field);
@@ -515,4 +518,40 @@ test('verification is a read-back with the device honesty note; notes name what 
   assert.deepEqual(DEVICES.verifyChecks(postureDelete(DISK, 'x'), classifyProductOp(postureDelete(DISK, 'x'), PLAN).entry, {}, {}, null, {}), []);
   const ctx = (await runProductPreflight(fakeApi(), PLAN, [postureDelete(FIREWALL, 'Firewall on')])).ctx;
   assert.match(withIrreversibleRisk('x', [postureDelete(FIREWALL, 'Firewall on')], PLAN, ctx), /Firewall on.*new id/);
+});
+
+test('a mode change followed by a PUT of the new list rolls back to the original profile (no self drift)', async (t) => {
+  const ops = [patchProfile(P_LAB, { include: [host(TEAM)] }), putList(P_LAB, 'include', [host(TEAM), host(OKTA)])];
+  const api = fakeApi();
+  const report = await runProductPreflight(api, PLAN, ops);
+  assert.deepEqual(failed(report), []);
+  const { cwd, plan } = setup(t, ops, { lockout_risks: report.lockout_risks });
+  approve(cwd, plan);
+  const applied = await applyPlan(cwd, api, plan.id, T0, fastVerify());
+  assert.equal(applied.status, 'applied', JSON.stringify(applied.results));
+  const rollback = createRollbackPlan(cwd, plan.id, T1);
+  assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path}`), [`PUT ${D}/policy/${P_LAB}/include`, `PATCH ${D}/policy/${P_LAB}`]);
+  for (const field of ['include', 'exclude', 'fallback_domains']) assert.ok(!(field in rollback.ops[1].precheck.expect), field);
+  approve(cwd, rollback, T1);
+  const ran = await applyPlan(cwd, api, rollback.id, T1, fastVerify());
+  assert.equal(ran.status, 'applied', JSON.stringify(ran.results));
+  assert.ok(ran.results.every((r) => !r?.skipped), JSON.stringify(ran.results));
+  assert.deepEqual(api.store.get(`${D}/policy/${P_LAB}`), fx('profiles')[1]);
+});
+
+test('list read-back ignores order and normalizes hosts, bare IPs and empty descriptions', async () => {
+  const { DEVICES } = await import('../scripts/lib/products/devices.mjs');
+  const op = putList(P_LAB, 'exclude', [{ address: '10.0.0.1' }, { host: 'Printer.Example.com.', description: '' }, { address: '2001:db8::1' }]);
+  const { entry } = classifyProductOp(op, PLAN);
+  const run = (post) => DEVICES.verifyChecks(op, entry, {}, op.body, post, {})[0].run();
+  const reordered = await run([{ address: '2001:db8::1/128' }, { host: 'printer.example.com' }, { address: '10.0.0.1/32', description: '' }]);
+  assert.equal(reordered.ok, true, reordered.detail);
+  assert.ok(reordered.detail.endsWith(HONESTY));
+  assert.equal((await run([{ address: '10.0.0.2/32' }, { host: 'printer.example.com' }, { address: '2001:db8::1/128' }])).ok, false);
+  assert.equal((await run([{ address: '10.0.0.1/32' }, { host: 'printer.example.com' }])).ok, false);
+  // The same rules hold for a profile's include list.
+  const patch = patchProfile(P_LAB, { include: [host(TEAM), host(OKTA)] });
+  const pe = classifyProductOp(patch, PLAN).entry;
+  const swapped = await DEVICES.verifyChecks(patch, pe, {}, {}, { name: 'Lab', include: [host(OKTA.toUpperCase()), host(TEAM)] }, {})[0].run();
+  assert.equal(swapped.ok, true, swapped.detail);
 });

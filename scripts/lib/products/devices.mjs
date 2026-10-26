@@ -30,7 +30,10 @@ const MODE_KEYS = ['include', 'exclude'];
 const LIST_KEYS = ['include', 'exclude', 'fallback_domains'];
 
 // Fields Cloudflare sets on a profile. `lists` is claudeflare's own record of
-// the list endpoints (snapshot and post state), never sent back.
+// the list endpoints (snapshot and post state), never sent back. The list
+// fields themselves stay out of a profile's drift precheck (driftIgnore): the
+// list kinds write them and carry their own baselines, so a rollback that
+// first puts a list back does not look like drift to the profile restore.
 const PROFILE_READ_ONLY = ['policy_id', 'id', 'default', 'gateway_unique_id', 'target_tests', 'created_at', 'updated_at', 'lists'];
 const POSTURE_READ_ONLY = ['id', 'created_at', 'updated_at'];
 
@@ -264,22 +267,22 @@ function listKind(kind, name, type) {
 const KINDS = [
   {
     ...account, kind: 'device_default_profile_patch', methods: ['PATCH'], pattern: /^\/devices\/policy$/,
-    resource: () => ({ type: 'device_profile', id: 'default' }), read: profileRead, readOnlyFields: PROFILE_READ_ONLY,
+    resource: () => ({ type: 'device_profile', id: 'default' }), read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS,
     capture: captureProfile, capturePost: capturePostProfile, inverse: restoreProfile, group: profileGroup, validate: profileValidator('patch'),
   },
   {
     ...account, kind: 'device_profile_create', methods: ['POST'], pattern: /^\/devices\/policy$/, resource: () => null,
-    idField: 'policy_id', readOnlyFields: PROFILE_READ_ONLY, capturePost: capturePostProfile, inverse: 'delete_created',
+    idField: 'policy_id', readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capturePost: capturePostProfile, inverse: 'delete_created',
     validate: profileValidator('create'),
   },
   {
     ...account, kind: 'device_profile_patch', methods: ['PATCH'], pattern: ONE_PROFILE, resource: (m) => ({ type: 'device_profile', id: m[1] }),
-    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, capture: captureProfile, capturePost: capturePostProfile,
+    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capture: captureProfile, capturePost: capturePostProfile,
     inverse: restoreProfile, group: profileGroup, validate: profileValidator('patch'),
   },
   {
     ...account, kind: 'device_profile_delete', methods: ['DELETE'], pattern: ONE_PROFILE, resource: (m) => ({ type: 'device_profile', id: m[1] }),
-    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, capture: captureProfile, inverse: recreateProfile, group: profileGroup,
+    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capture: captureProfile, inverse: recreateProfile, group: profileGroup,
     destructive: true, nameField: 'name', notes: (ctx, op) => notesProfileDelete(ctx, op),
   },
   listKind('device_split_include_put', 'include', 'device_split_include'),
@@ -530,28 +533,68 @@ function notesPostureDelete(ctx, op) {
 
 const DETAIL = `check on one enrolled device of this profile with warp-cli settings; ${HONESTY}`;
 
+// One list entry in a comparable form: hosts and suffixes lowercased without
+// a trailing dot, a bare IP given its implicit /32 or /128, an empty
+// description dropped. Unknown fields stay as they are.
+function normalizeEntry(entry) {
+  if (!isPlainObject(entry)) return entry;
+  const out = { ...entry };
+  for (const key of ['host', 'suffix']) if (typeof out[key] === 'string') out[key] = clean(out[key]);
+  if (typeof out.address === 'string') {
+    const address = out.address.trim().toLowerCase();
+    out.address = address.includes('/') ? address : `${address}/${address.includes(':') ? 128 : 32}`;
+  }
+  if (out.description === '' || out.description === null) delete out.description;
+  return out;
+}
+
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// Lists compare as multisets: order does not count, and each sent entry
+// matches one read entry that holds every sent field (the API may add
+// defaults such as an empty dns_server).
+function sameList(sent, got) {
+  if (!Array.isArray(got) || got.length !== sent.length) return false;
+  const left = got.map(normalizeEntry);
+  return sent.map(normalizeEntry).every((want) => {
+    const at = left.findIndex((have) => (isPlainObject(want) && isPlainObject(have)
+      ? Object.keys(want).every((key) => sameValue(want[key], have[key]))
+      : sameValue(want, have)));
+    if (at === -1) return false;
+    left.splice(at, 1);
+    return true;
+  });
+}
+
 // Profile lists are compared against the profile's own field, else the list
 // endpoints read after the op.
-async function compareLists(op, post) {
+function compareLists(op, post) {
   for (const key of MODE_KEYS) {
     if (!Array.isArray(op.body?.[key])) continue;
     const got = Array.isArray(post?.[key]) ? post[key] : (post?.lists?.[key] ?? null);
-    const out = await readbackCheck(got, op.body[key]).run();
-    if (!out.ok) return { ok: false, detail: `read-back differs at ${key}` };
+    if (!sameList(op.body[key], got)) return { ok: false, detail: `read-back differs at ${key}` };
   }
   return null;
 }
 
 function readback(op, entry, post) {
   const isProfile = entry.kind.startsWith('device_profile_') || entry.kind === 'device_default_profile_patch';
+  const isList = Array.isArray(op.body);
   const ignore = isProfile ? [...entry.readOnlyFields, ...MODE_KEYS] : entry.readOnlyFields;
   const inner = readbackCheck(post, op.body, ignore);
   return {
     name: 'readback',
     once: true,
     run: async () => {
-      let out = await inner.run();
-      if (out.ok && isProfile) out = (await compareLists(op, post)) ?? out;
+      let out;
+      if (isList) {
+        out = post === null || post === undefined
+          ? { ok: false, detail: 'no post-apply read to compare' }
+          : sameList(op.body, post) ? { ok: true, detail: 'read-back matches the sent list' } : { ok: false, detail: 'read-back differs at the list entries' };
+      } else {
+        out = await inner.run();
+        if (out.ok && isProfile) out = compareLists(op, post) ?? out;
+      }
       return { ok: out.ok, detail: `${out.detail}; ${DETAIL}` };
     },
   };
