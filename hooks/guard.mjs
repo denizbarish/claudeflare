@@ -20,10 +20,11 @@ const STATE_REASON = 'claudeflare state files are managed by the claudeflare CLI
 
 const MCP_EXECUTE = /^mcp__.*cloudflare.*__execute$/;
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-// Bare, by path to the CLI (node /x/bin/claudeflare, ./bin/claudeflare,
-// scripts/cf.mjs) and quoted forms all count as an apply. A folder named
-// claudeflare (git -C ~/claudeflare apply x.patch) does not.
-const APPLY_PATTERN = /(^|[\s;&|('"])((?:\S*\/)?bin\/claudeflare|claudeflare|\S*cf\.mjs)['"]?\s+apply\s+['"]?([a-z0-9-]+)/g;
+// The CLI bare, by any path whose last segment is claudeflare or cf.mjs, and
+// quoted, counts as an apply. The one exception is a path given to -C
+// (git -C ~/claudeflare apply x.patch), which names a folder.
+const APPLY_PATTERN = /(^|[\s;&|('"])((?:\S*\/)?claudeflare|\S*cf\.mjs)['"]?\s+apply\s+['"]?([a-z0-9-]+)/g;
+const DIR_OPTION_BEFORE = /(?:^|\s)-C\s+['"]?$/;
 const PROTECTED_COMMAND_PARTS = [
   '.claudeflare/approvals',
   '.claudeflare/plans',
@@ -150,7 +151,8 @@ function decideApply(cwd, planId) {
 }
 
 function applyDecisions(cwd, command) {
-  const ids = [...new Set([...command.matchAll(APPLY_PATTERN)].map((m) => m[3]))];
+  const matches = [...command.matchAll(APPLY_PATTERN)].filter((m) => !DIR_OPTION_BEFORE.test(command.slice(0, m.index + m[1].length)));
+  const ids = [...new Set(matches.map((m) => m[3]))];
   return ids.map((id) => decideApply(cwd, id));
 }
 

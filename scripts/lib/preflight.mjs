@@ -22,6 +22,7 @@ const MAX_SQL_CHARS = 4000;
 const WORKER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
 const RESOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const HYPERDRIVE_ID = /^[0-9a-f]{32}$/;
+const IGNORES_DEPLOY_REDIRECT = new Set(['pages_deploy', 'd1_migrations_apply']);
 
 function errorText(err) {
   if (err instanceof CfError) return `${err.code}: ${err.message}`;
@@ -179,12 +180,13 @@ const targetFlags = (parsed) => ['--config', '--env'].flatMap((name) => (parsed.
 export function opConfig(projectDir, op) {
   const parsed = parseWranglerOp(op);
   const configFlag = parsed.flags.get('--config')?.[0];
-  const build = WORKER_BUILD_KINDS.has(parsed.kind);
-  // wrangler searches from a positional script's folder and, for builds, follows the deploy redirect.
-  const script = build ? parsed.positionals[0] : undefined;
+  // wrangler searches from a positional script's folder. The deploy redirect
+  // is assumed followed (fail closed) except by the commands wrangler 4.152
+  // is known to run without it.
+  const script = WORKER_BUILD_KINDS.has(parsed.kind) ? parsed.positionals[0] : undefined;
   const findOptions = {
     start: script ? dirname(resolve(projectDir, insideRel(projectDir, script))) : projectDir,
-    followsRedirect: build,
+    followsRedirect: !IGNORES_DEPLOY_REDIRECT.has(parsed.kind),
   };
   const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag), findOptions);
   return { file, config: applyEnv(config, parsed.flags.get('--env')?.[0], file) };
