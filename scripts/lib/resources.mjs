@@ -259,6 +259,10 @@ function assertSecretFields(op, secretFields, reject) {
     reject('secret_fields_from_env must be an object of body field path to env var name');
   }
   for (const [path, env] of Object.entries(map)) {
+    // One secret must not fan out into every element of an array.
+    if (path.split('.').includes('*')) {
+      reject(`secret_fields_from_env names ${JSON.stringify(path)}; a path with * would copy one secret into every array element, so name one field`);
+    }
     if (!secretFields.includes(path)) {
       reject(`secret_fields_from_env names ${JSON.stringify(path)}, which is not a secret field of this kind (${secretFields.join(', ') || 'none'})`);
     }

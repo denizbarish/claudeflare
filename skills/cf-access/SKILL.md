@@ -65,7 +65,7 @@ Use the change protocol from cf-core: draft, `claudeflare preflight --file draft
 
 | Op | Path (under `/accounts/ACCOUNT_ID`) | Rollback |
 |---|---|---|
-| App create, update, delete | POST `/access/apps`, PUT or DELETE `/access/apps/APP_ID` (delete takes `confirm_name` = `name`) | Delete, restore, re-create (new id and new AUD) |
+| App create, update, delete | POST `/access/apps`, PUT or DELETE `/access/apps/APP_ID` (delete takes `confirm_name` = `name`) | Delete, restore without SCIM secrets (not reversible when the update sends one), re-create (new id and new AUD, no SCIM secrets) |
 | Reusable policy create, update, delete | POST `/access/policies`, PUT or DELETE `/access/policies/POLICY_ID` (`confirm_name` = `name`) | Delete, restore, re-create (new id) |
 | App-scoped policy update, delete | PUT or DELETE `/access/apps/APP_ID/policies/POLICY_ID` (`confirm_name` = `name`) | Restore, re-create (new id) |
 | Group create, update, delete | POST `/access/groups`, PUT or DELETE `/access/groups/GROUP_ID` (`confirm_name` = `name`) | Delete, restore, re-create (new id) |
@@ -73,7 +73,7 @@ Use the change protocol from cf-core: draft, `claudeflare preflight --file draft
 | Service token create, update, delete | POST `/access/service_tokens`, PUT or DELETE `/access/service_tokens/TOKEN_ID` (`confirm_name` = `name`) | Delete, restore, not reversible |
 | Organization update | PUT `/access/organizations` with the whole organization (`name`, `auth_domain`, ...) | Restores the previous organization |
 
-Refused at `plan new` (`invalid_op`): a literal `config.client_secret` in an identity provider body (map it with `secret_fields_from_env`), `client_id`, `client_secret` or `client_secret_version` in a service token body (rotation is not an op), `saas_app.client_secret` in an app body, a self-hosted app without `domain`, a policy without `name`, a valid `decision` or an `include` array, an organization PUT without `name` and `auth_domain`. Refused at preflight (`resource_in_use`): a reusable policy delete while an app uses it, a group delete while a policy references it, a service token delete while a policy includes it, unless an earlier op in the same plan removes the use. An app-scoped policy op and an update or delete of the same app never share a plan (`plan_conflict`). Not available as ops: `revoke_tokens`, `revoke_user`, service token `refresh` and `rotate`, Dashboard SSO.
+Refused at `plan new` (`invalid_op`): a literal `config.client_secret` in an identity provider body (map it with `secret_fields_from_env`), a `*` path in `secret_fields_from_env` (name one field), `client_id`, `client_secret` or `client_secret_version` in a service token body (rotation is not an op), `saas_app.client_secret` in an app body, a self-hosted app without `domain`, a policy without `name`, a valid `decision` or an `include` array, an organization PUT without `name` and `auth_domain`. Refused at preflight (`resource_in_use`): a reusable policy delete while an app uses it, a group delete while a policy references it, a service token delete while a policy includes it, unless an earlier op in the same plan removes the use. An app-scoped policy op and an update or delete of the same app never share a plan (`plan_conflict`). Not available as ops: `revoke_tokens`, `revoke_user`, service token `refresh` and `rotate`, Dashboard SSO.
 
 ### Put a site behind Access (the usual request)
 
@@ -137,7 +137,7 @@ The secret is shown only once. Apply writes `{ "client_id", "client_secret" }` t
 
 These never refuse a plan; they are shown at `plan new` and checked again at apply (a new line stops apply with `risk_changed`):
 
-1. An app loses its last `allow` policy with a non-empty `include`.
+1. An app loses its last `allow` policy with a non-empty `include`, or gets a `deny` policy whose `include` is empty or `everyone`.
 2. An app domain covers an identity provider's login host or the team domain.
 3. Deleting or changing the only identity provider allowed by an app (`allowed_idps`) or the organization's only login method; an app limited to identity providers that are not configured.
 4. Removing the allow policy of the Zero Trust dashboard app (`dash_sso`, Dashboard SSO).
@@ -146,7 +146,7 @@ When one appears, keep this terminal open: the API token still works when the da
 
 ### Verification
 
-After apply claudeflare reads each changed resource back (app policies compared by id), and for a self-hosted app with a public `domain` sends an unauthenticated GET to `https://<domain>/` that must answer 302 to the team domain `<team>.cloudflareaccess.com` (a wildcard domain shows `skipped: wildcard domain`). A policy update re-reads every app using it. A failed check sets `applied_verify_failed` and drafts a rollback plan that still needs approval.
+After apply claudeflare reads each changed resource back (app policies compared by id), and for a self-hosted app with a public `domain` sends an unauthenticated GET to `https://<host>/` for each public hostname (`domain`, `self_hosted_domains`, public `destinations`) that must answer 302 to the team domain `<team>.cloudflareaccess.com` (a wildcard domain shows `skipped: wildcard domain`). A policy update re-reads every app using it. A failed check sets `applied_verify_failed` and drafts a rollback plan that still needs approval.
 
 ## Traps
 

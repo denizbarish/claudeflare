@@ -130,13 +130,16 @@ function validateOrg(op) {
   return problems;
 }
 
-// IdP update rollback: the snapshot never holds the client secret, so an
-// update that sent one cannot be undone; any other update is put back
-// without the secret fields (spec 5.1).
-function idpUpdateInverse(entry) {
-  if (Array.isArray(entry.secret_fields) && entry.secret_fields.length) return [];
-  if (!isPlainObject(entry.before)) throw new CfError('rollback_ambiguous', `No before state recorded for ${entry.path}`);
-  return [{ method: 'PUT', path: entry.path, body: omitPaths(entry.before, [...IDP_READ_ONLY, ...IDP_SECRET_FIELDS, ...IDP_REDACT]) }];
+// Update rollback of a resource that holds secrets (IdP client secret, app
+// SCIM credentials): the snapshot never holds them, so an update that sent
+// one cannot be undone; any other update is put back without the secret
+// fields (spec 5.1).
+function putWithoutSecrets(omit) {
+  return (entry) => {
+    if (Array.isArray(entry.secret_fields) && entry.secret_fields.length) return [];
+    if (!isPlainObject(entry.before)) throw new CfError('rollback_ambiguous', `No before state recorded for ${entry.path}`);
+    return [{ method: 'PUT', path: entry.path, body: omitPaths(entry.before, omit) }];
+  };
 }
 
 // ---------- account state helpers ----------
@@ -199,8 +202,11 @@ function loginTargets(config) {
 }
 
 function summarizePolicy(p) {
-  const out = { id: p?.id, name: p?.name ?? null, decision: p?.decision ?? null };
-  for (const key of ['include', 'exclude', 'require']) out[key] = Array.isArray(p?.[key]) ? p[key] : [];
+  // Only fields the source holds: an app GET may list policies as bare
+  // { id, precedence } references, which resolveRef then looks up by id.
+  const out = { id: p?.id, name: p?.name ?? null };
+  if (nonEmpty(p?.decision)) out.decision = p.decision;
+  for (const key of ['include', 'exclude', 'require']) if (Array.isArray(p?.[key])) out[key] = p[key];
   if (typeof p?.reusable === 'boolean') out.reusable = p.reusable;
   return out;
 }
@@ -243,10 +249,10 @@ function reusableIds(ctx) {
 // id, else the app's own (legacy) policy, else what the reference holds.
 function resolveRef(ctx, app, ref) {
   const id = idOf(ref);
-  if (isPlainObject(ref) && 'decision' in ref) return ref;
+  if (isPlainObject(ref) && ref.decision != null) return ref;
   const reusable = id && (ctx.policies ?? []).find((p) => p.id === id);
   if (reusable) return reusable;
-  const own = id && (app?.policies ?? []).find((p) => p.id === id && 'decision' in p);
+  const own = id && (app?.policies ?? []).find((p) => p.id === id && p.decision != null);
   return own ?? (isPlainObject(ref) ? ref : { id });
 }
 
@@ -261,7 +267,7 @@ function policyHolders(ctx) {
   const holders = (ctx.policies ?? []).map((p) => ({ key: `p:${p.id}`, label: `policy ${p.name ?? p.id} (${p.id})`, policy: p, app: null }));
   for (const app of ctx.apps ?? []) {
     for (const p of app.policies ?? []) {
-      if (reusable.has(p.id) || p.reusable === true || !('decision' in p)) continue;
+      if (reusable.has(p.id) || p.reusable === true || p.decision == null) continue;
       holders.push({ key: `l:${app.id}/${p.id}`, label: `policy ${p.name ?? p.id} (${p.id}) of app ${app.name ?? app.id}`, policy: p, app: app.id });
     }
   }
@@ -292,8 +298,12 @@ const KINDS = [
   ...crud({
     prefix: 'access_app', collection: 'apps', type: 'access_app', readOnly: APP_READ_ONLY, validate: validateApp,
     create: { secretFields: APP_SECRET_FIELDS, redact: APP_REDACT },
-    update: { secretFields: APP_SECRET_FIELDS, redact: APP_REDACT },
-    remove: { redact: APP_REDACT, notes: (ctx, op) => notesAppDelete(ctx, op) },
+    update: {
+      secretFields: APP_SECRET_FIELDS, redact: APP_REDACT, inverse: putWithoutSecrets([...APP_READ_ONLY, ...APP_SECRET_FIELDS, ...APP_REDACT]),
+      read: (m, base) => `${base}/access/apps/${m[1]}`, notes: (ctx, op) => notesSecretUpdate(op),
+    },
+    // secretFields here keep SCIM credentials out of the snapshot and so out of the re-create body.
+    remove: { secretFields: APP_SECRET_FIELDS, redact: APP_REDACT, notes: (ctx, op) => notesAppDelete(ctx, op) },
   }),
   ...crud({
     prefix: 'access_policy', collection: 'policies', type: 'access_policy', readOnly: POLICY_READ_ONLY, validate: validatePolicy,
@@ -329,8 +339,8 @@ const KINDS = [
     prefix: 'access_idp', collection: 'identity_providers', type: 'access_idp', readOnly: IDP_READ_ONLY, validate: validateIdp,
     create: { secretFields: IDP_SECRET_FIELDS, redact: IDP_REDACT },
     update: {
-      secretFields: IDP_SECRET_FIELDS, redact: IDP_REDACT, inverse: idpUpdateInverse,
-      read: (m, base) => `${base}/access/identity_providers/${m[1]}`, notes: (ctx, op) => notesIdpUpdate(ctx, op),
+      secretFields: IDP_SECRET_FIELDS, redact: IDP_REDACT, inverse: putWithoutSecrets([...IDP_READ_ONLY, ...IDP_SECRET_FIELDS, ...IDP_REDACT]),
+      read: (m, base) => `${base}/access/identity_providers/${m[1]}`, notes: (ctx, op) => notesSecretUpdate(op),
     },
     remove: { inverse: 'none', redact: IDP_REDACT, notes: (ctx, op) => notesIdpDelete(ctx, op) },
   }),
@@ -385,7 +395,7 @@ function notesRecreate(ctx, op, what) {
   return [`A rollback re-creates ${what} ${name ? `${name} (${id})` : id} with a new id.`];
 }
 
-function notesIdpUpdate(ctx, op) {
+function notesSecretUpdate(op) {
   const fields = isPlainObject(op?.secret_fields_from_env) ? Object.keys(op.secret_fields_from_env) : [];
   if (!fields.length) return [];
   return [`Not reversible: ${op.method} ${op.path} sends ${list(fields)} from the environment; claudeflare never stores secrets, so a rollback cannot restore the previous value.`];
@@ -416,16 +426,41 @@ function notesOrg(ctx, op) {
 
 // ---------- gather ----------
 
+// Token template permission per Access area (spec 12). The module probe
+// names the Apps and Policies one; gather names the one a 403 came from.
+const PERM = {
+  apps: 'Access: Apps and Policies Edit',
+  org: 'Access: Organizations, Identity Providers, and Groups Edit',
+  tokens: 'Access: Service Tokens Edit',
+};
+
+async function withPermission(permission, path, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof CfError && err.code === 'permission') {
+      throw new CfError('permission', `the token cannot read ${path}; it needs "${permission}"`, { status: err.status });
+    }
+    throw err;
+  }
+}
+
 // Account reads for lockout analysis, dependencies, notes and verification.
 // Every list is read to the last page, so an app or policy on page two still
 // counts (Review Focus 1). auth_domain sits at the top of ctx, where
 // verify.mjs teamDomainOf reads it.
 async function gather(client, base, ops) {
-  const org = await client.request('GET', `${base}/access/organizations`);
-  const apps = await listAll(client, `${base}/access/apps`);
-  const policies = await listAll(client, `${base}/access/policies`);
-  const groups = await listAll(client, `${base}/access/groups`);
-  const idps = await listAll(client, `${base}/access/identity_providers`);
+  const read = (path, permission, fn) => withPermission(permission, path, fn);
+  const org = await read(`${base}/access/organizations`, PERM.org, () => client.request('GET', `${base}/access/organizations`));
+  const apps = await read(`${base}/access/apps`, PERM.apps, () => listAll(client, `${base}/access/apps`));
+  const policies = await read(`${base}/access/policies`, PERM.apps, () => listAll(client, `${base}/access/policies`));
+  const groups = await read(`${base}/access/groups`, PERM.org, () => listAll(client, `${base}/access/groups`));
+  const idps = await read(`${base}/access/identity_providers`, PERM.org, () => listAll(client, `${base}/access/identity_providers`));
+  // Service token ops need their own permission; probe it so a 403 names it
+  // before confirm_name or apply reads a token.
+  if (ops.some((op) => parse(op)?.kind.startsWith('access_service_token_'))) {
+    await read(`${base}/access/service_tokens`, PERM.tokens, () => client.request('GET', `${base}/access/service_tokens`, { query: { per_page: 1 } }));
+  }
   const ctx = {
     auth_domain: nonEmpty(org?.auth_domain) ? org.auth_domain.toLowerCase() : null,
     org: { name: org?.name ?? null, auth_domain: org?.auth_domain ?? null },
@@ -540,6 +575,32 @@ function lostAllowLines(ctx, p, op) {
   return lines;
 }
 
+// A deny policy whose include is empty or `everyone` (spec 5.1).
+function denyEveryone(policy) {
+  if (policy?.decision !== 'deny') return false;
+  const include = Array.isArray(policy.include) ? policy.include : [];
+  return include.length === 0 || include.some((rule) => isPlainObject(rule?.everyone));
+}
+
+// Item 1, second half: an app gains a policy that denies everyone, even when
+// an allow policy survives.
+function denyEveryoneLines(ctx, p, op) {
+  const line = (label, policy) => `${LOCKOUT_PREFIX} Access app ${label} gets deny policy ${policy.name ?? policy.id ?? '(inline)'} ${policy.include?.length ? 'that includes everyone' : 'with an empty include'} after ${op.method} ${op.path}; every user may be denied at login. ${ROLLBACK_HINT}`;
+  const lines = [];
+  for (const app of ctx.apps ?? []) {
+    const after = policiesAfter(ctx, app, p, op);
+    if (!after) continue;
+    const before = new Set((app.policies ?? []).map((ref) => resolveRef(ctx, app, ref)).filter(denyEveryone).map((x) => x.id));
+    for (const policy of after.filter(denyEveryone)) {
+      if (policy.id === undefined || !before.has(policy.id)) lines.push(line(appLabel(app), policy));
+    }
+  }
+  if (p.kind === 'access_app_create' && Array.isArray(op.body?.policies)) {
+    for (const policy of op.body.policies.map((ref) => resolveRef(ctx, null, ref)).filter(denyEveryone)) lines.push(line(op.body.name ?? 'new app', policy));
+  }
+  return lines;
+}
+
 // Item 2: an app domain covers an IdP login host or the team domain.
 function coveredLoginLines(ctx, p, op) {
   if (p.kind !== 'access_app_create' && p.kind !== 'access_app_update') return [];
@@ -611,7 +672,7 @@ function lockoutRisks(ctx, ops) {
   for (const op of ops) {
     const p = parse(op);
     if (!p) continue;
-    lines.push(...lostAllowLines(ctx, p, op), ...coveredLoginLines(ctx, p, op), ...onlyIdpLines(ctx, p, op), ...dashboardLines(ctx, p, op));
+    lines.push(...lostAllowLines(ctx, p, op), ...denyEveryoneLines(ctx, p, op), ...coveredLoginLines(ctx, p, op), ...onlyIdpLines(ctx, p, op), ...dashboardLines(ctx, p, op));
   }
   return [...new Set(lines)];
 }
@@ -667,15 +728,17 @@ function appPolicyCheck(client, path, appId, policyId) {
   };
 }
 
-// A self-hosted app with a public domain: an unauthenticated GET answers
-// 302 to the team domain. A wildcard domain cannot be fetched.
-function loginCheck(op, ctx, post, deps) {
+// A self-hosted app: each public hostname (domain, self_hosted_domains,
+// public destinations) answers an unauthenticated GET with a 302 to the team
+// domain. A wildcard domain cannot be fetched.
+function loginChecks(op, ctx, post, deps) {
   const type = op.body?.type ?? post?.type;
-  const domain = op.body?.domain;
-  if (type !== 'self_hosted' || !nonEmpty(domain)) return null;
-  const url = domain.includes('/') ? `https://${domain}` : `https://${domain}/`;
-  if (domain.includes('*')) return skipped(`access_login ${url}`, 'skipped: wildcard domain');
-  return accessLoginCheck(url, teamDomainOf(ctx), { fetchImpl: deps?.fetchImpl });
+  if (type !== 'self_hosted') return [];
+  return appDomains(op.body).map((domain) => {
+    const url = domain.includes('/') ? `https://${domain}` : `https://${domain}/`;
+    if (domain.includes('*')) return skipped(`access_login ${url}`, 'skipped: wildcard domain');
+    return accessLoginCheck(url, teamDomainOf(ctx), { fetchImpl: deps?.fetchImpl });
+  });
 }
 
 function verifyChecks(op, entry, ctx, result, post, deps) {
@@ -685,8 +748,7 @@ function verifyChecks(op, entry, ctx, result, post, deps) {
   const checks = [readbackCheck(post, op.body, isApp ? [...ignore, 'policies'] : ignore)];
   if (isApp) {
     if (Array.isArray(op.body?.policies)) checks.push(appPoliciesReadback(post, op.body.policies));
-    const login = loginCheck(op, ctx, post, deps);
-    if (login) checks.push(login);
+    checks.push(...loginChecks(op, ctx, post, deps));
   }
   const p = parse(op);
   if (entry.kind === 'access_policy_update' || entry.kind === 'access_app_policy_update') {
@@ -709,7 +771,7 @@ function verifyChecks(op, entry, ctx, result, post, deps) {
 async function entitlement(client, base) {
   let org;
   try {
-    org = await client.request('GET', `${base}/access/organizations`);
+    org = await withPermission(PERM.org, `${base}/access/organizations`, () => client.request('GET', `${base}/access/organizations`));
   } catch (err) {
     if (err instanceof CfError && err.code === 'not_found') {
       return { ok: false, detail: 'no Zero Trust organization on this account; create one in the Zero Trust dashboard first' };
@@ -725,7 +787,7 @@ async function entitlement(client, base) {
 export const ACCESS = {
   product: 'access',
   kinds: KINDS,
-  permission: { read: 'Access: Apps and Policies Read', edit: 'Access: Apps and Policies Edit' },
+  permission: { read: 'Access: Apps and Policies Read', edit: PERM.apps },
   probePath: (base) => `${base}/access/apps`,
   entitlement,
   gather,

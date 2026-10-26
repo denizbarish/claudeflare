@@ -51,7 +51,7 @@ const KEEP_ON_PUT = ['id', 'aud', 'created_at', 'client_id', 'expires_at', 'last
 // In-memory account built from the recorded responses. Lists page by
 // page/per_page like the API; an app's legacy policies are also readable at
 // /access/apps/<id>/policies/<pid>.
-function fakeApi({ org = fx('organization'), idps = fx('identity-providers'), apps = fx('apps') } = {}) {
+function fakeApi({ org = fx('organization'), idps = fx('identity-providers'), apps = fx('apps'), deny = [] } = {}) {
   const store = new Map();
   const seed = { apps, policies: fx('policies'), groups: fx('groups'), identity_providers: idps, service_tokens: fx('service-tokens') };
   for (const [name, items] of Object.entries(seed)) {
@@ -79,6 +79,7 @@ function fakeApi({ org = fx('organization'), idps = fx('identity-providers'), ap
     writes: () => calls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path}`),
     async request(method, path, opts = {}) {
       calls.push({ method, path, query: opts.query, body: structuredClone(opts.body) });
+      if (deny.some((prefix) => path.startsWith(prefix))) throw new CfError('permission', `Forbidden: ${path}`, { status: 403 });
       if (method === 'GET' && isCollection(path)) {
         const items = listOf(path);
         if (!opts.envelope) return structuredClone(items);
@@ -190,7 +191,7 @@ const tokenCreate = { method: 'POST', path: `${ACCESS}/service_tokens`, body: { 
 test('every Access kind classifies with its inverse, destructive flag and secret lists', () => {
   const cases = [
     ['POST', '/access/apps', 'access_app_create', 'delete_created'],
-    ['PUT', `/access/apps/${APP_WIKI}`, 'access_app_update', 'put_before'],
+    ['PUT', `/access/apps/${APP_WIKI}`, 'access_app_update', 'function'],
     ['DELETE', `/access/apps/${APP_WIKI}`, 'access_app_delete', 'recreate'],
     ['POST', '/access/policies', 'access_policy_create', 'delete_created'],
     ['PUT', `/access/policies/${P_EMP}`, 'access_policy_update', 'put_before'],
@@ -566,4 +567,128 @@ test('app create rollback deletes the created app; delete_created reads <path>/<
   assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path}`), [`DELETE ${ACCESS}/apps/${NEW}`]);
   assert.equal(rollback.ops[0].precheck.read, `${ACCESS}/apps/${NEW}`);
   assert.ok(!rollback.ops[0].precheck.unknown);
+});
+
+// Fix round 1
+
+const SCIM_PASSWORD = fx('apps')[0].scim_config.authentication.password;
+
+// Apps as an API that lists policies only as { id, precedence } references.
+function refOnlyApps(overrides = {}) {
+  return fx('apps').map((app) => ({
+    ...app,
+    policies: (overrides[app.id] ?? app.policies.map((p) => p.id)).map((id, i) => ({ id, precedence: i + 1 })),
+  }));
+}
+
+test('lockout item 1 resolves ref-only app policies through the reusable policy list', async () => {
+  const api = fakeApi({ apps: refOnlyApps() });
+  const deny = await runProductPreflight(api, PLAN, [policyUpdate(P_EMP, policyBody({ decision: 'deny' }))]);
+  assert.equal(deny.lockout_risks.length, 1, JSON.stringify(deny.lockout_risks));
+  assert.match(deny.lockout_risks[0], /^Lockout risk: Access app wiki \(wiki\.example\.com\) has no allow policy/);
+  const del = await runProductPreflight(api, PLAN, [policyDelete(P_EMP, 'Employees')], { alwaysLockout: true });
+  assert.ok(del.lockout_risks.some((l) => /Access app wiki .*no allow policy/.test(l)), JSON.stringify(del.lockout_risks));
+});
+
+test('lockout item 4 resolves ref-only policies of the Dashboard SSO app', async () => {
+  const api = fakeApi({ apps: refOnlyApps({ [APP_DASH]: [P_EMP] }) });
+  const put = await runProductPreflight(api, PLAN, [appUpdate(APP_DASH, { name: 'Cloudflare Dashboard SSO', type: 'dash_sso', policies: [P_CON] })]);
+  assert.ok(put.lockout_risks.some((l) => /removes allow policy Employees .*Zero Trust dashboard app/.test(l)), JSON.stringify(put.lockout_risks));
+  const del = await runProductPreflight(api, PLAN, [policyDelete(P_EMP, 'Employees')], { alwaysLockout: true });
+  assert.ok(del.lockout_risks.some((l) => /removes allow policy Employees .*Zero Trust dashboard app/.test(l)), JSON.stringify(del.lockout_risks));
+});
+
+test('a deny policy that includes everyone or nobody gets a line even when an allow survives', async () => {
+  const everyone = [{ everyone: {} }];
+  const api = fakeApi({ apps: refOnlyApps({ [APP_WIKI]: [P_EMP, P_CON] }) });
+  const reusable = await runProductPreflight(api, PLAN, [policyUpdate(P_CON, policyBody({ name: 'Contractors', decision: 'deny', include: everyone }))]);
+  assert.equal(reusable.lockout_risks.length, 1, JSON.stringify(reusable.lockout_risks));
+  assert.match(reusable.lockout_risks[0], /^Lockout risk: Access app wiki .*deny policy Contractors that includes everyone/);
+  const legacy = await runProductPreflight(fakeApi(), PLAN, [{
+    method: 'PUT', path: `${ACCESS}/apps/${APP_ADMIN}/policies/${L_DENY}`, body: policyBody({ name: 'Block contractors', decision: 'deny', include: [] }),
+  }]);
+  assert.equal(legacy.lockout_risks.length, 1, JSON.stringify(legacy.lockout_risks));
+  assert.match(legacy.lockout_risks[0], /Access app admin .*deny policy Block contractors with an empty include/);
+  const inline = await runProductPreflight(fakeApi(), PLAN, [appUpdate(APP_WIKI, appBody({
+    name: 'wiki', domain: 'wiki.example.com', policies: [P_EMP, { name: 'Block all', decision: 'deny', include: everyone }],
+  }))]);
+  assert.equal(inline.lockout_risks.length, 1, JSON.stringify(inline.lockout_risks));
+  assert.match(inline.lockout_risks[0], /Access app wiki .*deny policy Block all/);
+  const narrow = await runProductPreflight(fakeApi(), PLAN, [policyUpdate(P_CON, policyBody({ name: 'Contractors', decision: 'deny' }))]);
+  assert.deepEqual(narrow.lockout_risks, []);
+});
+
+test('app delete keeps SCIM credentials out of snapshot, results and the re-create rollback', async (t) => {
+  const { cwd, plan } = setup(t, [appDelete()]);
+  approve(cwd, plan);
+  const api = fakeApi();
+  const applied = await applyPlan(cwd, api, plan.id, T0, { fetchImpl: noFetch, ...fastVerify() });
+  assert.equal(applied.status, 'applied', JSON.stringify(applied.results));
+  const rollback = createRollbackPlan(cwd, plan.id, T1_TIME);
+  assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path}`), [`POST ${ACCESS}/apps`]);
+  assert.equal(rollback.ops[0].body.scim_config.authentication.user, 'scim-bot');
+  assert.ok(!('password' in rollback.ops[0].body.scim_config.authentication));
+  const texts = [JSON.stringify(applied), JSON.stringify(rollback), ...filesUnder(cwd).map((f) => readFileSync(f, 'utf8'))];
+  for (const text of texts) assert.ok(!text.includes(SCIM_PASSWORD), 'SCIM password leaked');
+});
+
+test('app update that sends a SCIM secret from env is not reversible; without one it is put back without secrets', async (t) => {
+  const scim = { enabled: true, remote_uri: 'https://scim.example.com/v2', authentication: { scheme: 'httpbasic', user: 'scim-bot' } };
+  const op = {
+    ...appUpdate(APP_WIKI, appBody({ name: 'wiki', domain: 'wiki.example.com', scim_config: scim })),
+    secret_fields_from_env: { 'scim_config.authentication.password': 'SCIM_PASSWORD' },
+  };
+  assert.match(withIrreversibleRisk('App', [op], PLAN, {}), /Not reversible: PUT .*\/access\/apps\//);
+  const secret = 'fake-new-scim-password-0000000000000000000002';
+  const { cwd, plan } = setup(t, [op]);
+  approve(cwd, plan);
+  const api = fakeApi();
+  const applied = await applyPlan(cwd, api, plan.id, T0, { env: { SCIM_PASSWORD: secret }, fetchImpl: redirect(`https://${TEAM}/x`), ...fastVerify() });
+  assert.equal(applied.status, 'applied', JSON.stringify(applied.results));
+  assert.equal(api.calls.find((c) => c.method === 'PUT').body.scim_config.authentication.password, secret);
+  assert.throws(() => createRollbackPlan(cwd, plan.id, T1_TIME), { code: 'nothing_to_rollback' });
+  for (const f of filesUnder(cwd)) {
+    const text = readFileSync(f, 'utf8');
+    assert.ok(!text.includes(secret) && !text.includes(SCIM_PASSWORD), `${f} holds a SCIM secret`);
+  }
+  const plain = setup(t, [appUpdate(APP_WIKI, appBody({ name: 'wiki', domain: 'wiki.example.com', session_duration: '8h' }))]);
+  approve(plain.cwd, plain.plan);
+  await applyPlan(plain.cwd, fakeApi(), plain.plan.id, T0, { fetchImpl: redirect(`https://${TEAM}/x`), ...fastVerify() });
+  const back = createRollbackPlan(plain.cwd, plain.plan.id, T1_TIME);
+  assert.equal(back.ops[0].body.session_duration, '24h');
+  assert.ok(!('password' in back.ops[0].body.scim_config.authentication));
+});
+
+test('secret_fields_from_env refuses a * path', () => {
+  const op = {
+    ...appUpdate(APP_WIKI, appBody({ name: 'wiki', domain: 'wiki.example.com' })),
+    secret_fields_from_env: { 'scim_config.authentication.*.password': 'SCIM_PASSWORD' },
+  };
+  assert.throws(() => validateOpTargets([op], PLAN), (e) => e.code === 'invalid_op' && /\*/.test(e.message));
+});
+
+test('a 403 during gather names the permission of the area that failed', async () => {
+  const idp = await runProductPreflight(fakeApi({ deny: [`${ACCESS}/identity_providers`] }), PLAN, [appCreate()]);
+  const g = idp.checks.find((c) => c.name === 'gather');
+  assert.equal(g.code, 'missing_permission');
+  assert.match(g.detail, /Access: Organizations, Identity Providers, and Groups/);
+  const token = await runProductPreflight(fakeApi({ deny: [`${ACCESS}/service_tokens`] }), PLAN, [tokenCreate]);
+  const tg = token.checks.find((c) => c.name === 'gather');
+  assert.equal(tg.code, 'missing_permission');
+  assert.match(tg.detail, /Access: Service Tokens/);
+  const apps = await runProductPreflight(fakeApi({ deny: [`${ACCESS}/policies`] }), PLAN, [appCreate()]);
+  assert.match(apps.checks.find((c) => c.name === 'gather').detail, /Access: Apps and Policies/);
+});
+
+test('login checks cover every public hostname of a self-hosted app', async () => {
+  const { ACCESS: MODULE } = await import('../scripts/lib/products/access.mjs');
+  const op = appCreate({
+    self_hosted_domains: ['docs.example.com', 'docs2.example.com'],
+    destinations: [{ type: 'public', uri: 'docs3.example.com/app' }, { type: 'private', cidr: '10.0.0.0/8' }],
+  });
+  const { entry } = classifyProductOp(op, PLAN);
+  const names = MODULE.verifyChecks(op, entry, { auth_domain: TEAM }, { id: NEW }, null, {}).map((c) => c.name).filter((n) => n.startsWith('access_login'));
+  assert.deepEqual(names.sort(), [
+    'access_login https://docs.example.com/', 'access_login https://docs2.example.com/', 'access_login https://docs3.example.com/app',
+  ]);
 });

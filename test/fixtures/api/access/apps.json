@@ -5,9 +5,18 @@
     "name": "wiki",
     "type": "self_hosted",
     "domain": "wiki.example.com",
-    "self_hosted_domains": ["wiki.example.com"],
-    "destinations": [{ "type": "public", "uri": "wiki.example.com" }],
-    "allowed_idps": ["eeeeeeee-0000-4000-8000-000000000001"],
+    "self_hosted_domains": [
+      "wiki.example.com"
+    ],
+    "destinations": [
+      {
+        "type": "public",
+        "uri": "wiki.example.com"
+      }
+    ],
+    "allowed_idps": [
+      "eeeeeeee-0000-4000-8000-000000000001"
+    ],
     "auto_redirect_to_identity": true,
     "session_duration": "24h",
     "policies": [
@@ -15,7 +24,13 @@
         "id": "bbbbbbbb-0000-4000-8000-000000000001",
         "name": "Employees",
         "decision": "allow",
-        "include": [{ "email_domain": { "domain": "example.com" } }],
+        "include": [
+          {
+            "email_domain": {
+              "domain": "example.com"
+            }
+          }
+        ],
         "exclude": [],
         "require": [],
         "precedence": 1,
@@ -25,7 +40,16 @@
       }
     ],
     "created_at": "2026-02-01T09:00:00Z",
-    "updated_at": "2026-02-01T09:00:00Z"
+    "updated_at": "2026-02-01T09:00:00Z",
+    "scim_config": {
+      "enabled": true,
+      "remote_uri": "https://scim.example.com/v2",
+      "authentication": {
+        "scheme": "httpbasic",
+        "user": "scim-bot",
+        "password": "fake-scim-password-0000000000000000000001"
+      }
+    }
   },
   {
     "id": "aaaaaaaa-0000-4000-8000-000000000002",
@@ -33,7 +57,9 @@
     "name": "admin",
     "type": "self_hosted",
     "domain": "admin.example.com",
-    "self_hosted_domains": ["admin.example.com"],
+    "self_hosted_domains": [
+      "admin.example.com"
+    ],
     "allowed_idps": [],
     "session_duration": "8h",
     "policies": [
@@ -41,7 +67,13 @@
         "id": "cccccccc-0000-4000-8000-000000000001",
         "name": "Admins",
         "decision": "allow",
-        "include": [{ "email": { "email": "admin@example.com" } }],
+        "include": [
+          {
+            "email": {
+              "email": "admin@example.com"
+            }
+          }
+        ],
         "exclude": [],
         "require": [],
         "precedence": 1,
@@ -53,7 +85,13 @@
         "id": "cccccccc-0000-4000-8000-000000000002",
         "name": "Block contractors",
         "decision": "deny",
-        "include": [{ "group": { "id": "dddddddd-0000-4000-8000-000000000001" } }],
+        "include": [
+          {
+            "group": {
+              "id": "dddddddd-0000-4000-8000-000000000001"
+            }
+          }
+        ],
         "exclude": [],
         "require": [],
         "precedence": 2,
@@ -78,7 +116,13 @@
         "id": "cccccccc-0000-4000-8000-000000000003",
         "name": "Dashboard SSO allow",
         "decision": "allow",
-        "include": [{ "email_domain": { "domain": "example.com" } }],
+        "include": [
+          {
+            "email_domain": {
+              "domain": "example.com"
+            }
+          }
+        ],
         "exclude": [],
         "require": [],
         "precedence": 1,

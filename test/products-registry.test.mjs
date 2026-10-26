@@ -174,7 +174,8 @@ test('secret_fields_from_env must map declared secretFields to env var names mat
   const path = `/accounts/${A}/fake/things`;
   const op = (map) => ({ method: 'POST', path, body: { config: {} }, secret_fields_from_env: map });
   validateOpTargets([op({ 'config.client_secret': 'OKTA_CLIENT_SECRET' })], acctPlan);
-  validateOpTargets([op({ 'rules.*.secret': '_X1' })], acctPlan);
+  // A * path would copy one secret into every array element.
+  assert.throws(() => validateOpTargets([op({ 'rules.*.secret': '_X1' })], acctPlan), (e) => e.code === 'invalid_op' && /\*/.test(e.message));
   for (const bad of [{ 'config.client_id': 'OKTA' }, { 'config.client_secret': 'okta' }, { 'config.client_secret': '1OKTA' }, { 'config.client_secret': '' }, { 'config.client_secret': 5 }, [], 'OKTA', null]) {
     assert.throws(() => validateOpTargets([op(bad)], acctPlan), code('invalid_op'), JSON.stringify(bad));
   }
