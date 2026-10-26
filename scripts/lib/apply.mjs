@@ -9,6 +9,7 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
+import { classifyProductOp } from './products/index.mjs';
 import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KINDS } from './wrangler-ops.mjs';
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
@@ -78,13 +79,22 @@ function wranglerRiskLines(op) {
 }
 
 // Appends one "Not reversible" line per op that rollback cannot undo, plus a
-// "Data loss" line for KV, Queue and D1 deletes.
-export function withIrreversibleRisk(risk, ops) {
+// "Data loss" line for KV, Queue and D1 deletes. With the plan (or its
+// target), product ops are classified by their kind and the kinds' notes
+// lines follow the "Not reversible" lines. Without it, product ops are
+// unknown and therefore not reversible, as in 0.2.x.
+export function withIrreversibleRisk(risk, ops, plan) {
+  const notes = [];
   const lines = ops.flatMap((op) => {
     if (op?.kind === 'wrangler') return wranglerRiskLines(op);
+    const product = plan ? classifyProductOp(op, plan) : null;
+    if (product) {
+      notes.push(...(product.entry.notes?.({}, op) ?? []));
+      return product.entry.inverse === 'none' ? [`Not reversible: ${op.method} ${op.path}`] : [];
+    }
     return classify(op).invertible ? [] : [`Not reversible: ${op.method} ${op.path}`];
   });
-  return [risk, ...lines].filter((line) => typeof line === 'string' && line !== '').join('\n');
+  return [risk, ...lines, ...notes].filter((line) => typeof line === 'string' && line !== '').join('\n');
 }
 
 function assertApproved(cwd, plan, now) {
@@ -297,7 +307,7 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
     {
       ...target,
       summary: `Rollback of ${id}`,
-      risk: withIrreversibleRisk([`Restores the state captured before ${id} was applied.`, ...notes].join(' '), ops),
+      risk: withIrreversibleRisk([`Restores the state captured before ${id} was applied.`, ...notes].join(' '), ops, { scope: plan.scope, ...target }),
       ops,
       slug,
     },

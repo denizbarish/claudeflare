@@ -185,7 +185,7 @@ async function planNew(cwd, flags) {
     account_name: draft.account_name,
     project_dir: target.project_dir,
     summary: draft.summary,
-    risk: withIrreversibleRisk(risk, resolved),
+    risk: withIrreversibleRisk(risk, resolved, target),
     ops: target.scope === 'account' ? resolved : draft.ops,
     slug,
   });

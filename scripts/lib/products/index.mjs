@@ -19,6 +19,9 @@
  * @property {(m: RegExpExecArray, base: string) => string} [collection]  POST path for `recreate`.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
+ *   A function is called as inverse(snapshotEntry, applyResult) and returns ops.
+ * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
+ *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.
  * @property {string} [nameField]       Live field `confirm_name` is compared with at preflight.
  * @property {string[]} [secretFields]  Body paths that must come from `secret_fields_from_env`.
@@ -65,6 +68,16 @@ export function registerProduct(module) {
     const at = PRODUCTS.indexOf(module);
     if (at !== -1) PRODUCTS.splice(at, 1);
   };
+}
+
+// Snapshot entries name their kind, so rollback can resolve it without the
+// plan. Null when no registered module has that kind.
+export function kindByName(name) {
+  for (const module of PRODUCTS) {
+    const entry = module.kinds.find((k) => k.kind === name);
+    if (entry) return entry;
+  }
+  return null;
 }
 
 export function baseFor(plan) {
