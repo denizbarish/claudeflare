@@ -203,7 +203,8 @@ const ALLOWLIST = [
   },
 ];
 
-const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete']);
+// An uploaded version (and its preview URL) stays on the Worker; rollback cannot remove it.
+const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete', 'worker_versions_upload']);
 export const DELETE_KINDS = new Set(['resource_delete', 'worker_delete']);
 export const DEPLOY_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
 // Kinds that upload project files; apply refuses them without a source_hash.

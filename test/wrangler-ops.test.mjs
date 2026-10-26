@@ -39,7 +39,7 @@ const ACCEPTED = [
   [w(['deploy', 'src/index.ts', '--name', 'api', '--assets', 'public', '--minify', '--var', 'A:1', '--var', 'B:2', '-e', 'prod']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['deploy', '--name', 'api', '--route', 'example.com/*', '--compatibility-flag', 'nodejs_compat', '--no-bundle']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['versions', 'deploy', 'v1@50', 'v2@50', '--name', 'api']), 'worker_versions_deploy', { type: 'worker', name: 'api' }, true],
-  [w(['versions', 'upload', '--name', 'api', '--tag', 'v2', '--preview-alias', 'canary']), 'worker_versions_upload', { type: 'worker', name: 'api' }, true],
+  [w(['versions', 'upload', '--name', 'api', '--tag', 'v2', '--preview-alias', 'canary']), 'worker_versions_upload', { type: 'worker', name: 'api' }, false],
   [w(['r2', 'bucket', 'dev-url', 'disable', 'b1']), 'r2_dev_url', { type: 'r2', name: 'b1' }, true],
   [w(['r2', 'bucket', 'dev-url', 'enable', 'b1', '-J', 'eu']), 'r2_dev_url', { type: 'r2', name: 'b1' }, false],
   [w(['rollback', 'v-123', '--name', 'api'], { worker: 'api' }), 'worker_rollback', { type: 'worker', name: 'api' }, true],

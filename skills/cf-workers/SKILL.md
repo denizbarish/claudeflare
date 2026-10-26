@@ -92,7 +92,7 @@ Deploy (reversible: the snapshot keeps the previous active version and rollback 
 
 Add `"--env", "production"` when the config uses environments. Preflight runs a dry-run build, checks bindings and embeds `source_hash`; changing code after approval fails apply with `source_changed`.
 
-Upload a new version without sending it traffic (nothing to roll back; preflight builds and hashes it like a deploy). The apply result carries its `version_id` and, when previews are on, a `preview_url` to test before the split. It takes no `health_check`:
+Upload a new version without sending it traffic (not reversible: the version and its preview URL stay on the Worker, though no traffic reaches it until a `versions deploy`; preflight builds and hashes it like a deploy). The apply result carries its `version_id` and, when previews are on, a `preview_url` to test before the split. It takes no `health_check`:
 
 ```json
 { "kind": "wrangler", "args": ["versions", "upload", "--name", "api", "--tag", "v42"] }
