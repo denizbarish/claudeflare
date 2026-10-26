@@ -650,6 +650,8 @@ test('guard asks for claudeflare apply called by path or quoted, not only bare',
     `node scripts/cf.mjs apply ${PLAN_ID}`,
     `/opt/tools/claudeflare apply ${PLAN_ID}`,
     `cd /x && git -C /x status; claudeflare apply ${PLAN_ID}`,
+    `make -C /tools/claudeflare apply ${PLAN_ID}`,
+    `npx -C claudeflare apply ${PLAN_ID}`,
   ]) {
     assert.equal(guard(ctx, bash(cmd)).permissionDecision, 'ask', cmd);
   }

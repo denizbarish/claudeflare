@@ -21,10 +21,10 @@ const STATE_REASON = 'claudeflare state files are managed by the claudeflare CLI
 const MCP_EXECUTE = /^mcp__.*cloudflare.*__execute$/;
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 // The CLI bare, by any path whose last segment is claudeflare or cf.mjs, and
-// quoted, counts as an apply. The one exception is a path given to -C
-// (git -C ~/claudeflare apply x.patch), which names a folder.
+// quoted, counts as an apply. The one exception is the folder right after
+// `git -C` (git -C ~/claudeflare apply x.patch); anything else fails closed.
 const APPLY_PATTERN = /(^|[\s;&|('"])((?:\S*\/)?claudeflare|\S*cf\.mjs)['"]?\s+apply\s+['"]?([a-z0-9-]+)/g;
-const DIR_OPTION_BEFORE = /(?:^|\s)-C\s+['"]?$/;
+const DIR_OPTION_BEFORE = /(?:^|[\s;&|(])git\s+-C\s+['"]?$/;
 const PROTECTED_COMMAND_PARTS = [
   '.claudeflare/approvals',
   '.claudeflare/plans',
