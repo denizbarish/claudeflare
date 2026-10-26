@@ -17,12 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- wrangler config discovery matches wrangler 4: `wrangler.json`, then `wrangler.jsonc`, then `wrangler.toml`, each searched upward. A config outside `project_dir` or a redirected `.wrangler/deploy/config.json` fails preflight instead of being read wrongly.
+- wrangler config discovery matches wrangler 4: `wrangler.json`, then `wrangler.jsonc`, then `wrangler.toml`, each searched upward. A config outside `project_dir` fails preflight instead of being read wrongly; for `deploy` and `versions upload`, so does a redirected `.wrangler/deploy/config.json` (the error names the `--config` to add). The search starts in a positional script's folder, as in wrangler.
 - Health checks are accepted only on ops that change what serves traffic; `on_failed_check` needs a `health_check`. A failed check names the redirect target.
 
 ### Fixed
 
-- The guard now asks before `claudeflare apply` called by path (`node /x/bin/claudeflare apply`, `./bin/claudeflare apply`) or quoted, not only bare.
+- The guard now asks before `claudeflare apply` called by path (`node /x/bin/claudeflare apply`, `./bin/claudeflare apply`) or quoted, not only bare; a folder named claudeflare (`git -C ~/claudeflare apply x.patch`) is not mistaken for it.
 - `claudeflare tail` bounds the output it keeps (4 MiB) and reports `truncated`.
 - The skill example test also checks indented code blocks.
 

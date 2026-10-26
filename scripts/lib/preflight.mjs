@@ -179,7 +179,14 @@ const targetFlags = (parsed) => ['--config', '--env'].flatMap((name) => (parsed.
 export function opConfig(projectDir, op) {
   const parsed = parseWranglerOp(op);
   const configFlag = parsed.flags.get('--config')?.[0];
-  const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag));
+  const build = WORKER_BUILD_KINDS.has(parsed.kind);
+  // wrangler searches from a positional script's folder and, for builds, follows the deploy redirect.
+  const script = build ? parsed.positionals[0] : undefined;
+  const findOptions = {
+    start: script ? dirname(resolve(projectDir, insideRel(projectDir, script))) : projectDir,
+    followsRedirect: build,
+  };
+  const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag), findOptions);
   return { file, config: applyEnv(config, parsed.flags.get('--env')?.[0], file) };
 }
 

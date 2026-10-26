@@ -651,4 +651,5 @@ test('guard asks for claudeflare apply called by path or quoted, not only bare',
   ]) {
     assert.equal(guard(ctx, bash(cmd)).permissionDecision, 'ask', cmd);
   }
+  assert.equal(guard(ctx, bash('git -C /home/u/claudeflare apply fix.patch')), null);
 });

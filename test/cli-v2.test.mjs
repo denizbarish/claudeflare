@@ -274,8 +274,20 @@ test('config discovery follows wrangler: json, jsonc, toml in turn, walking up; 
     assert.throws(() => findConfigFile(proj), (err) => err.code === 'invalid_config' && /outside project_dir/.test(err.message));
     rmSync(join(root, 'wrangler.json'));
     mkdirSync(join(proj, '.wrangler', 'deploy'), { recursive: true });
-    writeFileSync(join(proj, '.wrangler', 'deploy', 'config.json'), '{}');
-    assert.throws(() => findConfigFile(proj), (err) => err.code === 'invalid_config' && /redirected deploy config/.test(err.message));
+    writeFileSync(join(proj, '.wrangler', 'deploy', 'config.json'), JSON.stringify({ configPath: '../../dist/api/wrangler.json' }));
+    // Only builds (deploy, versions upload) follow the redirect.
+    assert.equal(findConfigFile(proj), 'wrangler.jsonc');
+    assert.throws(
+      () => findConfigFile(proj, { followsRedirect: true }),
+      (err) => err.code === 'invalid_config' && /redirected deploy config/.test(err.message) && err.message.includes('"--config", "dist/api/wrangler.json"'),
+    );
+    // A positional script starts the search in its own folder.
+    mkdirSync(join(proj, 'worker'));
+    writeFileSync(join(proj, 'worker', 'wrangler.toml'), 'name = "w"\n');
+    // wrangler.jsonc in the project still wins over worker/wrangler.toml (name order first).
+    assert.equal(findConfigFile(proj, { start: join(proj, 'worker') }), 'wrangler.jsonc');
+    writeFileSync(join(proj, 'worker', 'wrangler.jsonc'), '{ "name": "w" }');
+    assert.equal(findConfigFile(proj, { start: join(proj, 'worker') }), 'worker/wrangler.jsonc');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

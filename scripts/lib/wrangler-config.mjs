@@ -7,13 +7,14 @@
 // silent skip.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CfError } from './errors.mjs';
 
 // wrangler 4.152 looks for each name in turn, walking up from the working
-// directory, so a wrangler.json in a parent folder wins over a wrangler.toml
-// in the project. A deploy also follows .wrangler/deploy/config.json (written
-// by the Cloudflare Vite plugin) the same way.
+// directory (or from the folder of a script given as a positional), so a
+// wrangler.json in a parent folder wins over a wrangler.toml in the project.
+// deploy, versions deploy and versions upload also follow
+// .wrangler/deploy/config.json (written by the Cloudflare Vite plugin).
 export const CONFIG_FILES = ['wrangler.json', 'wrangler.jsonc', 'wrangler.toml'];
 const DEPLOY_REDIRECT = join('.wrangler', 'deploy', 'config.json');
 
@@ -24,21 +25,41 @@ function findUp(start, name) {
   }
 }
 
-// The config wrangler would pick in projectDir, relative to it, or null.
-// One it would pick from outside projectDir, or a redirected deploy config,
-// is refused: preflight could not read or hash what wrangler would use.
-export function findConfigFile(projectDir) {
-  const redirect = findUp(projectDir, DEPLOY_REDIRECT);
+function insideProject(projectDir, path) {
+  const rel = relative(resolve(projectDir), path);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) ? rel.split(sep).join('/') : null;
+}
+
+// The config the redirect points at, as a --config value, or null.
+function redirectTarget(projectDir, redirect) {
+  try {
+    const { configPath } = JSON.parse(readFileSync(redirect, 'utf8'));
+    return typeof configPath === 'string' ? insideProject(projectDir, resolve(dirname(redirect), configPath)) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The config wrangler would pick, relative to projectDir, or null. One it
+// would pick from outside projectDir, or a redirected deploy config, is
+// refused: preflight could not read or hash what wrangler would use.
+// options.start: folder the search starts in (default projectDir);
+// options.followsRedirect: the command follows .wrangler/deploy/config.json.
+export function findConfigFile(projectDir, { start = projectDir, followsRedirect = false } = {}) {
+  const redirect = followsRedirect ? findUp(start, DEPLOY_REDIRECT) : null;
   if (redirect) {
-    throw new CfError('invalid_config', `wrangler would follow the redirected deploy config ${redirect}, which claudeflare does not support; pass --config to the op`);
+    const target = redirectTarget(projectDir, redirect);
+    const hint = target ? `; add "--config", "${target}" to the op to deploy the built config` : '';
+    throw new CfError('invalid_config', `wrangler would follow the redirected deploy config ${redirect}${hint}`);
   }
   for (const name of CONFIG_FILES) {
-    const found = findUp(projectDir, name);
+    const found = findUp(start, name);
     if (!found) continue;
-    if (found !== join(resolve(projectDir), name)) {
+    const rel = insideProject(projectDir, found);
+    if (rel === null) {
       throw new CfError('invalid_config', `wrangler would use ${found}, outside project_dir; set project_dir to the folder that holds it or pass --config`);
     }
-    return name;
+    return rel;
   }
   return null;
 }
@@ -239,8 +260,8 @@ export function parseToml(text) {
 
 // Returns { file, config }, or { file: null, config: {} } when there is no
 // config. `file` is the --config path (relative to projectDir) when given.
-export function readWranglerConfig(projectDir, configPath) {
-  const file = configPath ?? findConfigFile(projectDir);
+export function readWranglerConfig(projectDir, configPath, findOptions) {
+  const file = configPath ?? findConfigFile(projectDir, findOptions);
   if (!file) return { file: null, config: {} };
   let text;
   try {
