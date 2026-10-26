@@ -3,6 +3,8 @@
 // conflict-checks any op that matches one. Zone kinds of v1 stay in
 // resources.mjs.
 
+import { TUNNEL } from './tunnel.mjs';
+
 /**
  * One REST operation shape a product supports.
  * @typedef {object} ProductKind
@@ -19,7 +21,9 @@
  * @property {(m: RegExpExecArray, base: string) => string} [collection]  POST path for `recreate`.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
- *   A function is called as inverse(snapshotEntry, applyResult) and returns ops.
+ *   A function is called as inverse(snapshotEntry, applyResult) and returns ops. An op may
+ *   carry `group` when its drift group depends on the apply result (a created id); the
+ *   engine moves it into the drift precheck.
  * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
  *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.
@@ -29,6 +33,8 @@
  * @property {string[]} [secretSink]    Response paths holding a secret the user must fetch out of band.
  * @property {(m: RegExpExecArray) => string} [group]  Dependency group for rollback drift skips.
  * @property {(ctx: object, op: object) => string[]} [notes]  Extra risk lines.
+ * @property {(op: object) => string[]} [validate]  Body problems; any one makes the op
+ *   invalid_op at plan new, preflight and apply. Messages name field paths, never values.
  */
 
 /**
@@ -142,3 +148,6 @@ export function classifyProductOp(op, plan) {
   }
   return null;
 }
+
+// Product modules shipped with claudeflare.
+registerProduct(TUNNEL);

@@ -1,0 +1,26 @@
+{
+  "id": "11111111-2222-4333-8444-555555555551",
+  "account_tag": "0123456789abcdef0123456789abcdef",
+  "created_at": "2026-10-01T09:00:00.000000Z",
+  "deleted_at": null,
+  "name": "web",
+  "connections": [
+    {
+      "colo_name": "fra06",
+      "uuid": "44444444-2222-4333-8444-555555555551",
+      "id": "44444444-2222-4333-8444-555555555551",
+      "is_pending_reconnect": false,
+      "origin_ip": "192.0.2.10",
+      "opened_at": "2026-10-26T08:00:00.000000Z",
+      "client_id": "55555555-2222-4333-8444-555555555551",
+      "client_version": "2026.9.0"
+    }
+  ],
+  "conns_active_at": "2026-10-26T08:00:00.000000Z",
+  "conns_inactive_at": null,
+  "tun_type": "cfd_tunnel",
+  "metadata": {},
+  "status": "healthy",
+  "remote_config": true,
+  "config_src": "cloudflare"
+}

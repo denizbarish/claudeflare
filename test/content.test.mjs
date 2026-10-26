@@ -211,3 +211,37 @@ test('cf-audit lists the workers, pages and storage domains', () => {
     assert.ok(audit.includes(`\`${domain}\``), `cf-audit is missing domain ${domain}`);
   }
 });
+
+// v3 Zero Trust and network
+
+const ZT_FINDINGS = {
+  'cf-tunnel': [
+    'tunnel.status.down', 'tunnel.connectors.single', 'tunnel.config.no_catch_all',
+    'tunnel.dns.stale_cname', 'tunnel.config.local_managed',
+  ],
+};
+
+for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
+  test(`${folder} has the four domain sections in order, every finding id and sources`, () => {
+    assertDomainSkill(folder, ids, [...DOMAIN_SECTIONS, '## Sources']);
+  });
+}
+
+test('cf-tunnel documents tunnel-token with --env-path and the connector templates', () => {
+  const file = 'skills/cf-tunnel/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'claudeflare tunnel-token', '--env-path', 'TUNNEL_TOKEN', 'cloudflare/cloudflared:<pinned tag>',
+    'tunnel --no-autoupdate run', 'restart: unless-stopped', 'replicas: 2', 'EnvironmentFile=', 'kubectl create secret',
+    '"config_src": "cloudflare"', 'confirm_name', 'Lockout risk:', '1016', '1033',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  assert.ok(!/tunnel-token[^\n]*--env-file/.test(text), `${file} documents --env-file for tunnel-token`);
+});
+
+test('cf-audit lists the tunnel domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-tunnel`'), 'cf-audit does not name cf-tunnel');
+  assert.ok(audit.includes('`tunnel`'), 'cf-audit is missing domain tunnel');
+});

@@ -82,13 +82,15 @@ function secretPaths(entry) {
   return [...(entry.redact ?? []), ...(entry.secretSink ?? []), ...(entry.secretFields ?? [])];
 }
 
-// Every value held at an `id` key anywhere in value.
+const IDENTIFIER_KEYS = new Set(['id', 'name']);
+
+// Every value held at an `id` or `name` key anywhere in value.
 function idValues(value, out = new Set()) {
   if (Array.isArray(value)) {
     for (const item of value) idValues(item, out);
   } else if (isPlainObject(value)) {
     for (const [key, item] of Object.entries(value)) {
-      if (key === 'id' && (typeof item === 'string' || typeof item === 'number')) out.add(String(item));
+      if (IDENTIFIER_KEYS.has(key) && (typeof item === 'string' || typeof item === 'number')) out.add(String(item));
       idValues(item, out);
     }
   }
@@ -96,9 +98,10 @@ function idValues(value, out = new Set()) {
 }
 
 // Identifiers are not secrets even where a secret block repeats them (a
-// tunnel's credentials_file holds the AccountTag and TunnelID). Scrubbing them
-// would break rollback ids and make every post state look drifted, so values
-// equal to the plan's account or zone id or to any `id` in the response are
+// tunnel's credentials_file holds the AccountTag, TunnelID and TunnelName).
+// Scrubbing them would break rollback ids, rewrite every string containing a
+// short name and make every post state look drifted, so values equal to the
+// plan's account or zone id or to any `id` or `name` in the response are
 // never collected.
 function collect(secrets, response, entry, plan) {
   const ids = idValues(response);

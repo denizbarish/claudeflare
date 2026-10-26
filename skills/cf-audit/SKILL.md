@@ -13,6 +13,8 @@ Use cf-core discovery to get `zone_id`, `zone_name` and the plan tier (`plan.leg
 
 For the developer platform domains (`workers`, `pages`, `storage`) the target is an account, not a zone: get the account `id` and `name`, and the project directory with the wrangler config when the user works in one. Audit them when the user asks for a Workers, Pages or storage audit, or for a full audit of an account. A full zone audit does not include them unless the user asks.
 
+The `tunnel` domain audits an account too: its tunnels, connectors, ingress configs, routes and the CNAMEs to `<uuid>.cfargotunnel.com` in the account's zones. A full account audit includes it. Its `fix` ops use `/accounts/{account_id}/...` for tunnel writes (an account plan) and `/zones/{zone_id}/...` for DNS fixes (a separate zone plan).
+
 ## 2. Domains
 
 The full audit covers these domains, each checked against the skill with the same name:
@@ -29,6 +31,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | workers (account) | `cf-workers` |
 | pages (account) | `cf-pages` |
 | storage (account) | `cf-storage` |
+| tunnel (account) | `cf-tunnel` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 

@@ -125,7 +125,9 @@ const POST_UNKNOWN = 'post-apply state unknown';
 export function withDriftPrecheck(entry, ops, record) {
   if (!ops.length) return ops;
   const kind = kindByName(entry.kind);
-  const group = entry.group ?? (ops.length > 1 ? `op-${entry.op_index}` : undefined);
+  // A function inverse may tag its ops with a group known only after apply.
+  const tagged = ops.find((op) => typeof op.group === 'string')?.group;
+  const group = entry.group ?? tagged ?? (ops.length > 1 ? `op-${entry.op_index}` : undefined);
   const grouped = group === undefined ? {} : { group };
   const state = record?.state;
   let first;
@@ -137,7 +139,7 @@ export function withDriftPrecheck(entry, ops, record) {
     const expect = state.absent === true ? { absent: true } : omitPaths(state, ignore);
     first = { kind: 'drift', read: record.read, expect, ignore, ...grouped };
   }
-  return ops.map((op, i) => ({ ...op, precheck: i === 0 ? first : { kind: 'drift', ...grouped } }));
+  return ops.map(({ group: _tag, ...op }, i) => ({ ...op, precheck: i === 0 ? first : { kind: 'drift', ...grouped } }));
 }
 
 // Runs one drift precheck before its rollback op. Null when the op may run,

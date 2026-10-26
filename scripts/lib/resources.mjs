@@ -289,6 +289,8 @@ export function validateProductFields(op, entry, index) {
   }
   if ('verify' in op) assertVerify(op.verify, reject);
   assertSecretFields(op, entry.secretFields ?? [], reject);
+  const problems = entry.validate?.(op) ?? [];
+  if (problems.length) reject(problems.join('; '));
 }
 
 // Structural check; subcommand and flag rules live in wrangler-ops.mjs.
