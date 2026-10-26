@@ -121,6 +121,14 @@ test('product op with a query string or percent sign is invalid_op unless the ki
   }
 });
 
+test('registerProduct refuses a kind name already registered or repeated in the module', () => {
+  const kind = (name, pattern) => ({ ...fake.kinds[0], kind: name, pattern });
+  const count = PRODUCTS.length;
+  assert.throws(() => registerProduct({ ...fake, product: 'dup', kinds: [kind('fake_thing_create', /^\/dup$/)] }), /already registered/);
+  assert.throws(() => registerProduct({ ...fake, product: 'dup', kinds: [kind('dup_a', /^\/a$/), kind('dup_a', /^\/b$/)] }), /already registered/);
+  assert.equal(PRODUCTS.length, count);
+});
+
 test('registerProduct refuses kind patterns that are not anchored with ^ and $', () => {
   const mod = (pattern) => ({ product: 'bad', kinds: [{ kind: 'bad_kind', scope: 'account', methods: ['PUT'], pattern }] });
   for (const pattern of [/\/bad$/, /^\/bad/, /\/bad/, /^\/bad\$/, '^/bad$']) {

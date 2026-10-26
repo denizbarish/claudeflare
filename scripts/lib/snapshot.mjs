@@ -185,7 +185,7 @@ export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
       unresolved.push(err.message);
       continue;
     }
-    if (entry.kind === 'rule_create' && inverse.length) {
+    if (entry.op_kind !== 'product' && entry.kind === 'rule_create' && inverse.length) {
       createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);
     }
     perEntry.push(inverse);

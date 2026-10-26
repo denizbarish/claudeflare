@@ -55,9 +55,16 @@ export const PRODUCTS = [];
 // Returns a function that removes the module again (tests use it so
 // registrations do not leak between files).
 // Every kind pattern must be anchored at both ends, or a pattern could match a
-// prefix or suffix of a longer path. Throws before anything is registered.
+// prefix or suffix of a longer path. Kind names must be unique across all
+// modules, because rollback resolves a snapshot entry's kind by name. Throws
+// before anything is registered.
 export function registerProduct(module) {
+  const names = new Set();
   for (const entry of module?.kinds ?? []) {
+    if (names.has(entry?.kind) || kindByName(entry?.kind)) {
+      throw new TypeError(`Product ${module.product} kind ${entry?.kind} is already registered`);
+    }
+    names.add(entry?.kind);
     const source = entry?.pattern instanceof RegExp ? entry.pattern.source : '';
     if (!source.startsWith('^') || !source.endsWith('$') || /(?:^|[^\\])(?:\\\\)*\\\$$/.test(source)) {
       throw new TypeError(`Product ${module.product} kind ${entry?.kind} needs a RegExp pattern anchored with ^ and $`);

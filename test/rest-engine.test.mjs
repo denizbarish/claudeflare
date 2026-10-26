@@ -31,6 +31,8 @@ const rt = {
     { kind: 'rt_thing_delete', product: 'resttest', scope: 'account', methods: ['DELETE'], pattern: /^\/rt\/things\/([0-9a-f-]{36})$/, resource: thingKey, readOnlyFields: ['id', 'created_at'], inverse: 'recreate', destructive: true, nameField: 'name', collection: (m, base) => `${base}/rt/things` },
     { kind: 'rt_widget_patch', product: 'resttest', scope: 'account', methods: ['PATCH'], pattern: /^\/rt\/widgets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_widget', id: m[1] }), readOnlyFields: ['id'], inverse: 'patch_before', putFallback: true, destructive: false, read: (m, base) => `${base}/rt/widgets/${m[1]}/full` },
     { kind: 'rt_settings_put', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/settings$/, resource: () => ({ type: 'rt_settings', id: 'account' }), readOnlyFields: [], inverse: 'none', destructive: false, notes: (ctx, op) => [`Note: settings change for ${op.path}`] },
+    { kind: 'rt_secret_update', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/secrets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_secret', id: m[1] }), readOnlyFields: ['id'], inverse: 'put_before', destructive: false, secretFields: ['config.client_secret'], redact: ['token'] },
+    { kind: 'rt_secret_delete', product: 'resttest', scope: 'account', methods: ['DELETE'], pattern: /^\/rt\/secrets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_secret', id: m[1] }), readOnlyFields: ['id'], inverse: 'recreate', destructive: true, nameField: 'name', secretFields: ['config.client_secret'], redact: ['token'] },
     {
       kind: 'rt_action_run', product: 'resttest', scope: 'account', methods: ['POST'], pattern: /^\/rt\/actions\/([0-9a-f-]{36})\/run$/, resource: (m) => ({ type: 'rt_action', id: m[1] }), readOnlyFields: [], destructive: false,
       inverse: (entry, applyResult) => {
@@ -95,6 +97,20 @@ test('put_before strips readOnlyFields', async () => {
   assert.deepEqual(inverseForProduct(entry, {}), [
     { method: 'PUT', path: op.path, body: { name: 'alpha', mode: 'a', tags: ['x'] } },
   ]);
+});
+
+test('secretFields and redact paths are omitted from before and from put_before and recreate bodies', async () => {
+  const path = `${BASE}/rt/secrets/${ID}`;
+  const live = { id: ID, name: 's', token: 'tok-123', config: { client_id: 'cid', client_secret: 'sec-456' } };
+  const stored = { id: ID, name: 's', config: { client_id: 'cid' } };
+  const body = { name: 's', config: { client_id: 'cid' } };
+  const put = await entryFor({ method: 'PUT', path, body: { name: 't' } }, { [`GET ${path}`]: live });
+  assert.deepEqual(put.entry.before, stored);
+  assert.deepEqual(inverseForProduct(put.entry, {}), [{ method: 'PUT', path, body }]);
+  const del = await entryFor({ method: 'DELETE', path, confirm_name: 's' }, { [`GET ${path}`]: live });
+  assert.deepEqual(del.entry.before, stored);
+  assert.deepEqual(inverseForProduct(del.entry, true), [{ method: 'POST', path: `${BASE}/rt/secrets`, body }]);
+  assert.doesNotMatch(JSON.stringify([put.entry, del.entry]), /tok-123|sec-456/);
 });
 
 test('patch_before restores only keys the op set', async () => {

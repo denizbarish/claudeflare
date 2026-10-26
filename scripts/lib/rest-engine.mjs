@@ -32,7 +32,10 @@ export async function captureProductEntry(client, op, classified) {
   const path = String(op.path);
   const wantsRead = READ_BEFORE.has(entry.inverse) || (typeof entry.read === 'function' && entry.inverse !== 'delete_created');
   const readPath = entry.read ? entry.read(match, base) : path.split('?')[0];
-  const before = wantsRead ? await client.request('GET', readPath) : null;
+  // Snapshots store only non-secret fields (spec 5.1): secret and redacted
+  // paths are omitted, so default inverse bodies never carry them either.
+  const read = wantsRead ? await client.request('GET', readPath) : null;
+  const before = read === null ? null : omitPaths(read, [...(entry.secretFields ?? []), ...(entry.redact ?? [])]);
   const out = {
     product: entry.product,
     kind: entry.kind,
