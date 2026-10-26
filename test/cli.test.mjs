@@ -289,7 +289,7 @@ test('cli apply with a failing op exits 1 with apply_failed and prints the plan'
   assert.equal(error.hint, `Run claudeflare rollback ${plan.id} to revert the ops that succeeded`);
 });
 
-test('cli apply whose first op fails says no write was made and does not suggest rollback', async (t) => {
+test('cli apply whose first op fails says a REST op wrote nothing and does not suggest rollback', async (t) => {
   const cwd = tempDir(t, 'claudeflare-cli-');
   const base = await settingsStub(t, ['ssl']);
   const plan = await newPlan(cwd);
@@ -299,7 +299,7 @@ test('cli apply whose first op fails says no write was made and does not suggest
   assert.equal(JSON.parse(res.stdout).status, 'failed');
   const { error } = JSON.parse(res.stderr);
   assert.equal(error.code, 'apply_failed');
-  assert.match(error.hint, /no write was made/);
+  assert.match(error.hint, /a REST op wrote nothing/);
   assert.doesNotMatch(error.hint, /rollback/);
 });
 

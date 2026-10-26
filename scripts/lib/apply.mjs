@@ -170,8 +170,8 @@ async function assertAccountAccess(client, plan) {
     }
     throw err;
   }
-  if (account?.id !== undefined && account.id !== plan.account_id) {
-    throw new CfError('account_mismatch', `The API returned account ${account.id} for plan account ${plan.account_id}`);
+  if (account?.id !== plan.account_id) {
+    throw new CfError('account_mismatch', `The API returned account ${account?.id ?? 'without an id'} for plan account ${plan.account_id}`);
   }
 }
 

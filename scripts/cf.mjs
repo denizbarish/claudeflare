@@ -203,7 +203,7 @@ function report(cwd, flags) {
 
 const APPLY_HINTS = {
   partially_applied: (id) => `Run claudeflare rollback ${id} to revert the ops that succeeded`,
-  failed: () => 'The first op failed, so no write was made; fix the cause and create a new plan',
+  failed: () => 'The first op failed; a REST op wrote nothing, but a failed wrangler op (timed-out deploy, d1 migrations apply) may have partly applied, so check the resource, fix the cause and create a new plan',
   applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
   rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
 };

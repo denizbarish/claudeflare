@@ -206,6 +206,9 @@ async function runWranglerOp(ctx, op) {
   const parsed = parseWranglerOp(op);
   if (parsed?.kind === 'resource_create' && parsed.type === 'kv') {
     out.resource_id = await findKvNamespaceId(runner, plan, parsed);
+    if (out.resource_id === null) {
+      ctx.notes.push(`kv_id_unknown: the id of new KV namespace ${kvTitle(parsed)} could not be found; rollback cannot delete it`);
+    }
   }
   return out;
 }
@@ -226,8 +229,8 @@ async function autoRollback(ctx, snapshot, index, result) {
   try {
     inverse = entry ? inverseFor(entry, result) : [];
   } catch (err) {
-    if (!(err instanceof CfError)) throw err;
-    return { ok: false, message: err.message };
+    // Ops already ran and the approval is consumed: record, never rethrow.
+    return { ok: false, message: String(err?.message ?? err) };
   }
   if (!inverse.length) return { ok: false, message: 'the op has no inverse' };
   const results = [];
