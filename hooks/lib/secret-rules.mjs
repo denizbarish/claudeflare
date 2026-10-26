@@ -678,7 +678,9 @@ const TOKEN_RESOURCE_TEXT = new RegExp(TOKEN_RESOURCES.map((r) => (r === 'tunnel
 const TOKEN_SEGMENT_TEXT = /\/token(?![\w-])/;
 const CF_API_READ_TEXT = /api\.cloudflare\.com|(?:^|[\s/;&|(])(?:claudeflare|cf\.mjs)\s+get\b/;
 const VARIABLE_TOKEN_TEXT = /[$`)}][^\s;&|]*\/token(?![\w-])/;
-const RUNTIME_BUILT_TEXT = /\$\(|`|\{[^}\s]*,[^}\s]*\}/;
+// Any shell expansion: $ in every form ($VAR, ${...}, $(...), $'...'), a
+// backtick, or a brace list or range.
+const SHELL_EXPANSION_TEXT = /\$|`|\{[^}]*(?:,|\.\.)[^}]*\}/;
 const DECODE_ROUNDS = 3;
 
 function shellText(command) {
@@ -695,8 +697,9 @@ export function readsTunnelToken(command) {
   const text = shellText(command);
   if (TOKEN_RESOURCE_TEXT.test(text) && TOKEN_SEGMENT_TEXT.test(text)) return true;
   if (CF_API_READ_TEXT.test(text) && VARIABLE_TOKEN_TEXT.test(text)) return true;
-  // A token resource read whose path is built at run time ($(...), backticks, {a,b}).
-  if (CF_API_READ_TEXT.test(text) && TOKEN_RESOURCE_TEXT.test(text) && RUNTIME_BUILT_TEXT.test(text)) return true;
+  // A token resource read with any shell expansion fails closed: the path
+  // could be built at run time to reach /token.
+  if (CF_API_READ_TEXT.test(text) && TOKEN_RESOURCE_TEXT.test(text) && SHELL_EXPANSION_TEXT.test(command)) return true;
   if (!text.includes('cloudflared')) return false;
   return allCommands(command).some(cloudflaredPrintsToken);
 }

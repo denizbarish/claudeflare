@@ -889,8 +889,6 @@ test('Bash token endpoint reads are denied whatever the quoting or variable use'
   }
   for (const cmd of [
     `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}`,
-    `claudeflare get "/accounts/$A/cfd_tunnel/$T"`,
-    `claudeflare get /accounts/$A/warp_connector`,
     `claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path .env`,
     'cloudflared tunnel run --token-file /etc/cloudflared/token',
     'cat $HOME/.npm/_cacache/token',
@@ -1347,4 +1345,28 @@ test('Ruling 36: extglob and alternation words, git cat-file --batch and git arc
   }
   const plain = setup(t, { plan: false });
   for (const cmd of ['git cat-file --batch', 'git archive HEAD']) assert.equal(guard(plain, bash(cmd)), null, cmd);
+});
+
+// Ruling 37: a Cloudflare API read of a token resource fails closed on any
+// shell expansion in the command.
+test('Ruling 37: any $, backtick or brace expansion in a token resource read is denied', (t) => {
+  const ctx = setup(t, { plan: false });
+  const api = 'https://api.cloudflare.com/client/v4';
+  for (const cmd of [
+    `curl ${api}/accounts/${AID}/cfd_tunnel/$T/$X`,
+    `curl "${api}/accounts/${AID}/cfd_tunnel/\${ID}/\${SEG}"`,
+    `curl $'${api}/accounts/${AID}/cfd_tunnel/${TID}/tok\\x65n'`,
+    `curl ${api}/accounts/${AID}/cfd_tunnel/${TID}/{s..u}oken`,
+    `claudeflare get "/accounts/$A/cfd_tunnel/$T"`,
+    `claudeflare get /accounts/$A/warp_connector`,
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+  }
+  for (const cmd of [
+    `curl -s ${api}/accounts/${AID}/cfd_tunnel/${TID}/connections`,
+    `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}/configurations`,
+    `claudeflare get /accounts/${AID}/warp_connector`,
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
 });
