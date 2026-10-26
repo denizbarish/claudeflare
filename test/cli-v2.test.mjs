@@ -12,6 +12,7 @@ import { clampSeconds, redactText, runTail, splitJsonObjects } from '../scripts/
 import { CfError } from '../scripts/lib/errors.mjs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { applyPlan } from '../scripts/lib/apply.mjs';
+import { deployInputs } from '../scripts/lib/preflight.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
 const FAKE = fileURLToPath(new URL('./fixtures/wrangler/fake-wrangler.mjs', import.meta.url));
@@ -442,4 +443,15 @@ test('migrations apply by binding name counts a database created in the same dra
   const res = await run(['preflight', '--file', draft(ops)], { CLOUDFLARE_API_BASE: base });
   assert.equal(res.code, 0, res.stdout);
   assert.deepEqual(JSON.parse(res.stdout).pending_migrations[0].files.map((f) => f.name), ['0001_init.sql']);
+});
+
+test('deploy inputs from a config file resolve against its directory; args against the project', () => {
+  const wops = (args) => ({ kind: 'wrangler', args });
+  const config = { main: 'src/index.js', assets: { directory: 'public' }, d1_databases: [{ binding: 'DB', database_name: 'app', migrations_dir: 'db' }] };
+  assert.deepEqual(deployInputs('/work/app', 'sub/wrangler.toml', config, wops(['deploy', '--name', 'api', '--config', 'sub/wrangler.toml'])), [
+    'sub/public', 'sub/src/index.js', 'sub/wrangler.toml',
+  ]);
+  assert.deepEqual(deployInputs('/work/app', 'sub/wrangler.toml', config, wops(['d1', 'migrations', 'apply', 'DB', '--remote'])), ['sub/db', 'sub/wrangler.toml']);
+  assert.deepEqual(deployInputs('/work/app', null, {}, wops(['pages', 'deploy', '.', '--project-name', 'site'])), ['.']);
+  assert.throws(() => deployInputs('/work/app', null, {}, wops(['pages', 'deploy', '..', '--project-name', 'site'])), (err) => err.code === 'invalid_input');
 });

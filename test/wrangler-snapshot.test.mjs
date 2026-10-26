@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { captureSnapshot, buildRollbackOps } from '../scripts/lib/snapshot.mjs';
 import { captureWranglerEntry, inverseForWrangler } from '../scripts/lib/wrangler-snapshot.mjs';
 import { validateWranglerOp } from '../scripts/lib/wrangler-ops.mjs';
@@ -427,4 +430,26 @@ test('captureSnapshot dispatches wrangler ops and buildRollbackOps keeps reverse
     w(['kv', 'namespace', 'delete', '--namespace-id', KV_ID], { confirm_name: KV_ID, precheck: 'empty' }),
   ]);
   assert.doesNotThrow(() => validateOpTargets(ops, plan));
+});
+
+test('an op whose inverse cannot be built is left out and reported; the other ops still roll back', async () => {
+  const runner = fakeRunner({ 'deployments list --name api --json': DEPLOYMENTS });
+  const plan = planWith([w(['kv', 'namespace', 'create', 'CACHE']), w(['deploy', '--name', 'api'])]);
+  const snap = await captureSnapshot(noClient, plan, { runner });
+  const unresolved = [];
+  const ops = buildRollbackOps(snap, [{ events: [] }, { version_id: V_CANARY, events: [] }], { unresolved });
+  assert.deepEqual(ops.map((op) => op.args[0]), ['rollback']);
+  assert.equal(unresolved.length, 1);
+  assert.match(unresolved[0], /No namespace id/);
+});
+
+test('a D1 op that names the binding of a database created earlier reads nothing', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'claudeflare-wsnap-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ name: 'api', d1_databases: [{ binding: 'DB', database_name: 'prod-db' }] }));
+  const runner = fakeRunner({});
+  const plan = { ...planWith([w(['d1', 'create', 'prod-db']), w(['d1', 'migrations', 'apply', 'DB', '--remote'])]), project_dir: root };
+  const snap = await captureSnapshot(noClient, plan, { runner });
+  assert.equal(runner.calls.length, 0);
+  assert.deepEqual(snap.entries[1].before, { exists: false });
 });

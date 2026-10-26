@@ -65,7 +65,13 @@ function wranglerRiskLines(op) {
   const { kind, invertible, resource } = classifyWranglerOp(op);
   if (invertible) return [];
   const lines = [`Not reversible: wrangler ${op.args.join(' ')}`];
-  if (kind === 'resource_delete' && DATA_LOSS_TYPES.has(resource?.type)) {
+  if (kind !== 'resource_delete') return lines;
+  // Rollback deletes of created resources: the executor checks emptiness first.
+  if (op.precheck === 'empty') {
+    lines.push(['d1', 'queue'].includes(resource?.type)
+      ? `Not deleted automatically: ${resource.type} ${resource.name} cannot be verified as empty; delete it by hand if it holds nothing.`
+      : `Deleted only if ${resource?.type} ${resource?.name} is still empty; otherwise it is skipped.`);
+  } else if (DATA_LOSS_TYPES.has(resource?.type)) {
     lines.push(`Data loss: ${resource.type} ${resource.name} and all its contents are deleted permanently.`);
   }
   return lines;
@@ -275,10 +281,13 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
   }
   // Ops that were rolled back automatically or skipped are not applied.
   const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : r));
-  const ops = buildRollbackOps(readSnapshot(cwd, plan), results);
+  const unresolved = [];
+  const ops = buildRollbackOps(readSnapshot(cwd, plan), results, { unresolved });
   if (!ops.length) {
-    throw new CfError('nothing_to_rollback', `Plan ${id} has no applied ops that can be reversed`);
+    const why = unresolved.length ? ` (${unresolved.join('; ')})` : '';
+    throw new CfError('nothing_to_rollback', `Plan ${id} has no applied ops that can be reversed${why}`);
   }
+  const notes = unresolved.map((reason) => `Not rolled back: ${reason}`);
   const slug = slugify(`rollback-${plan.slug || 'plan'}`);
   const target = plan.scope === 'account'
     ? { scope: 'account', account_id: plan.account_id, account_name: plan.account_name, project_dir: plan.project_dir }
@@ -288,7 +297,7 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
     {
       ...target,
       summary: `Rollback of ${id}`,
-      risk: withIrreversibleRisk(`Restores the state captured before ${id} was applied.`, ops),
+      risk: withIrreversibleRisk([`Restores the state captured before ${id} was applied.`, ...notes].join(' '), ops),
       ops,
       slug,
     },

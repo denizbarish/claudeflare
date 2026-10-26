@@ -154,15 +154,24 @@ export function inverseFor(entry, applyResult, options = {}) {
 
 // results[i] is the apply result of op i, or null/undefined if it was not applied.
 // Inverses are computed in apply order (to attribute created rule ids), then
-// emitted in reverse.
-export function buildRollbackOps(snapshot, results) {
+// emitted in reverse. A wrangler op whose inverse cannot be built (no version
+// or namespace id in its result) is left out and its reason pushed to
+// options.unresolved, so the plan's other ops can still be rolled back.
+export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
   const createdRuleIds = new Map();
   const perEntry = [];
   for (const entry of snapshot.entries) {
     const result = results[entry.op_index];
     if (result === null || result === undefined) continue;
     const knownRuleIds = createdRuleIds.get(entry.path) ?? [];
-    const inverse = inverseFor(entry, result, { knownRuleIds });
+    let inverse;
+    try {
+      inverse = inverseFor(entry, result, { knownRuleIds });
+    } catch (err) {
+      if (entry.op_kind !== 'wrangler' || !(err instanceof CfError) || err.code !== 'rollback_ambiguous') throw err;
+      unresolved.push(err.message);
+      continue;
+    }
     if (entry.kind === 'rule_create' && inverse.length) {
       createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);
     }

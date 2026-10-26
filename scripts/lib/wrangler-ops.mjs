@@ -66,6 +66,7 @@ const ALLOWLIST = [
       '--project-name': 'string', '--branch': 'string', '--commit-hash': 'string', '--commit-message': 'string',
       '--commit-dirty': 'bool', '--skip-caching': 'bool', '--no-bundle': 'bool', '--upload-source-maps': 'bool',
     },
+    required: ['--project-name'],
   },
   {
     words: ['d1', 'migrations', 'apply'],
@@ -444,6 +445,10 @@ function assertHealth(op, reject) {
     parsed = null;
   }
   if (!parsed || parsed.protocol !== 'https:') reject('health_check.url must be an https URL');
+  const status = op.health_check.expect_status;
+  if (status !== undefined && !(Number.isInteger(status) && status >= 100 && status <= 599)) {
+    reject('health_check.expect_status must be an integer from 100 to 599');
+  }
 }
 
 export function validateWranglerOp(op, plan, index) {

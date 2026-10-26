@@ -68,13 +68,13 @@ Deploy a built directory (reversible: the snapshot keeps the current production 
 
 `--branch` decides the environment: the production branch deploys to production; any other branch creates a preview at `<hash>.<project>.pages.dev` with the alias `<branch>.<project>.pages.dev`. Inside a Git work tree wrangler takes the branch from Git when `--branch` is missing; set it explicitly so the plan states the target.
 
-Roll production back to an earlier deployment (the only account REST write op; reversible). Take `DEPLOYMENT_ID` from the production deployments read; only successful production deployments are valid targets, previews are not:
+Roll production back to an earlier deployment (the only account REST write op; not reversible by `claudeflare rollback`). Take `DEPLOYMENT_ID` from the production deployments read; only successful production deployments are valid targets, previews are not:
 
 ```json
 { "method": "POST", "path": "/accounts/ACCOUNT_ID/pages/projects/PROJECT/deployments/DEPLOYMENT_ID/rollback" }
 ```
 
-Replace `ACCOUNT_ID`, `PROJECT` and `DEPLOYMENT_ID` with real values; plan creation rejects placeholders. The change is instant. `claudeflare rollback <plan id>` returns to the deployment recorded in the snapshot.
+Replace `ACCOUNT_ID`, `PROJECT` and `DEPLOYMENT_ID` with real values; plan creation rejects placeholders. The change is instant. claudeflare records no inverse for it: to undo it, plan another rollback to the deployment that was live before (read it first).
 
 Health check and `on_failed_check` behave as in cf-workers: GET to the https URL, 3 tries 5 seconds apart, no redirects followed, `expect_status` default 200; on failure with `"on_failed_check": "rollback"` the snapshot deployment is restored (status `rolled_back_auto`). Point the check at a URL that answers 200 directly, not one that redirects.
 

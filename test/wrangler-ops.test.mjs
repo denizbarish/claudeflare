@@ -421,3 +421,25 @@ test('withIrreversibleRisk names non-invertible wrangler ops and data loss for K
     ].join('\n'),
   );
 });
+
+test('health_check.expect_status must be an integer status code when given', () => {
+  for (const expect_status of ['200', 99, 600, 200.5, null]) {
+    rejects(w(['deploy', '--name', 'api'], { health_check: { url: 'https://api.example.com/health', expect_status } }), /expect_status/);
+  }
+  accepts(w(['deploy', '--name', 'api'], { health_check: { url: 'https://api.example.com/health' } }));
+});
+
+test('pages deploy needs --project-name, so apply can snapshot the project', () => {
+  rejects(w(['pages', 'deploy', 'dist']), /--project-name/);
+  accepts(w(['pages', 'deploy', 'dist', '--project-name', 'site']));
+});
+
+test('rollback deletes of created resources say they run only when empty, not that data is lost', () => {
+  const risk = withIrreversibleRisk('Rollback.', [
+    w(['kv', 'namespace', 'delete', '--namespace-id', '0f2ac74b498b48028cb68387c421e279'], { confirm_name: '0f2ac74b498b48028cb68387c421e279', precheck: 'empty' }),
+    w(['d1', 'delete', 'app-db'], { confirm_name: 'app-db', precheck: 'empty' }),
+  ]);
+  assert.doesNotMatch(risk, /Data loss/);
+  assert.match(risk, /Deleted only if kv .* is still empty/);
+  assert.match(risk, /Not deleted automatically: d1 app-db/);
+});

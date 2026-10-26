@@ -7,7 +7,7 @@
 
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CfError } from './errors.mjs';
 import { validateOpTargets, validatePlanOps } from './resources.mjs';
 import { assertAccountAccess } from './apply.mjs';
@@ -25,10 +25,14 @@ function errorText(err) {
   throw err;
 }
 
-// Plan new recomputes these; a draft never supplies them.
+// Plan new recomputes the first three; rollback plans own precheck and
+// expected_versions. A draft never supplies any of them.
 function stripComputed(op) {
   if (op?.kind !== 'wrangler') return op;
-  const { source_hash: _hash, source_paths: _paths, pending_migrations: _pending, ...rest } = op;
+  const {
+    source_hash: _hash, source_paths: _paths, pending_migrations: _pending,
+    precheck: _precheck, expected_versions: _expected, ...rest
+  } = op;
   return rest;
 }
 
@@ -94,15 +98,23 @@ async function bindingProblems(client, accountId, config, ops) {
 
 function insideRel(projectDir, path) {
   const rel = relative(projectDir, resolve(projectDir, path));
-  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new CfError('invalid_input', `deploy input is outside the project directory: ${path}`);
   }
-  return rel.split(sep).join('/');
+  return rel === '' ? '.' : rel.split(sep).join('/');
 }
 
 function d1Entry(config, name) {
   return configBindings(config).d1.find((b) => b.name === name || b.binding === name);
 }
+
+// wrangler resolves paths in a config file against the file's directory;
+// args and flags resolve against the project directory.
+function fromConfig(configFile, path) {
+  return typeof path === 'string' && path ? join(configFile ? dirname(configFile) : '.', path) : undefined;
+}
+
+const migrationsDir = (configFile, config, name) => fromConfig(configFile, d1Entry(config, name)?.migrations_dir ?? 'migrations');
 
 // Files an op uploads beyond the tracked source: config, entry point, assets,
 // Pages output and D1 migrations. Hashed even when gitignored.
@@ -111,11 +123,15 @@ export function deployInputs(projectDir, configFile, config, op) {
   const flag = (name) => parsed.flags.get(name)?.[0];
   const candidates = configFile ? [configFile] : [];
   if (parsed.kind === 'worker_deploy') {
-    candidates.push(parsed.positionals[0] ?? config.main, flag('--assets') ?? config.assets?.directory, flag('--site') ?? config.site?.bucket);
+    candidates.push(
+      parsed.positionals[0] ?? fromConfig(configFile, config.main),
+      flag('--assets') ?? fromConfig(configFile, config.assets?.directory),
+      flag('--site') ?? fromConfig(configFile, config.site?.bucket),
+    );
   } else if (parsed.kind === 'pages_deploy') {
-    candidates.push(parsed.positionals[0] ?? config.pages_build_output_dir);
+    candidates.push(parsed.positionals[0] ?? fromConfig(configFile, config.pages_build_output_dir));
   } else if (parsed.kind === 'd1_migrations_apply') {
-    candidates.push(d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
+    candidates.push(migrationsDir(configFile, config, parsed.name));
   }
   // Inputs that do not exist yet are hashed as missing, so one that appears
   // before apply changes the hash.
@@ -157,9 +173,9 @@ function readSql(dir, name) {
 
 // A database created earlier in the same draft has every local migration
 // pending; otherwise `d1 migrations list --remote` names them.
-async function pendingMigrations(runner, target, config, op, created) {
+async function pendingMigrations(runner, target, { file, config }, op, created) {
   const parsed = parseWranglerOp(op);
-  const dir = join(target.project_dir, d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
+  const dir = join(target.project_dir, migrationsDir(file, config, parsed.name));
   let names;
   // The op may name the binding; creates name the database.
   const database = d1Entry(config, parsed.name)?.name ?? parsed.name;
@@ -254,7 +270,7 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
   const pending = new Map();
   for (const op of sourceOps.filter((o) => parseWranglerOp(o).kind === 'd1_migrations_apply')) {
     try {
-      const entry = await pendingMigrations(runner, target, configs.get(op).config, op, created);
+      const entry = await pendingMigrations(runner, target, configs.get(op), op, created);
       pending.set(op, entry);
       const names = entry.files.map((f) => f.name);
       add('migrations', true, names.length ? `pending on ${entry.database}: ${names.join(', ')}` : `no pending migrations on ${entry.database}`);

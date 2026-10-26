@@ -7,6 +7,7 @@
 import { failureMessage } from './wrangler.mjs';
 import { parseWranglerOp } from './wrangler-ops.mjs';
 import { CfError } from './errors.mjs';
+import { applyEnv, configBindings, readWranglerConfig } from './wrangler-config.mjs';
 
 // Flags that select which Worker or database a command targets; they carry
 // over from the op to its snapshot read and its inverse.
@@ -51,6 +52,23 @@ function targetOf(op, plan) {
 // Key shared by a create and later ops on the same resource.
 function resourceKey(target) {
   return target.name ? `${target.type} ${target.name}` : null;
+}
+
+// A D1 op may name the database by its binding (as preflight allows); the
+// database a create made earlier is keyed by its name. Preflight already
+// validated the config, so a read failure here only means no match.
+function d1KeyFromBinding(target, plan) {
+  const flag = (name) => {
+    const i = target.target_args.indexOf(name);
+    return i === -1 ? undefined : target.target_args[i + 1];
+  };
+  try {
+    const { file, config } = readWranglerConfig(plan.project_dir, flag('--config'));
+    const entry = configBindings(applyEnv(config, flag('--env'), file)).d1.find((b) => b.binding === target.name);
+    return entry?.name ? `d1 ${entry.name}` : null;
+  } catch {
+    return null;
+  }
 }
 
 function notInvertible(before, reason) {
@@ -145,6 +163,9 @@ export async function captureWranglerEntry(runner, client, op, plan, { created =
   const key = resourceKey(target);
   if (kind === 'resource_create') state = { before: null, invertible: true };
   else if (key && created.has(key)) state = notInvertible({ exists: false }, 'created earlier in this plan');
+  else if (D1_KINDS.has(kind) && created.has(d1KeyFromBinding(target, plan))) {
+    state = notInvertible({ exists: false }, 'created earlier in this plan');
+  }
   else if (WORKER_KINDS.has(kind)) state = await readWorker(runner, target, plan);
   else if (kind === 'pages_deploy') state = await readPages(client, target);
   else if (D1_KINDS.has(kind)) state = await readD1(runner, target, plan);

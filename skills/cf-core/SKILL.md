@@ -158,7 +158,7 @@ Secrets: never ask the user to paste a secret into chat, a draft, a plan or a co
 { "kind": "wrangler", "args": ["secret", "put", "STRIPE_KEY", "--name", "api"], "value_from_env": "STRIPE_KEY" }
 ```
 
-Ask the user to export `STRIPE_KEY` in the shell that runs `claudeflare apply`. Apply passes the value to wrangler on stdin and redacts it from all output. Names starting with `CLOUDFLARE_`, `WRANGLER_`, `CLAUDEFLARE_` or `ANTHROPIC_` are refused.
+Ask the user to export `STRIPE_KEY` in the shell that runs `claudeflare apply`. Apply passes the value to wrangler on stdin and redacts it from all output. The secret name must match `^[A-Z_][A-Z0-9_]*$` (it is also the environment variable name), so `api_key` is refused. Names starting with `CLOUDFLARE_`, `WRANGLER_`, `CLAUDEFLARE_` or `ANTHROPIC_` are refused.
 
 #### 5.2.3 Preflight (account plans)
 
@@ -199,7 +199,7 @@ After the hook message says the approval was recorded, run:
 claudeflare apply <plan-id>
 ```
 
-The guard then shows a native permission prompt listing the ops; the user confirms there. Apply only works in an interactive session; in a headless run it is denied by design, so tell the user to apply from an interactive session. If the guard denies apply (not approved, expired, plan changed), tell the user why and ask for a fresh `/claudeflare:approve <plan-id>`.
+Run it with a Bash timeout of 600000 ms: a wrangler op may take up to 5 minutes plus the health check, and a killed apply leaves the plan half run (see the recovery note below). The guard then shows a native permission prompt listing the ops; the user confirms there. Apply only works in an interactive session; in a headless run it is denied by design, so tell the user to apply from an interactive session. If the guard denies apply (not approved, expired, plan changed), tell the user why and ask for a fresh `/claudeflare:approve <plan-id>`.
 
 `claudeflare apply` takes a snapshot, runs the ops in order and prints JSON with `status` and per-op `results`:
 
@@ -262,6 +262,8 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 | `account_mismatch` | The token cannot read the plan's account; use a token for that account. |
 | `wrangler_missing` / `wrangler_version` | Ask the user to add wrangler 4 to the project (`npm i -D wrangler@4`). |
 | `wrangler_failed` | Report the wrangler error from the message. Read the current state before planning again; never retry an apply. |
+| `snapshot_failed` | A read before the first write failed (for example `pages deploy` without `--project-name`, or no D1 bookmark); nothing was written and the approval is kept. Fix the cause and apply again; if the op itself is wrong, create and approve a new plan. |
+| `empty_project` / `project_too_large` | The source hash found no files, or more than the file limit; check `project_dir` points at the project root. |
 | `resource_not_empty` | The R2 bucket still has objects; the user must empty it first. |
 | `invalid_config` | The wrangler config could not be read (or lacks the `--env` section); fix the config or the op. |
 | `rollback_not_empty` (risk note) | A created resource was not deleted because it is not verifiably empty; tell the user to delete it by hand if it should go. |
