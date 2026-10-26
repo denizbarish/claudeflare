@@ -2,7 +2,7 @@
 // kind that the snapshot module knows how to capture and invert.
 
 import { CfError } from './errors.mjs';
-import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, validateWranglerOp } from './wrangler-ops.mjs';
+import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, isReservedEnvName, RESERVED_ENV_PREFIXES, validateWranglerOp } from './wrangler-ops.mjs';
 import { classifyProductOp } from './products/index.mjs';
 import { getPath } from './products/fields.mjs';
 
@@ -264,6 +264,9 @@ function assertSecretFields(op, secretFields, reject) {
     }
     if (typeof env !== 'string' || !ENV_NAME.test(env)) {
       reject(`secret_fields_from_env maps ${path} to an invalid env var name (must match ${ENV_NAME})`);
+    }
+    if (isReservedEnvName(env)) {
+      reject(`secret_fields_from_env maps ${path} to ${env}; env names starting with ${RESERVED_ENV_PREFIXES.join(', ')} are claudeflare's own and cannot be sent`);
     }
   }
 }

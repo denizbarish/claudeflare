@@ -14,7 +14,7 @@ import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KIND
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { executeAccountOps } from './wrangler-exec.mjs';
-import { assertSecretFieldsEnv, executeRestOps } from './rest-exec.mjs';
+import { assertSecretFieldsEnv, executeRestOps, readSecretEnv } from './rest-exec.mjs';
 import { runHealthCheck } from './health-check.mjs';
 
 // Plans whose applied ops may still be reverted by a rollback plan. After an
@@ -203,12 +203,7 @@ function assertSourceUnchanged(plan) {
 function assertSecretEnv(plan) {
   for (const op of plan.ops ?? []) {
     if (op?.kind !== 'wrangler' || op.value_from_env === undefined) continue;
-    const value = process.env[op.value_from_env];
-    if (typeof value !== 'string' || value === '') {
-      throw new CfError('secret_env_missing', `Environment variable ${op.value_from_env} is not set`, {
-        hint: `Ask the user to export ${op.value_from_env} in the shell that runs claudeflare apply`,
-      });
-    }
+    readSecretEnv(op.value_from_env, process.env);
   }
 }
 
@@ -250,7 +245,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
     validatePlanOps(plan.ops, plan);
   }
   assertApproved(cwd, plan, now);
-  // A missing secret env var refuses before any request, keeping the approval.
+  // A missing or unsafe secret env var refuses before any request, keeping the approval.
   assertSecretFieldsEnv(plan, env);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../scripts/lib/paths.mjs';
@@ -75,4 +75,41 @@ test('recordSecretFile adds each path once and listSecretFiles returns them', (t
 test('recordSecretFile refuses a relative path', (t) => {
   const cwd = tmp(t);
   assert.throws(() => recordSecretFile(cwd, 'secrets/a.json'), /absolute/);
+});
+
+test('a symlinked secrets dir or .claudeflare dir is refused and nothing is written through it', (t) => {
+  const cwd = tmp(t);
+  const elsewhere = tmp(t);
+  mkdirSync(join(cwd, '.claudeflare'));
+  symlinkSync(elsewhere, paths(cwd).secrets);
+  assert.throws(() => writeSecretFile(cwd, 'a.json', { s: 'x' }), /symlink/);
+  assert.deepEqual(readdirSync(elsewhere), []);
+
+  const other = tmp(t);
+  const target = tmp(t);
+  symlinkSync(target, join(other, '.claudeflare'));
+  assert.throws(() => writeSecretFile(other, 'a.json', { s: 'x' }), /symlink/);
+  assert.throws(() => recordSecretFile(other, join(target, 'a.json')), /symlink/);
+  assert.deepEqual(readdirSync(target), []);
+});
+
+test('a symlink at the target file, the index or .gitignore is refused', (t) => {
+  const cwd = tmp(t);
+  const outside = join(tmp(t), 'victim.txt');
+  writeFileSync(outside, 'keep');
+  mkdirSync(paths(cwd).secrets, { recursive: true });
+  symlinkSync(outside, join(paths(cwd).secrets, 'x.json'));
+  assert.throws(() => writeSecretFile(cwd, 'x.json', { s: 'x' }), /symlink/);
+  assert.equal(readFileSync(outside, 'utf8'), 'keep');
+
+  symlinkSync(outside, paths(cwd).secretFilesIndex);
+  assert.throws(() => recordSecretFile(cwd, join(paths(cwd).secrets, 'y.json')), /symlink/);
+  assert.equal(readFileSync(outside, 'utf8'), 'keep');
+
+  const other = tmp(t);
+  mkdirSync(join(other, '.claudeflare'));
+  symlinkSync(outside, join(other, '.claudeflare', '.gitignore'));
+  assert.throws(() => writeSecretFile(other, 'a.json', {}), /symlink/);
+  assert.equal(readFileSync(outside, 'utf8'), 'keep');
+  assert.equal(existsSync(join(other, '.claudeflare', 'secrets', 'a.json')), false);
 });

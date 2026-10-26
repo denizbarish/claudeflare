@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -407,4 +407,98 @@ test('cli apply failure echoing the secret keeps stderr and the plan clean', asy
   assertNoSecret(res.stdout, 'stdout');
   assertNoSecret(res.stderr, 'stderr');
   assertTreeClean(cwd);
+});
+
+// Review fixes: identifiers stay intact, post-request failures are recorded,
+// claudeflare's own variables are never a secret source.
+
+test('tunnel create keeps account_tag and id intact while token and credentials_file are redacted', async () => {
+  const failing = { method: 'POST', path: `${BASE}/sx/idps`, body: { name: 'x', config: {} } };
+  const plan = { id: 'acme-1-zt', scope: 'account', account_id: A, ops: [tunnelCreate, failing] };
+  const created = { id: NEW, name: 'home', account_tag: A, token: TOKEN_SECRET, credentials_file: { AccountTag: A, TunnelID: NEW, TunnelSecret: TUNNEL_SECRET } };
+  const client = fakeClient({
+    [`POST ${BASE}/sx/tunnels`]: created,
+    [`GET ${BASE}/sx/tunnels/${NEW}`]: { id: NEW, name: 'home', account_tag: A },
+    [`POST ${BASE}/sx/idps`]: () => { throw new CfError('api', `tunnel ${NEW} in ${A} rejected ${TUNNEL_SECRET}`, { status: 400 }); },
+  });
+  const out = await executeRestOps({ client, plan, cwd: tmpdir(), env: {} });
+  assert.deepEqual(out.results[0], { id: NEW, name: 'home', account_tag: A, token: '[redacted]', credentials_file: '[redacted]' });
+  assert.deepEqual(out.post[0], { id: NEW, name: 'home', account_tag: A });
+  assert.equal(out.error.message, `tunnel ${NEW} in ${A} rejected [REDACTED]`);
+  assertNoSecret(out, 'outcome');
+});
+
+const flaky = {
+  product: 'flaky',
+  kinds: [{
+    kind: 'flaky_put', product: 'flaky', scope: 'account', methods: ['PUT'], pattern: /^\/flaky\/([0-9a-f-]{36})$/,
+    resource: (m) => ({ type: 'flaky', id: m[1] }), readOnlyFields: ['id'], inverse: 'none', destructive: false,
+    secretFields: ['config.client_secret'], redact: ['token'],
+    read: () => { throw new Error(`read() broke with ${SECRET}`); },
+  }],
+  probePath: (base) => `${base}/flaky`,
+  gather: async () => ({}),
+  lockoutRisks: () => [],
+  verifyChecks: () => [],
+};
+
+test('a kind whose read() throws after op 2 ran ends partially_applied with op 2 recorded and the error redacted', async (t) => {
+  t.after(registerProduct(flaky));
+  const put = { method: 'PUT', path: `${BASE}/flaky/${ID}`, body: { config: {} }, secret_fields_from_env: { 'config.client_secret': 'OKTA_SECRET' } };
+  const plan = { id: 'acme-1-zt', scope: 'account', account_id: A, ops: [tunnelCreate, put, tokenCreate] };
+  const client = fakeClient({
+    [`POST ${BASE}/sx/tunnels`]: { id: NEW, token: TOKEN_SECRET },
+    [`GET ${BASE}/sx/tunnels/${NEW}`]: { id: NEW },
+    [`PUT ${BASE}/flaky/${ID}`]: { id: ID, token: TOKEN_SECRET, config: { client_secret: SECRET } },
+  });
+  const out = await executeRestOps({ client, plan, cwd: tmpdir(), env: { OKTA_SECRET: SECRET } });
+  assert.equal(out.status, 'partially_applied');
+  assert.equal(out.error.op_index, 1);
+  assert.equal(out.error.message, 'read() broke with [REDACTED]');
+  assert.equal(out.results[0].id, NEW);
+  assert.deepEqual(out.results[1], { id: ID, token: '[redacted]', config: { client_secret: '[redacted]' } });
+  assert.equal(out.results[2], null);
+  assert.equal(client.calls.some((c) => c.path === `${BASE}/sx/tokens`), false);
+  assertNoSecret(out, 'outcome');
+
+  // On op 1 the op still ran, so the plan is partially applied, not failed.
+  const first = await executeRestOps({ client, plan: { ...plan, ops: [put] }, cwd: tmpdir(), env: { OKTA_SECRET: SECRET } });
+  assert.equal(first.status, 'partially_applied');
+  assert.equal(first.results[0].id, ID);
+});
+
+test('claudeflare variables and the API token value are never a secret source (invalid_op, value not echoed)', () => {
+  const plan = (name) => ({ ops: [idpCreate({ secret_fields_from_env: { 'config.client_secret': name } })] });
+  for (const name of ['CLOUDFLARE_API_TOKEN', 'CLAUDEFLARE_KEY_DIR', 'CF_API_KEY']) {
+    assert.throws(() => assertSecretFieldsEnv(plan(name), { [name]: 'v' }), (e) => e.code === 'invalid_op' && e.message.includes(name));
+  }
+  const token = 'cf-api-token-value-123';
+  assert.throws(
+    () => assertSecretFieldsEnv(plan('OKTA_SECRET'), { OKTA_SECRET: token, CLOUDFLARE_API_TOKEN: token }),
+    (e) => e.code === 'invalid_op' && /OKTA_SECRET/.test(e.message) && !e.message.includes(token) && !e.hint.includes(token),
+  );
+  const saved = process.env.CLOUDFLARE_API_TOKEN;
+  process.env.CLOUDFLARE_API_TOKEN = token;
+  try {
+    assert.throws(() => assertSecretFieldsEnv(plan('OKTA_SECRET'), { OKTA_SECRET: token }), (e) => e.code === 'invalid_op');
+  } finally {
+    if (saved === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+    else process.env.CLOUDFLARE_API_TOKEN = saved;
+  }
+});
+
+test('a failed sink write keeps the result and tells the user to rotate the credential', async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'claudeflare-restexec-'));
+  const elsewhere = mkdtempSync(join(tmpdir(), 'claudeflare-elsewhere-'));
+  t.after(() => { rmSync(cwd, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); });
+  // A symlinked .claudeflare makes the secret write refuse.
+  symlinkSync(elsewhere, join(cwd, '.claudeflare'));
+  const plan = { id: 'acme-1-zt', scope: 'account', account_id: A, ops: [tokenCreate] };
+  const client = fakeClient({ [`POST ${BASE}/sx/tokens`]: { id: NEW2, client_id: 'cid', client_secret: CLIENT_SECRET } });
+  const out = await executeRestOps({ client, plan, cwd, env: {} });
+  assert.equal(out.status, 'partially_applied');
+  assert.equal(out.results[0].id, NEW2);
+  assert.match(out.error.hint, /rotate or recreate/);
+  assertNoSecret(out, 'outcome');
+  assert.deepEqual(readdirSync(elsewhere), []);
 });

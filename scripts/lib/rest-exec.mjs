@@ -10,6 +10,7 @@ import { redact } from './api.mjs';
 import { classifyProductOp } from './products/index.mjs';
 import { getPath, omitPaths, redactPaths, setPath } from './products/fields.mjs';
 import { recordSecretFile, writeSecretFile } from './secret-files.mjs';
+import { isReservedEnvName, RESERVED_ENV_PREFIXES } from './wrangler-ops.mjs';
 
 // Ids from apply results become a path segment of the post read.
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
@@ -23,18 +24,35 @@ function envMap(op) {
   return isPlainObject(map) ? Object.entries(map) : [];
 }
 
-// Runs before the snapshot, so a missing variable sends nothing and keeps
-// the approval. The message names the variable, never a value.
+// Reads one secret source variable. Refuses claudeflare's own variables and a
+// value equal to the API token in use (invalid_op), and a missing or empty
+// variable (secret_env_missing). Messages name the variable, never a value.
+export function readSecretEnv(name, env = process.env) {
+  if (isReservedEnvName(name)) {
+    throw new CfError('invalid_op', `Environment variable ${name} is reserved for claudeflare and cannot be a secret source`, {
+      hint: `Store the secret in a variable whose name does not start with ${RESERVED_ENV_PREFIXES.join(', ')}`,
+    });
+  }
+  const value = env?.[name];
+  if (typeof value !== 'string' || value === '') {
+    throw new CfError('secret_env_missing', `Environment variable ${name} is not set`, {
+      hint: `Ask the user to export ${name} in the shell that runs claudeflare apply`,
+    });
+  }
+  const tokens = [process.env.CLOUDFLARE_API_TOKEN, env?.CLOUDFLARE_API_TOKEN].filter((t) => typeof t === 'string' && t !== '');
+  if (tokens.includes(value)) {
+    throw new CfError('invalid_op', `Environment variable ${name} holds the Cloudflare API token claudeflare uses; it cannot be sent as a secret`, {
+      hint: `Export the intended secret in ${name}`,
+    });
+  }
+  return value;
+}
+
+// Runs before the snapshot, so a refused variable sends nothing and keeps the
+// approval.
 export function assertSecretFieldsEnv(plan, env = process.env) {
   for (const op of plan?.ops ?? []) {
-    for (const [, name] of envMap(op)) {
-      const value = env?.[name];
-      if (typeof value !== 'string' || value === '') {
-        throw new CfError('secret_env_missing', `Environment variable ${name} is not set`, {
-          hint: `Ask the user to export ${name} in the shell that runs claudeflare apply`,
-        });
-      }
-    }
+    for (const [, name] of envMap(op)) readSecretEnv(name, env);
   }
 }
 
@@ -63,12 +81,29 @@ function secretPaths(entry) {
   return [...(entry.redact ?? []), ...(entry.secretSink ?? []), ...(entry.secretFields ?? [])];
 }
 
-// The resource id is not a secret even where a secret block repeats it (a
-// tunnel's credentials_file holds the TunnelID), and rollback needs it intact.
-function collect(secrets, response, entry) {
-  const id = isPlainObject(response) && response.id !== undefined ? String(response.id) : null;
+// Every value held at an `id` key anywhere in value.
+function idValues(value, out = new Set()) {
+  if (Array.isArray(value)) {
+    for (const item of value) idValues(item, out);
+  } else if (isPlainObject(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'id' && (typeof item === 'string' || typeof item === 'number')) out.add(String(item));
+      idValues(item, out);
+    }
+  }
+  return out;
+}
+
+// Identifiers are not secrets even where a secret block repeats them (a
+// tunnel's credentials_file holds the AccountTag and TunnelID). Scrubbing them
+// would break rollback ids and make every post state look drifted, so values
+// equal to the plan's account or zone id or to any `id` in the response are
+// never collected.
+function collect(secrets, response, entry, plan) {
+  const ids = idValues(response);
+  for (const id of [plan?.account_id, plan?.zone_id]) if (typeof id === 'string' && id !== '') ids.add(id);
   for (const path of secretPaths(entry)) {
-    for (const value of strings(getPath(response, path))) if (value !== id) secrets.add(value);
+    for (const value of strings(getPath(response, path))) if (!ids.has(value)) secrets.add(value);
   }
 }
 
@@ -108,9 +143,21 @@ function writeSink(cwd, plan, index, raw, entry) {
   return file;
 }
 
+// The stored result of an op that ran: secret paths redacted and known values
+// scrubbed; if even that fails, only a usable id is kept so rollback still
+// covers the op.
+function safeResult(raw, entry, secrets) {
+  try {
+    return scrubKeepingId(redactPaths(raw, secretPaths(entry)), [...secrets]);
+  } catch {
+    const id = isPlainObject(raw) ? raw.id : undefined;
+    return (typeof id === 'string' || typeof id === 'number') && SAFE_ID.test(String(id)) ? { id } : true;
+  }
+}
+
 // Returns { status, results, error?, post }. Op failures are recorded, not
-// thrown. Zone and other non-product ops behave as the v1 executor did, with
-// post[i] = null.
+// thrown; anything that still escapes is redacted first. Zone and other
+// non-product ops behave as the v1 executor did, with post[i] = null.
 export async function executeRestOps({ client, plan, cwd, env = process.env }) {
   const ops = plan.ops ?? [];
   const results = ops.map(() => null);
@@ -131,56 +178,75 @@ export async function executeRestOps({ client, plan, cwd, env = process.env }) {
     }
     return outcome;
   };
+  const stop = (i, sent, err, extra = {}) => finish({
+    status: i === 0 && !sent ? 'failed' : 'partially_applied',
+    results,
+    error: { op_index: i, code: err?.code || 'internal', message: clean(err?.message ?? err), ...extra },
+    post,
+  });
 
-  for (let i = 0; i < ops.length; i++) {
-    const op = ops[i];
-    const { method, path } = op;
-    // Copies only: plan.ops stays exactly as hashed and stored.
-    let body = op.body;
-    for (const [field, name] of envMap(op)) body = setPath(body, field, env[name]);
-    const classified = classifyProductOp(op, plan);
-
-    let raw;
-    try {
-      raw = (await client.request(method, path, { body })) ?? true;
-    } catch (err) {
-      const error = { op_index: i, code: err?.code || 'internal', message: clean(err?.message ?? err) };
-      return finish({ status: i === 0 ? 'failed' : 'partially_applied', results, error, post });
-    }
-    if (!classified) {
-      results[i] = raw;
-      continue;
-    }
-
-    const { entry } = classified;
-    product[i] = true;
-    collect(secrets, raw, entry);
-    let result = scrubKeepingId(redactPaths(raw, secretPaths(entry)), [...secrets]);
-    results[i] = result;
-    if (entry.secretSink?.length) {
+  try {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      let classified = null;
+      let raw;
+      let sent = false;
       try {
-        const file = writeSink(cwd, plan, i, raw, entry);
-        if (file && isPlainObject(result)) results[i] = result = { ...result, secret_file: file };
+        classified = classifyProductOp(op, plan);
+        // Copies only: plan.ops stays exactly as hashed and stored.
+        let body = op.body;
+        for (const [field, name] of envMap(op)) body = setPath(body, field, env[name]);
+        raw = (await client.request(op.method, op.path, { body })) ?? true;
+        sent = true;
+        if (!classified) {
+          results[i] = raw;
+          continue;
+        }
+        const { entry } = classified;
+        product[i] = true;
+        collect(secrets, raw, entry, plan);
+        let result = safeResult(raw, entry, secrets);
+        results[i] = result;
+        if (entry.secretSink?.length) {
+          let file;
+          try {
+            file = writeSink(cwd, plan, i, raw, entry);
+          } catch (err) {
+            // The op ran; its result stays so rollback still covers it.
+            return stop(i, true, { message: `Op ${i} applied but its secret file could not be written: ${err?.message ?? err}` }, {
+              hint: 'The one-time secret is lost: rotate or recreate the credential, then store the new value yourself',
+            });
+          }
+          if (file && isPlainObject(result)) results[i] = result = { ...result, secret_file: file };
+        }
+        const readPath = postReadPath(op, classified, raw);
+        if (readPath === null) continue;
+        try {
+          if (readPath === undefined) throw new Error('no usable id in the apply result');
+          const read = await client.request('GET', readPath);
+          collect(secrets, read, entry, plan);
+          const stored = redactPaths(omitPaths(read, entry.secretFields ?? []), [...(entry.redact ?? []), ...(entry.secretSink ?? [])]);
+          post[i] = scrubKeepingId(stored, [...secrets]);
+        } catch (err) {
+          // The write already happened; a failed read only loses the post state.
+          post[i] = null;
+          if (isPlainObject(result)) results[i] = { ...result, note: `post_error: ${err?.code || 'internal'}: ${clean(err?.message ?? err)}` };
+        }
       } catch (err) {
-        // The op ran; its result stays so rollback still covers it.
-        const error = { op_index: i, code: 'internal', message: clean(`Op ${i} applied but its secret file could not be written: ${err?.message ?? err}`) };
-        return finish({ status: 'partially_applied', results, error, post });
+        // A failure after the request keeps the op's result, so rollback covers it.
+        if (sent && results[i] === null) {
+          results[i] = classified ? safeResult(raw, classified.entry, secrets) : raw;
+          product[i] = Boolean(classified);
+        }
+        return stop(i, sent, err);
       }
     }
-
-    const readPath = postReadPath(op, classified, raw);
-    if (readPath === null) continue;
-    try {
-      if (readPath === undefined) throw new Error('no usable id in the apply result');
-      const read = await client.request('GET', readPath);
-      collect(secrets, read, entry);
-      const stored = redactPaths(omitPaths(read, entry.secretFields ?? []), [...(entry.redact ?? []), ...(entry.secretSink ?? [])]);
-      post[i] = scrubKeepingId(stored, [...secrets]);
-    } catch (err) {
-      // The write already happened; a failed read only loses the post state.
-      post[i] = null;
-      if (isPlainObject(result)) results[i] = { ...result, note: `post_error: ${err?.code || 'internal'}: ${clean(err?.message ?? err)}` };
+    return finish({ status: 'applied', results, post });
+  } catch (err) {
+    if (err && typeof err === 'object') {
+      err.message = clean(err.message);
+      if (typeof err.hint === 'string') err.hint = clean(err.hint);
     }
+    throw err;
   }
-  return finish({ status: 'applied', results, post });
 }

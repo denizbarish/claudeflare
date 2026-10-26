@@ -328,7 +328,7 @@ test('secret put needs value_from_env, a worker and no value-looking extra arg',
 });
 
 test('secret names (and so value_from_env) must not name credential or claudeflare variables', () => {
-  for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH', 'CLAUDEFLARE_WRANGLER', 'ANTHROPIC_API_KEY']) {
+  for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH', 'CLAUDEFLARE_WRANGLER', 'ANTHROPIC_API_KEY', 'CF_API_KEY']) {
     rejects(w(['secret', 'put', name, '--name', 'api'], { value_from_env: name }), /must not start/);
     rejects(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: name }), /equal to the secret name/);
   }

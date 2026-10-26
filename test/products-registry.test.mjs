@@ -178,6 +178,10 @@ test('secret_fields_from_env must map declared secretFields to env var names mat
   for (const bad of [{ 'config.client_id': 'OKTA' }, { 'config.client_secret': 'okta' }, { 'config.client_secret': '1OKTA' }, { 'config.client_secret': '' }, { 'config.client_secret': 5 }, [], 'OKTA', null]) {
     assert.throws(() => validateOpTargets([op(bad)], acctPlan), code('invalid_op'), JSON.stringify(bad));
   }
+  // claudeflare's own variables can never be a secret source.
+  for (const reserved of ['CLOUDFLARE_API_TOKEN', 'CLAUDEFLARE_KEY_DIR', 'CF_API_KEY', 'WRANGLER_X', 'ANTHROPIC_API_KEY']) {
+    assert.throws(() => validateOpTargets([op({ 'config.client_secret': reserved })], acctPlan), (e) => e.code === 'invalid_op' && e.message.includes(reserved), reserved);
+  }
   // A kind without secretFields accepts no map at all.
   assert.throws(() => validateOpTargets([{ method: 'PUT', path: THING, body: {}, secret_fields_from_env: { 'config.client_secret': 'X' } }], acctPlan), code('invalid_op'));
 });
