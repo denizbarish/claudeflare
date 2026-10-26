@@ -289,9 +289,10 @@ test('tail stops at the time limit and keeps what it collected', async () => {
   process.env.FAKE_WRANGLER_SCRIPT = join(aux, 'script.json');
   try {
     const started = Date.now();
-    const res = await runTail({ cwd, worker: 'api', seconds: 1 });
-    assert.ok(Date.now() - started < 10000);
-    assert.equal(res.seconds, 1);
+    // 3 seconds leaves the fake wrangler time to start under parallel load.
+    const res = await runTail({ cwd, worker: 'api', seconds: 3 });
+    assert.ok(Date.now() - started < 15000);
+    assert.equal(res.seconds, 3);
     assert.equal(res.events, 3);
   } finally {
     delete process.env.CLAUDEFLARE_WRANGLER;

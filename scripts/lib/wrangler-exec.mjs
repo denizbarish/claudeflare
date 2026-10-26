@@ -270,6 +270,7 @@ export async function executeAccountOps({ client, plan, runner, snapshot, health
     }
     if (op?.kind !== 'wrangler' || !op.health_check || results[i]?.skipped) continue;
     const health = await healthCheck(op.health_check);
+    results[i] = { ...results[i], health_check: { ok: health.ok, status: health.status ?? null, attempts: health.attempts } };
     if (health.ok) continue;
     const error = checkFailure(i, op.health_check, health);
     if (op.on_failed_check !== 'rollback') return { status: 'applied_check_failed', results, error, notes };
