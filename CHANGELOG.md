@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A 403 on a product write at apply now stops with `missing_permission` and names the edit permission the token lacks. Preflight probes reads only, so a read-only token passed preflight and failed with a bare "Authentication error". Found in the v0.3.0 live test.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

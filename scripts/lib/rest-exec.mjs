@@ -148,6 +148,16 @@ function writeSink(cwd, plan, index, raw, entry) {
   return file;
 }
 
+// Preflight probes only read access, so a 403 on a product write names the
+// edit permission the token lacks.
+function writePermissionError(err, classified) {
+  if (err?.code !== 'permission' || !classified) return err;
+  const { module, base } = classified;
+  const permission = typeof module.permission === 'function' ? module.permission(base) : module.permission;
+  if (!permission?.edit) return err;
+  return { code: 'missing_permission', message: `${err.message}: the token needs "${permission.edit}"` };
+}
+
 // The stored result of an op that ran: secret paths redacted and known values
 // scrubbed; if even that fails, only a usable id is kept so rollback still
 // covers the op.
@@ -280,7 +290,7 @@ export async function executeRestOps({ client, plan, cwd, env = process.env, bef
           results[i] = classified ? safeResult(raw, classified.entry, secrets) : raw;
           product[i] = Boolean(classified);
         }
-        return stop(i, sent, err);
+        return stop(i, sent, writePermissionError(err, classified));
       }
     }
     return finish({ status: 'applied', results, post });
