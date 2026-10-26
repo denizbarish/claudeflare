@@ -92,7 +92,7 @@ Changes use the same plan, approval, apply and rollback, with these additions:
 - **Account plans without `project_dir`.** Access, Tunnel, Gateway, Devices, pools and monitors are account plans with REST ops only. A plan never mixes scopes and never mixes product ops with wrangler ops. Zone-scoped Access paths are refused.
 - **Preflight.** `plan new` checks entitlement (`not_entitled`: no Zero Trust organization, no Load Balancing add-on, a Spectrum protocol the zone plan lacks), permissions (`missing_permission`), dependencies (`resource_in_use`: a policy, list, group, pool or virtual network still in use) and `confirm_name` on every delete.
 - **Lockout lines.** A change that can lock users or admins out gets a line starting with `Lockout risk:` in the plan risk: an Access app left without an allow policy, an app domain covering the login host, removing the only identity provider, a Gateway block rule that matches everything or Cloudflare and identity provider domains, a WARP split tunnel mode switch, a tunnel config that drops a served hostname, a pool with no enabled origins. The plan is still created; you decide at approval. Apply runs the analysis again and stops with `risk_changed`, before any write, if a new line appears. Lines from the asynchronous Load Balancing preview do not stop apply; they are printed after it (`advisory_lockout`).
-- **Verification.** After apply each op is checked (read-back plus a live check: Access login redirect, tunnel serving, pool health, Spectrum TCP connect), for up to 60 seconds. A failed check sets `applied_verify_failed` and creates a rollback draft that needs your approval; nothing is undone on its own. Gateway filtering and WARP behavior are only verified from a device.
+- **Verification.** After apply each op is checked (read-back plus a live check: Access login redirect, tunnel serving, pool health, Spectrum TCP connect), for up to 60 seconds. A failed check sets `applied_verify_failed` and creates a rollback draft that needs your approval; nothing is undone on its own. A `partially_applied` plan keeps its status and gets the draft too. Gateway filtering and WARP behavior are only verified from a device.
 - **Rollback.** Re-creating a deleted resource gives a new id (an Access app also a new AUD). Before each inverse, apply compares the resource with its state right after the original apply and skips it (`rollback_drift`) if someone changed it since.
 - **Secrets.** Tunnel tokens, credentials files, service token secrets and identity provider secrets are redacted by field path from plans, snapshots, results and errors. A service token's one-time secret goes to `.claudeflare/secrets/<plan id>-<op index>.json` (mode 0600). Identity provider secrets come from your environment through `secret_fields_from_env`.
 
@@ -262,7 +262,7 @@ Applied and verified: SSL mode is flexible again.
 
 ## Evals
 
-Behavior evals live in `evals/` and run with `claude plugin eval`. The eleven cases cover the Flexible SSL audit, the 522 diagnosis, no MCP writes, no apply without approval, a 1102 Worker diagnosis, a deploy request that must follow the protocol, a pasted secret that must never be repeated, an Access plan that must show its `Lockout risk:` line, a tunnel setup that must never expose the token, a Gateway over-blocking diagnosis, and a tunnel delete that must name the hostnames that will return 1016. Cloudflare is mocked; no account is used.
+Behavior evals live in `evals/` and run with `claude plugin eval`. The eleven cases cover the Flexible SSL audit, the 522 diagnosis, no MCP writes, no apply without approval, a 1102 Worker diagnosis, a deploy request that must follow the protocol, a pasted secret that must never be repeated, an Access request that must name its `Lockout risk:` line (in a draft, or while asking how to handle the login host), a tunnel setup that must never expose the token, a Gateway over-blocking diagnosis, and a tunnel delete that must name the hostnames that will return 1016 (in a draft, or while asking the user to confirm first). Cloudflare is mocked; no account is used.
 
 Run them locally from the repo root (needs Claude Code and an Anthropic API key or login):
 
@@ -275,7 +275,7 @@ claude plugin eval --trust-plugin --scaffold \
 
 A run costs about $3 to $12, depending mostly on the judge model. `--max-cost-usd` is checked before each run starts, so runs already in flight can push the total past it.
 
-Known harness limitation: the plugin's `bin/` is not on PATH inside eval runs, so `claudeflare` calls there fail with exit code 127. The guard graders still count the attempts.
+Known harness limitation: the plugin's `bin/` is not on PATH inside eval runs, so `claudeflare` calls there fail with exit code 127. The guard graders still count the attempts. For the same reason `plan new` never runs in an eval, so the eval checks for `Lockout risk:` measure only text the model wrote; the product lockout analysis itself is covered by the unit tests.
 
 In CI (`.github/workflows/ci.yml`), unit tests run on every push. The evals job runs only on `pull_request` and `workflow_dispatch`, and only when the `ANTHROPIC_API_KEY` secret is set. Because pull requests can trigger paid runs, put the evals job behind a protected GitHub environment with required reviewers.
 

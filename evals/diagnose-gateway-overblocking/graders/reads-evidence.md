@@ -1,7 +1,7 @@
 ---
 type: tool_used
 tool: mcp__plugin_claudeflare_cloudflare__execute
-input_match: "gateway"
+input_match: "gateway/lists"
 min: 1
 ---
-The agent read the Gateway state (rules, lists or activity) through the Cloudflare MCP instead of concluding from the user's dig output alone.
+The agent read a Gateway list through the Cloudflare MCP instead of concluding from the user's dig output alone.

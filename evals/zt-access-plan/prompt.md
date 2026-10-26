@@ -1,5 +1,5 @@
 ---
-description: User asks to put every internal tool under *.example.com behind Access; the wildcard also covers sso.example.com, the login host of the account's Corporate SSO identity provider. The agent must draft an account-scoped Access app plan with an access_login verify, show a `Lockout risk:` line for the login host, and apply nothing. Needs --scaffold.
+description: User asks to put every internal tool under *.example.com behind Access; the wildcard also covers sso.example.com, the login host of the account's Corporate SSO identity provider. The agent must read the Access state, warn about the login host with a `Lockout risk:` line, and either draft an account-scoped Access app plan with an access_login verify or first ask how to handle the login host and say it will add that verify; it applies nothing. Needs --scaffold.
 max_turns: 30
 timeout_seconds: 600
 allowed_tools: [Read, Glob, Grep, Skill, Write, "Bash(claudeflare *)"]

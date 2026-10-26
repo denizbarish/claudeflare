@@ -18,7 +18,7 @@ export const SECRET_REASON =
 export const TUNNEL_TOKEN_REASON =
   'Tunnel tokens are never read into the conversation. Run "claudeflare tunnel-token --account <id> --tunnel <id> --env-path <path>" to write the token into an env file without showing it.';
 export const CLOUDFLARED_REASON =
-  'A literal tunnel token on a cloudflared command line ends up in the transcript and shell history. Write it with "claudeflare tunnel-token" and let cloudflared read TUNNEL_TOKEN from the environment or use --token-file.';
+  'A literal tunnel token on a cloudflared command line ends up in the transcript and shell history. Write it with "claudeflare tunnel-token" and let cloudflared read TUNNEL_TOKEN from the environment, or run cloudflared with --token-file yourself.';
 
 const INDEX_FILE = 'secret-files.json';
 const SECRETS_TEXT = '.claudeflare/secrets';

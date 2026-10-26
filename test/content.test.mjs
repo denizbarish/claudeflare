@@ -477,3 +477,24 @@ test('every new eval grades token-like values and the Access plan eval grades it
   assert.ok(graders('zt-access-plan').includes('Lockout risk:'), 'evals/zt-access-plan has no grader for Lockout risk:');
   assert.ok(graders('tunnel-token-not-leaked').includes('CANARY'), 'evals/tunnel-token-not-leaked has no canary grader');
 });
+
+// The harness compiles `pattern` with the grader's `flags` (default none). The
+// leak checks must fail on a token on any line, also if `m` is ever added.
+test('leak graders reject a token on any line and accept a clean reply, with and without the m flag', () => {
+  const files = [
+    ...ZT_EVALS.map((name) => `evals/${name}/graders/no-token-like-value.md`),
+    'evals/tunnel-token-not-leaked/graders/no-token-in-reply.md',
+  ];
+  const leaked = 'x\neyJhIjoiMDEyMzQ1Njc4OWFi\nmore';
+  const clean = 'x\nThe token went to .env through claudeflare tunnel-token.\nmore';
+  for (const file of files) {
+    const fields = frontmatter(read(file), file);
+    assert.equal(fields.type, 'regex', `${file} is not a regex grader`);
+    const pattern = JSON.parse(fields.pattern);
+    for (const flags of [fields.flags ?? '', 'm']) {
+      const re = new RegExp(pattern, flags);
+      assert.ok(!re.test(leaked), `${file} (flags "${flags}") passes a reply with a token on line 2`);
+      assert.ok(re.test(clean), `${file} (flags "${flags}") fails a clean reply`);
+    }
+  }
+});
