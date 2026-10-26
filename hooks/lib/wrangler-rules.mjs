@@ -53,11 +53,11 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const isWranglerToken = (token) => /^(?:.*\/)?wrangler(?:@[^\s/]+)?$/.test(token);
 const isWranglerScript = (token) => /(?:^|\/)wrangler(?:\.m?js)?$|(?:^|\/)wrangler-dist\/cli\.js$/.test(token);
 
-// Read-only commands whose arguments are never run: a wrangler word in them
-// is a mention (grep wrangler package.json), not an invocation.
+// Read-only commands that never run their arguments: a wrangler word in them
+// is a mention (grep wrangler package.json), not an invocation. Commands that
+// can run one (git -c alias, rg --pre, less via LESSOPEN) are not listed.
 const SAFE_HEADS = new Set([
-  'grep', 'egrep', 'fgrep', 'rg', 'cat', 'less', 'more', 'head', 'tail', 'ls', 'echo', 'printf',
-  'which', 'type', 'git', 'wc', 'file', 'stat', 'diff', 'jq',
+  'grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'ls', 'echo', 'printf', 'which', 'type', 'wc', 'file', 'stat', 'diff', 'jq',
 ]);
 const MAX_NESTING = 3;
 
@@ -197,7 +197,8 @@ export function decideWrangler(command, depth = 0) {
   if (typeof command !== 'string' || !command.replace(/\\\n|['"\\]/g, '').includes('wrangler')) return null;
   const { commands, nested } = parseShell(command);
   if (commands.some(deniedCommand)) return WRANGLER_REASON;
-  if (depth >= MAX_NESTING) return null;
+  // Deeper nesting than this is not unwrapped; fail closed.
+  if (depth >= MAX_NESTING) return nested.length ? WRANGLER_REASON : null;
   for (const { text, head } of nested) {
     // Under a read-only head only command substitutions run.
     const runs = head && SAFE_HEADS.has(head.split('/').at(-1)) ? text.split(/\$\(|`/).slice(1) : [text];
