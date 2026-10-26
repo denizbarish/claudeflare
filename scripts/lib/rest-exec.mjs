@@ -40,9 +40,12 @@ export function readSecretEnv(name, env = process.env) {
       hint: `Ask the user to export ${name} in the shell that runs claudeflare apply`,
     });
   }
-  const tokens = [process.env.CLOUDFLARE_API_TOKEN, env?.CLOUDFLARE_API_TOKEN].filter((t) => typeof t === 'string' && t !== '');
+  // Every reserved variable's value counts (the API token, a Global API Key,
+  // wrangler's and Anthropic's credentials), not only CLOUDFLARE_API_TOKEN.
+  const reserved = (source) => Object.entries(source ?? {}).filter(([key]) => isReservedEnvName(key)).map(([, v]) => v);
+  const tokens = [...reserved(process.env), ...reserved(env)].filter((t) => typeof t === 'string' && t !== '');
   if (tokens.includes(value)) {
-    throw new CfError('invalid_op', `Environment variable ${name} holds the Cloudflare API token claudeflare uses; it cannot be sent as a secret`, {
+    throw new CfError('invalid_op', `Environment variable ${name} holds the value of a variable reserved for claudeflare (such as the Cloudflare API token); it cannot be sent as a secret`, {
       hint: `Export the intended secret in ${name}`,
     });
   }
@@ -137,7 +140,11 @@ function writeSink(cwd, plan, index, raw, entry) {
   }
   if (!found) return null;
   const file = writeSecretFile(cwd, `${plan.id}-${index}.json`, data);
-  recordSecretFile(cwd, file);
+  try {
+    recordSecretFile(cwd, file);
+  } catch (err) {
+    throw Object.assign(new Error(`the secret was written to ${file}, but secret-files.json could not list it (${err?.message ?? err})`), { writtenFile: file });
+  }
   return file;
 }
 
@@ -246,7 +253,9 @@ export async function executeRestOps({ client, plan, cwd, env = process.env, bef
           } catch (err) {
             // The op ran; its result stays so rollback still covers it.
             return stop(i, true, { message: `Op ${i} applied but its secret file could not be written: ${err?.message ?? err}` }, {
-              hint: 'The one-time secret is lost: rotate or recreate the credential, then store the new value yourself',
+              hint: err?.writtenFile
+                ? `The secret is kept in ${err.writtenFile}, under .claudeflare/secrets where the guard still protects it; fix .claudeflare/secret-files.json and do not read the file into the conversation`
+                : 'The one-time secret is lost: rotate or recreate the credential, then store the new value yourself',
             });
           }
           if (file && isPlainObject(result)) results[i] = result = { ...result, secret_file: file };

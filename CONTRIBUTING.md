@@ -34,7 +34,7 @@ A domain skill is a checklist for one area of a zone, used by audits and by chan
    - `## Traps`: mistakes that break sites.
 3. Add the domain to the table in `skills/cf-audit/SKILL.md` section 2.
 4. Add a content test in `test/content.test.mjs`: put the folder and its finding ids in a map and call `assertDomainSkill(folder, ids)`. It checks the four sections and every finding id.
-5. If a fix needs a new resource kind for snapshots and rollback, add it to `scripts/lib/resources.mjs` and `scripts/lib/snapshot.mjs` with unit tests. Without that, the op is flagged as not reversible.
+5. If a fix needs a new resource kind for snapshots and rollback, add it to `scripts/lib/resources.mjs` and `scripts/lib/snapshot.mjs` with unit tests. Without that, the op is flagged as not reversible. Product kinds (Tunnel, Access, Gateway, Devices, Load Balancing, Spectrum and new ones) live in a module under `scripts/lib/products/` instead: follow the `ProductKind` and `ProductModule` contract in `scripts/lib/products/index.mjs`, register the module there with `registerProduct`, and test it like `test/products-*.test.mjs`.
 6. Add any new token permission to `docs/token-template.md`, checked against the [Cloudflare permissions reference](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
 
 ## Evals

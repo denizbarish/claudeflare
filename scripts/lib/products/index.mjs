@@ -20,7 +20,6 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {string[]} methods         Uppercase HTTP methods.
  * @property {RegExp} pattern           Matched against the path after baseFor(plan), query
  *   removed; must be anchored with ^ and $ (registerProduct checks).
- * @property {boolean} [allowQuery]     Accept a query string on the op path (none do yet).
  * @property {(m: RegExpExecArray) => ({ type: string, id: string } | null)} resource
  *   Conflict key; null when the op names no existing resource (a create).
  * @property {(m: RegExpExecArray, base: string) => string} [read]        Before-read path.
@@ -50,8 +49,6 @@ import { TUNNEL } from './tunnel.mjs';
  *   its path holds one `{created_id}` segment and `created_id_from: n` names the op n places
  *   earlier whose result id fills it at apply (rest-exec.mjs resolveCreatedId). A drift state
  *   may be an array (a whole list resource).
- * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
- *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.
  * @property {string|((before: object) => string)} [nameField]  Live field `confirm_name` is
  *   compared with at preflight, or a function of the live resource (a monitor without a
@@ -79,7 +76,7 @@ import { TUNNEL } from './tunnel.mjs';
  *   in both scopes (Load Balancing); a 403 on the probe names `edit` (then `read`, then the
  *   product) in missing_permission.
  * @property {(base: string) => string} probePath   Cheap GET proving token access.
- * @property {(client: object, base: string, ops: object[], opts: { rollback: boolean }) => Promise<object>} gather
+ * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.
  * @property {(ctx: object, ops: object[]) => (string|{ line: string, advisory: true })[]} lockoutRisks
  *   Lines start with `Lockout risk:`. A line that rests on an asynchronous read (the Load
@@ -172,8 +169,7 @@ export function classifyProductOp(op, plan) {
   const path = String(op.path ?? '');
   const base = baseFor(plan);
   if (!path.startsWith(`${base}/`)) return null;
-  // The query never takes part in matching; validateProductFields refuses it
-  // unless the kind sets allowQuery.
+  // The query never takes part in matching; validateProductFields refuses it.
   const rest = path.split('?')[0].slice(base.length);
   for (const module of PRODUCTS) {
     const hit = matchKind(module.kinds, op.method, scope, rest);

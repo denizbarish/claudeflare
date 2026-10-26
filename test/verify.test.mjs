@@ -133,11 +133,11 @@ function fakeClient(routes) {
   };
 }
 
-const appCreate = { method: 'POST', path: `${BASE}/vx/apps`, body: { name: 'wiki', domain: 'wiki.acme.dev' } };
+const appCreate = { method: 'POST', path: `${BASE}/vx/apps`, body: { name: 'wiki', domain: 'wiki.example.com' } };
 const appUpdate = { method: 'PUT', path: `${BASE}/vx/apps/${ID}`, body: { name: 'wiki2' } };
 const createRoutes = {
-  [`POST ${BASE}/vx/apps`]: { id: NEW, name: 'wiki', domain: 'wiki.acme.dev' },
-  [`GET ${BASE}/vx/apps/${NEW}`]: { id: NEW, name: 'wiki', domain: 'wiki.acme.dev' },
+  [`POST ${BASE}/vx/apps`]: { id: NEW, name: 'wiki', domain: 'wiki.example.com' },
+  [`GET ${BASE}/vx/apps/${NEW}`]: { id: NEW, name: 'wiki', domain: 'wiki.example.com' },
 };
 const failing = (name = 'login') => ({ name, run: async () => ({ ok: false, detail: 'got 200' }) });
 const passing = (name = 'readback') => ({ name, run: async () => ({ ok: true, detail: 'ok' }) });
@@ -176,52 +176,52 @@ test('runVerify records a throwing check as failed and does not retry a once che
 });
 
 test('accessLoginCheck ok on 302 to <team>.cloudflareaccess.com, fails on 200', async () => {
-  const login = 'https://Acme.cloudflareaccess.com/cdn-cgi/access/login/wiki.acme.dev?kid=1';
+  const login = 'https://Acme.cloudflareaccess.com/cdn-cgi/access/login/wiki.example.com?kid=1';
   const redirect = fakeFetch(response(302, { location: login }));
-  const ok = await accessLoginCheck('https://wiki.acme.dev/', 'acme.cloudflareaccess.com', { fetchImpl: redirect }).run();
+  const ok = await accessLoginCheck('https://wiki.example.com/', 'acme.cloudflareaccess.com', { fetchImpl: redirect }).run();
   assert.equal(ok.ok, true, ok.detail);
   assert.equal(redirect.calls[0].init.redirect, 'manual');
   assert.equal(redirect.calls[0].init.method, 'GET');
 
-  const open = await accessLoginCheck('https://wiki.acme.dev/', 'acme.cloudflareaccess.com', { fetchImpl: fakeFetch(response(200)) }).run();
+  const open = await accessLoginCheck('https://wiki.example.com/', 'acme.cloudflareaccess.com', { fetchImpl: fakeFetch(response(200)) }).run();
   assert.equal(open.ok, false);
   assert.match(open.detail, /200/);
 
-  const elsewhere = await accessLoginCheck('https://wiki.acme.dev/', 'acme.cloudflareaccess.com', {
+  const elsewhere = await accessLoginCheck('https://wiki.example.com/', 'acme.cloudflareaccess.com', {
     fetchImpl: fakeFetch(response(302, { location: 'https://other.cloudflareaccess.com/x' })),
   }).run();
   assert.equal(elsewhere.ok, false);
-  const moved = await accessLoginCheck('https://wiki.acme.dev/', 'acme.cloudflareaccess.com', { fetchImpl: fakeFetch(response(301, { location: login })) }).run();
+  const moved = await accessLoginCheck('https://wiki.example.com/', 'acme.cloudflareaccess.com', { fetchImpl: fakeFetch(response(301, { location: login })) }).run();
   assert.equal(moved.ok, false);
 
   // Without a known team domain (rollback plans) any cloudflareaccess.com host passes.
-  const anyTeam = await accessLoginCheck('https://wiki.acme.dev/', null, {
+  const anyTeam = await accessLoginCheck('https://wiki.example.com/', null, {
     fetchImpl: fakeFetch(response(302, { location: 'https://other.cloudflareaccess.com/x' })),
   }).run();
   assert.equal(anyTeam.ok, true);
-  const fake = await accessLoginCheck('https://wiki.acme.dev/', null, {
+  const fake = await accessLoginCheck('https://wiki.example.com/', null, {
     fetchImpl: fakeFetch(response(302, { location: 'https://cloudflareaccess.com.evil.dev/x' })),
   }).run();
   assert.equal(fake.ok, false);
 });
 
 test('tunnelServingCheck fails on a 1033 body', async () => {
-  const down = await tunnelServingCheck('https://app.acme.dev/', {
+  const down = await tunnelServingCheck('https://app.example.com/', {
     fetchImpl: fakeFetch(response(530, { body: '<title>Error 1033</title> error code: 1033', headers: { 'cf-ray': 'abc' } })),
   }).run();
   assert.equal(down.ok, false);
   assert.match(down.detail, /1033/);
-  const dns = await tunnelServingCheck('https://app.acme.dev/', { fetchImpl: fakeFetch(response(530, { body: 'error code: 1016' })) }).run();
+  const dns = await tunnelServingCheck('https://app.example.com/', { fetchImpl: fakeFetch(response(530, { body: 'error code: 1016' })) }).run();
   assert.equal(dns.ok, false);
-  const up = await tunnelServingCheck('https://app.acme.dev/', { fetchImpl: fakeFetch(response(200, { body: 'hello' })) }).run();
+  const up = await tunnelServingCheck('https://app.example.com/', { fetchImpl: fakeFetch(response(200, { body: 'hello' })) }).run();
   assert.equal(up.ok, true);
-  const originError = await tunnelServingCheck('https://app.acme.dev/', {
+  const originError = await tunnelServingCheck('https://app.example.com/', {
     fetchImpl: fakeFetch(response(502, { body: 'bad gateway', headers: { 'cf-ray': 'abc' } })),
   }).run();
   assert.equal(originError.ok, true);
-  const noRay = await tunnelServingCheck('https://app.acme.dev/', { fetchImpl: fakeFetch(response(502, { body: 'bad gateway' })) }).run();
+  const noRay = await tunnelServingCheck('https://app.example.com/', { fetchImpl: fakeFetch(response(502, { body: 'bad gateway' })) }).run();
   assert.equal(noRay.ok, false);
-  const unreachable = await tunnelServingCheck('https://app.acme.dev/', { fetchImpl: async () => { throw new Error('ENOTFOUND'); } }).run();
+  const unreachable = await tunnelServingCheck('https://app.example.com/', { fetchImpl: async () => { throw new Error('ENOTFOUND'); } }).run();
   assert.equal(unreachable.ok, false);
 });
 
@@ -253,9 +253,9 @@ test('statusCheck, readbackCheck, poolHealthyCheck and tcpOpenCheck', async () =
 
   const opened = [];
   const connect = async (host, port, timeoutMs) => { opened.push([host, port, timeoutMs]); };
-  assert.equal((await tcpOpenCheck('ssh.acme.dev', 22, { connect }).run()).ok, true);
-  assert.deepEqual(opened, [['ssh.acme.dev', 22, 5000]]);
-  const refused = await tcpOpenCheck('ssh.acme.dev', 22, { connect: async () => { throw new Error('ECONNREFUSED'); } }).run();
+  assert.equal((await tcpOpenCheck('ssh.example.com', 22, { connect }).run()).ok, true);
+  assert.deepEqual(opened, [['ssh.example.com', 22, 5000]]);
+  const refused = await tcpOpenCheck('ssh.example.com', 22, { connect: async () => { throw new Error('ECONNREFUSED'); } }).run();
   assert.equal(refused.ok, false);
   assert.match(refused.detail, /ECONNREFUSED/);
 });
@@ -263,16 +263,16 @@ test('statusCheck, readbackCheck, poolHealthyCheck and tcpOpenCheck', async () =
 test('op.verify status:404 overrides nothing and adds a check', async () => {
   const entry = VX.kinds[0];
   moduleChecks = () => [passing('readback')];
-  const op = { ...appCreate, verify: { expect: 'status:404', url: 'https://wiki.acme.dev/gone' } };
+  const op = { ...appCreate, verify: { expect: 'status:404', url: 'https://wiki.example.com/gone' } };
   const checks = opVerifyChecks(op, entry, VX, {}, { id: NEW }, { id: NEW }, { fetchImpl: fakeFetch(response(404)) });
-  assert.deepEqual(checks.map((c) => c.name), ['readback', 'status:404 https://wiki.acme.dev/gone']);
+  assert.deepEqual(checks.map((c) => c.name), ['readback', 'status:404 https://wiki.example.com/gone']);
   assert.equal((await checks[1].run()).ok, true);
 
-  const tcp = opVerifyChecks({ ...appCreate, verify: { expect: 'tcp_open', url: 'https://ssh.acme.dev:2222/' } }, entry, VX, {}, {}, null, {
-    connect: async (host, port) => assert.deepEqual([host, port], ['ssh.acme.dev', 2222]),
+  const tcp = opVerifyChecks({ ...appCreate, verify: { expect: 'tcp_open', url: 'https://ssh.example.com:2222/' } }, entry, VX, {}, {}, null, {
+    connect: async (host, port) => assert.deepEqual([host, port], ['ssh.example.com', 2222]),
   });
   assert.equal((await tcp.at(-1).run()).ok, true);
-  const login = opVerifyChecks({ ...appCreate, verify: { expect: 'access_login', url: 'https://wiki.acme.dev/' } }, entry, VX, { auth_domain: 'acme.cloudflareaccess.com' }, {}, null, {
+  const login = opVerifyChecks({ ...appCreate, verify: { expect: 'access_login', url: 'https://wiki.example.com/' } }, entry, VX, { auth_domain: 'acme.cloudflareaccess.com' }, {}, null, {
     fetchImpl: fakeFetch(response(302, { location: 'https://other.cloudflareaccess.com/' })),
   });
   assert.equal((await login.at(-1).run()).ok, false, 'the ctx team domain is used');
@@ -405,7 +405,7 @@ test('verification never undoes anything (no write requests after the last op)',
 test('plans without product ops get no verification', async (t) => {
   const { cwd } = setup(t, [appCreate]);
   const zonePlan = createPlan(cwd, {
-    zone_id: 'a'.repeat(32), zone_name: 'acme.dev', summary: 'ssl', risk: 'low', slug: 'ssl',
+    zone_id: 'a'.repeat(32), zone_name: 'example.com', summary: 'ssl', risk: 'low', slug: 'ssl',
     ops: [{ method: 'PATCH', path: `/zones/${'a'.repeat(32)}/settings/ssl`, body: { value: 'strict' } }],
   }, T0);
   approve(cwd, zonePlan);

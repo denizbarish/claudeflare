@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -193,6 +193,27 @@ test('secretSink writes client_id and client_secret to .claudeflare/secrets/<pla
   // delete_created still reads the id from the stored result.
   const rollback = createRollbackPlan(cwd, plan.id, T0);
   assert.deepEqual(rollback.ops.map((op) => `${op.method} ${op.path}`), [`DELETE ${BASE}/sx/tokens/${NEW2}`, `DELETE ${BASE}/sx/tunnels/${NEW}`]);
+});
+
+// L2 (security review): an index failure after the secret was written keeps
+// the file and says where it is, instead of calling the secret lost.
+test('a secret-files.json failure after the sink file was written names the kept file', async (t) => {
+  const { cwd, plan } = setup(t, [tokenCreate]);
+  approve(cwd, plan);
+  mkdirSync(join(cwd, '.claudeflare', 'secret-files.json'), { recursive: true });
+  const client = fakeClient({
+    [`POST ${BASE}/sx/tokens`]: { id: NEW2, name: 'ci', client_id: 'cid.access', client_secret: CLIENT_SECRET },
+    [`GET ${BASE}/sx/tokens/${NEW2}`]: { id: NEW2, name: 'ci', client_id: 'cid.access' },
+  });
+  const applied = await applyPlan(cwd, client, plan.id, T0, { env: {} });
+  const file = join(cwd, '.claudeflare', 'secrets', `${plan.id}-0.json`);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).client_secret, CLIENT_SECRET);
+  assert.match(applied.error.hint, /secret is kept in/);
+  assert.ok(applied.error.hint.includes(file));
+  assert.doesNotMatch(applied.error.hint, /lost/);
+  assert.ok(!JSON.stringify(applied).includes(CLIENT_SECRET));
+  // The index write is atomic: no temp file is left in the secrets folder.
+  assert.deepEqual(readdirSync(join(cwd, '.claudeflare', 'secrets')).filter((n) => n.endsWith('.tmp')), []);
 });
 
 test('the sink file is listed in secret-files.json and .claudeflare/.gitignore has secrets/', async (t) => {
@@ -488,6 +509,15 @@ test('claudeflare variables and the API token value are never a secret source (i
     if (saved === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
     else process.env.CLOUDFLARE_API_TOKEN = saved;
   }
+  // L5 (security review): any reserved variable's value counts, not only the API token.
+  for (const name of ['CLOUDFLARE_API_KEY', 'WRANGLER_API_TOKEN', 'ANTHROPIC_API_KEY', 'CF_API_KEY']) {
+    assert.throws(
+      () => assertSecretFieldsEnv(plan('OKTA_SECRET'), { OKTA_SECRET: 'reserved-value-1', [name]: 'reserved-value-1' }),
+      (e) => e.code === 'invalid_op' && !e.message.includes('reserved-value-1'),
+      name,
+    );
+  }
+  assertSecretFieldsEnv(plan('OKTA_SECRET'), { OKTA_SECRET: 'okta-value', CLOUDFLARE_API_KEY: 'other-value' });
 });
 
 test('a failed sink write keeps the result and tells the user to rotate the credential', async (t) => {

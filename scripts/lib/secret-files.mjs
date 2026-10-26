@@ -8,8 +8,9 @@
 // existing regular file is removed first), so a planted link cannot redirect
 // a secret elsewhere and a file never exists with a wider mode.
 
-import { chmodSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { keyDir } from './approval-key.mjs';
 import { paths } from './paths.mjs';
 
@@ -48,15 +49,22 @@ function writeFd(fd, content, mode) {
 }
 
 // Replaces file with content, never following a link at the file itself.
+// The content goes to a new temp file in the same folder first and is renamed
+// over file, so a crash or a failed write never leaves file missing or half
+// written (the index would otherwise lose its entries).
 function replaceFile(file, content, mode) {
   const stat = lstatOrNull(file);
   refuseLink(file, stat);
-  if (stat) {
-    if (!stat.isFile()) throw new Error(`${file} is not a regular file`);
-    unlinkSync(file);
+  if (stat && !stat.isFile()) throw new Error(`${file} is not a regular file`);
+  const temp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`);
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, mode);
+  try {
+    writeFd(fd, content, mode);
+    renameSync(temp, file);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
   }
-  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, mode);
-  writeFd(fd, content, mode);
 }
 
 export function readOrEmpty(file) {

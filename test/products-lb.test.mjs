@@ -236,6 +236,11 @@ test('monitor, pool and load balancer bodies are validated (invalid_op)', () => 
     updatePool(P1, poolBody(P1, { disabled_at: '2026-10-01T00:00:00Z' })),
   ];
   for (const op of bad) assert.throws(() => validateOpTargets([op], ACCOUNT), { code: 'invalid_op' }, JSON.stringify(op));
+  // L4 (security review): credential headers would sit as literals in the plan, snapshot and results.
+  for (const header of [{ Authorization: ['Bearer x'] }, { cookie: ['s=1'] }, { 'X-Api-Token': ['t'] }, { 'Proxy-Authorization': ['Basic x'] }]) {
+    assert.throws(() => validateOpTargets([createMonitor(monitorBody({ header }))], ACCOUNT), (e) => e.code === 'invalid_op' && /credential/.test(e.message), JSON.stringify(header));
+  }
+  validateOpTargets([createMonitor(monitorBody({ header: { Host: ['shop.example.com'] } }))], ACCOUNT);
   validateOpTargets([createLb(lbBody(LB1, { name: 'shop.example.com' }))], ZONE);
   for (const op of [
     createLb(lbBody(LB1, { default_pools: [] })),

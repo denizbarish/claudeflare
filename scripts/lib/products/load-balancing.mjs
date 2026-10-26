@@ -76,8 +76,14 @@ function validateMonitor(op) {
   for (const key of MONITOR_NUMBERS) {
     if (key in body && !(Number.isInteger(body[key]) && body[key] >= 0)) problems.push(`${key} must be a whole number`);
   }
+  // A credential header would sit as a literal in the plan, the snapshot and
+  // the results under .claudeflare/ (no secret field covers it).
+  const secret = isPlainObject(body.header) ? Object.keys(body.header).filter((name) => CREDENTIAL_HEADER.test(name)) : [];
+  if (secret.length) problems.push(`header ${secret.join(', ')} would store a credential in the plan and its snapshot; set credential headers on the monitor in the dashboard instead`);
   return problems;
 }
+
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie)$|token|secret|api-?key|password/i;
 
 function validatePool(op) {
   const body = op.body;
