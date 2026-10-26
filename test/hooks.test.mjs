@@ -582,7 +582,7 @@ test('decideWrangler denies every write subcommand behind every runner prefix', 
 
 test('decideWrangler allows read and local subcommands and ignores non-wrangler commands', () => {
   for (const sub of WRANGLER_READS) assert.equal(decideWrangler(`npx wrangler ${sub}`.trim()), null, sub);
-  for (const cmd of ['grep wrangler package.json', 'cat wrangler.toml', 'npm run build', 'ls node_modules/.bin/wrangler', 'echo use wrangler deploy later']) {
+  for (const cmd of ['grep wrangler package.json', 'cat wrangler.toml', 'npm run build', 'ls node_modules/.bin/wrangler', 'echo use wrangler deploy later', 'rg -n "wrangler deploy" docs', 'npx wrangler d1 execute db --command "SELECT 1"', 'git log --grep wrangler']) {
     assert.equal(decideWrangler(cmd), null, cmd);
   }
 });
@@ -597,6 +597,15 @@ test('decideWrangler finds wrangler inside chains, subshells, quotes and env pre
     'echo $(npx wrangler delete --name api)',
     'CI=1 NODE_ENV=production npx wrangler deploy',
     'env -i wrangler deploy',
+    'npx wrangler d1 execute db --command "SELECT 1" --remote',
+    "wrangler 'deploy'",
+    'wrangler "deploy" --name api',
+    'timeout 30 npx wrangler deploy',
+    'xargs -n1 wrangler deploy',
+    'wrangler --config x',
+    'bash -c \'echo hi && npx wrangler versions deploy v@100%\'',
+    'echo "$(wrangler delete --name api)"',
+    'w\\\nrangler deploy',
   ]) {
     assert.equal(decideWrangler(cmd), WRANGLER_REASON, cmd);
   }

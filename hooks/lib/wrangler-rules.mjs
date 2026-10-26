@@ -53,13 +53,71 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const isWranglerToken = (token) => /^(?:.*\/)?wrangler(?:@[^\s/]+)?$/.test(token);
 const isWranglerScript = (token) => /(?:^|\/)wrangler(?:\.m?js)?$|(?:^|\/)wrangler-dist\/cli\.js$/.test(token);
 
-// Splits on shell separators and quotes, so commands inside `sh -c "..."` or
-// $(...) are checked as commands of their own.
-function segments(command) {
-  return command
-    .split(/&&|\|\||[;&|\n()`"'{}]|\$\(/)
-    .map((segment) => segment.trim().split(/\s+/).filter(Boolean))
-    .filter((tokens) => tokens.length);
+// Read-only commands whose arguments are never run: a wrangler word in them
+// is a mention (grep wrangler package.json), not an invocation.
+const SAFE_HEADS = new Set([
+  'grep', 'egrep', 'fgrep', 'rg', 'cat', 'less', 'more', 'head', 'tail', 'ls', 'echo', 'printf',
+  'which', 'type', 'git', 'wc', 'file', 'stat', 'diff', 'jq',
+]);
+const MAX_NESTING = 3;
+
+// Minimal shell word splitter: quotes and backslashes join into one word,
+// unquoted ; & | newline ( ) ` $( and group braces end a command. Quoted
+// texts are also returned with the head of the command they belong to, so
+// `sh -c "..."` and "$(...)" get checked as commands of their own.
+export function parseShell(command) {
+  const commands = [];
+  const nested = [];
+  let words = [];
+  let word = null;
+  const endWord = () => {
+    if (word !== null) words.push(word);
+    word = null;
+  };
+  const endCommand = () => {
+    endWord();
+    if (words.length) commands.push(words);
+    words = [];
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      const end = close === -1 ? command.length : close;
+      const text = command.slice(i + 1, end);
+      nested.push({ text, head: words[0] ?? null });
+      word = (word ?? '') + text;
+      i = end;
+    } else if (c === '"') {
+      let j = i + 1;
+      let text = '';
+      while (j < command.length && command[j] !== '"') {
+        if (command[j] === '\\' && j + 1 < command.length) {
+          text += command[j + 1];
+          j += 2;
+        } else {
+          text += command[j++];
+        }
+      }
+      nested.push({ text, head: words[0] ?? null });
+      word = (word ?? '') + text;
+      i = j;
+    } else if (c === '\\' && i + 1 < command.length) {
+      if (command[i + 1] !== '\n') word = (word ?? '') + command[i + 1];
+      i++;
+    } else if (c === '$' && command[i + 1] === '(') {
+      endCommand();
+      i++;
+    } else if (';&|\n()`'.includes(c) || ((c === '{' || c === '}') && word === null)) {
+      endCommand();
+    } else if (/\s/.test(c)) {
+      endWord();
+    } else {
+      word = (word ?? '') + c;
+    }
+  }
+  endCommand();
+  return { commands, nested };
 }
 
 function skipFlags(tokens, i) {
@@ -114,19 +172,36 @@ function parseInvocation(args) {
 const startsWith = (words, path) => path.every((word, i) => words[i] === word);
 
 function allowed({ words, flags }) {
-  if (words.length === 0) return true;
   if ([...flags].some((f) => HELP_FLAGS.has(f))) return true;
+  // Bare `wrangler` prints help; anything else must name an allowed path.
+  if (words.length === 0) return flags.size === 0;
   if (READ_PATHS.some((path) => startsWith(words, path))) return true;
   return LOCAL_UNLESS_REMOTE.some((path) => startsWith(words, path)) && !flags.has('--remote');
 }
 
+const mentionsWrangler = (token) => isWranglerToken(token) || isWranglerScript(token);
+
+function deniedCommand(tokens) {
+  const start = wranglerArgsStart(tokens);
+  if (start !== -1) return !allowed(parseInvocation(tokens.slice(start)));
+  const head = tokens[0].split('/').at(-1);
+  if (SAFE_HEADS.has(head)) return false;
+  // Unknown wrapper (timeout, xargs, nice, ...): judge what follows the
+  // first wrangler word, failing closed.
+  const k = tokens.findIndex((token, i) => i > 0 && mentionsWrangler(token));
+  return k !== -1 && !allowed(parseInvocation(tokens.slice(k + 1)));
+}
+
 // Returns the deny reason, or null when no wrangler write is found.
-export function decideWrangler(command) {
-  if (typeof command !== 'string' || !command.includes('wrangler')) return null;
-  for (const tokens of segments(command)) {
-    const start = wranglerArgsStart(tokens);
-    if (start === -1) continue;
-    if (!allowed(parseInvocation(tokens.slice(start)))) return WRANGLER_REASON;
+export function decideWrangler(command, depth = 0) {
+  if (typeof command !== 'string' || !command.replace(/\\\n|['"\\]/g, '').includes('wrangler')) return null;
+  const { commands, nested } = parseShell(command);
+  if (commands.some(deniedCommand)) return WRANGLER_REASON;
+  if (depth >= MAX_NESTING) return null;
+  for (const { text, head } of nested) {
+    // Under a read-only head only command substitutions run.
+    const runs = head && SAFE_HEADS.has(head.split('/').at(-1)) ? text.split(/\$\(|`/).slice(1) : [text];
+    if (runs.some((part) => decideWrangler(part, depth + 1))) return WRANGLER_REASON;
   }
   return null;
 }
