@@ -62,16 +62,16 @@ v1 plans are bound to one zone (`zone_id`, op paths under `/zones/<zone_id>/`). 
 ```json
 {
   "kind": "wrangler",
-  "args": ["deploy", "--env", "production"],
-  "worker": "api",
+  "args": ["deploy", "--name", "api", "--env", "production"],
   "health_check": { "url": "https://api.example.com/health", "expect_status": 200 },
   "on_failed_check": "rollback"
 }
 ```
 
-- `apply` runs `npx wrangler <args>` with `execFile` (argument array, no shell), cwd = plan `project_dir`, env: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `WRANGLER_SEND_METRICS=false`, `CI=1`, `WRANGLER_OUTPUT_FILE_PATH=<tmp>`, stdin closed (or the secret value, section 3.5).
+- `apply` runs the project's local wrangler (`node node_modules/wrangler/bin/wrangler.js <args>`, never `npx` or a global copy) with `execFile` (argument array, no shell), cwd = plan `project_dir`, env: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `WRANGLER_SEND_METRICS=false`, `CI=1`, `WRANGLER_OUTPUT_FILE_PATH=<tmp>`, stdin closed (or the secret value, section 3.5).
 - **Allowlisted subcommands** (first one or two args): `deploy`, `versions deploy`, `rollback`, `pages deploy`, `d1 migrations apply`, `d1 time-travel restore`, `d1 create`, `d1 delete`, `r2 bucket create`, `r2 bucket delete`, `kv namespace create`, `kv namespace delete`, `queues create`, `queues delete`, `secret put`, `secret delete`, `delete` (Worker). Anything else: `invalid_op` at plan creation.
-- **Forbidden flags**: `--config` pointing outside `project_dir`, `--outdir`, `--dry-run` (preflight owns those), shell metacharacters are irrelevant because no shell is used, but args must be ASCII printable without control characters.
+- **Worker target**: Worker ops name the Worker with `--name` in `args` (there is no separate `worker` field).
+- **Forbidden flags**: only allowlisted flags per subcommand are accepted; `--config` (any path, read and hashed by preflight) and `--env` are the only global flags. `--outdir`, `--dry-run` (preflight owns those), shell metacharacters are irrelevant because no shell is used, but args must be ASCII printable without control characters.
 - `on_failed_check: "rollback"` is part of the ops hash, so the user approves automatic rollback up front.
 
 ### 3.3 REST allowlist for account plans
@@ -93,7 +93,7 @@ Bundle determinism is undocumented, so the approval binds to the **source**, not
 ### 3.5 Secrets
 
 ```json
-{ "kind": "wrangler", "args": ["secret", "put", "STRIPE_KEY"], "worker": "api", "value_from_env": "STRIPE_KEY" }
+{ "kind": "wrangler", "args": ["secret", "put", "STRIPE_KEY", "--name", "api"], "value_from_env": "STRIPE_KEY" }
 ```
 - The plan holds only the env var name. `apply` reads `process.env[value_from_env]`; missing: `secret_env_missing`, nothing runs. The value is written to wrangler's stdin and never logged, stored, hashed into the plan or printed. Errors are redacted for the value as for the token.
 - Snapshot records only whether the secret existed (`secret list --format json`). Secret ops are not reversible.
@@ -108,7 +108,8 @@ Bundle determinism is undocumented, so the approval binds to the **source**, not
 | `pages deploy` | current production deployment id (`pages deployment list --json`) | REST Pages rollback to that deployment |
 | `d1 migrations apply` | `d1 time-travel info <db> --json` bookmark; pending migrations with SQL text | `wrangler d1 time-travel restore <db> --bookmark <b> --json` (risk: discards all writes after the bookmark) |
 | `d1 time-travel restore` | current bookmark | restore to that bookmark |
-| `* create` | none | matching delete, only if the resource is still empty at rollback time (checked; else `rollback_not_empty`) |
+| `r2 bucket create`, `kv namespace create` | none | matching delete, only if the resource is still empty at rollback time (checked; else `rollback_not_empty`) |
+| `d1 create`, `queues create` | none | never deleted automatically (emptiness cannot be verified); the rollback plan notes the manual delete |
 | `* delete`, `secret put/delete`, Worker `delete` | none | not reversible |
 
 New version ids come from the `WRANGLER_OUTPUT_FILE_PATH` ND-JSON (`deploy.version_id`), not from parsing console text.
@@ -119,13 +120,13 @@ New version ids come from the `WRANGLER_OUTPUT_FILE_PATH` ND-JSON (`deploy.versi
 
 ### 3.8 New CLI commands
 
-- `claudeflare preflight --file <draft.json>`: validates a draft (scope, allowlist, wrangler present and version 4.x, `wrangler whoami` account matches, bindings referenced in wrangler config exist, dry-run build passes, source hash), prints a report, and writes nothing to Cloudflare. `plan new` calls the same checks.
+- `claudeflare preflight --file <draft.json>`: validates a draft (scope, allowlist, wrangler present and version 4.x, the token can read the plan account (`GET /accounts/<account_id>`), bindings referenced in wrangler config exist, dry-run build passes, source hash), prints a report, and writes nothing to Cloudflare. `plan new` calls the same checks.
 - `claudeflare tail --worker <name> --seconds <n> [--status error]`: runs `wrangler tail --format json` for at most 60 seconds, returns a summarized JSON (counts by outcome, top exceptions, sample logs with secrets-looking values redacted). Read-only.
 
 ### 3.9 Guard additions
 
-- Deny direct Bash `wrangler` (or `npx wrangler`, `pnpm wrangler`, `yarn wrangler`, `bunx wrangler`) with write subcommands: `deploy`, `versions deploy`, `rollback`, `delete`, `publish`, `secret put|delete|bulk`, `d1 execute --remote`, `d1 migrations apply --remote`, `d1 time-travel restore`, `r2 bucket create|delete`, `r2 object put|delete`, `kv namespace create|delete`, `kv key put|delete`, `kv bulk put|delete`, `queues create|delete`, `pages deploy`, `pages project delete`. Reason: use the change protocol.
-- Allow read subcommands: `whoami`, `deployments list|status`, `versions list|view`, `tail`, `d1 list|info`, `d1 migrations list`, `d1 time-travel info`, `r2 bucket list|info`, `kv namespace list`, `queues list`, `pages project list`, `pages deployment list`, `secret list`.
+- Deny every direct Bash wrangler run (bare, `npx`, `pnpm`, `yarn`, `bunx`, `npm exec`, a `node` path to `wrangler.js`, and `package.json` scripts run through a package manager) unless the subcommand is on a positive allowlist. Reason: use the change protocol.
+- Allowlist (reads and local commands): `whoami`, `login`, `logout`, `deployments list|status`, `versions list|view`, `versions secret list`, `tail`, `d1 list|info`, `d1 migrations list`, `d1 time-travel info`, `d1 execute` and `d1 migrations apply` without `--remote`, `r2 bucket list|info`, `kv namespace list`, `kv key list|get`, `queues list`, `pages project list`, `pages deployment list|tail`, `secret list`, `dev`, `types`, `--version` and help. Anything not parsed with confidence (unknown wrappers, nesting deeper than three levels) is denied.
 - Same limits as v1: string checks catch mistakes, not deliberate evasion. README threat model is updated accordingly.
 
 ## 4. Skills and agents
@@ -140,7 +141,7 @@ New version ids come from the `WRANGLER_OUTPUT_FILE_PATH` ND-JSON (`deploy.versi
 ## 5. Data flow
 
 ### 5.1 Worker deploy
-1. Read: wrangler config, `deployments list --json`, `versions list --json`, `whoami`.
+1. Read: wrangler config, `deployments list --json`, `versions list --json`, account access.
 2. `claudeflare preflight --file draft.json`; on errors, report and stop.
 3. `claudeflare plan new` (account scope) with the deploy op, health check, optional `on_failed_check`, `source_hash`.
 4. User approves with `/claudeflare:approve <id>`.
@@ -164,7 +165,7 @@ Evidence first: recent deployments, `claudeflare tail` sample, GraphQL error and
 |---|---|---|
 | wrangler not installed / not runnable | `wrangler_missing` | Suggest `npm i -D wrangler@4`; nothing runs |
 | wrangler major != 4 | `wrangler_version` | Refuse |
-| `whoami` account differs from plan account | `account_mismatch` | Refuse |
+| Token cannot read the plan account (`GET /accounts/<account_id>`) | `account_mismatch` | Refuse |
 | Source changed after approval | `source_changed` | Refuse, approval kept |
 | Secret env var missing | `secret_env_missing` | Refuse before running |
 | wrangler exits non-zero | `wrangler_failed` | Status `failed` or `partially_applied`; last 40 lines of output, token and secret redacted |
