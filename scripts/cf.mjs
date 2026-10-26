@@ -9,10 +9,11 @@ import { paths } from './lib/paths.mjs';
 import { accountTarget, createPlan, listPlans, needsProjectDir, readPlan, slugify, updatePlan } from './lib/plans.mjs';
 import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
-import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
+import { addRollbackLockout, applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
 import { assertR2DeletesEmpty } from './lib/wrangler-exec.mjs';
 import { classifyWranglerOp } from './lib/wrangler-ops.mjs';
 import { migrationRisk, runPreflight } from './lib/preflight.mjs';
+import { hasProductOps } from './lib/product-preflight.mjs';
 import { runTail } from './lib/tail.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
@@ -146,7 +147,8 @@ function readDraft(cwd, flags) {
 
 async function preflight(cwd, flags) {
   const { target, resolved } = readDraft(cwd, flags);
-  const { ops: _ops, ...report } = await runPreflight(target, resolved, { client: createClient() });
+  // ctx holds the raw account reads product modules gathered; not printed.
+  const { ops: _ops, ctx: _ctx, ...report } = await runPreflight(target, resolved, { client: createClient() });
   printJson(report);
   if (!report.ok) process.exitCode = 1;
 }
@@ -161,21 +163,25 @@ async function planNew(cwd, flags) {
   let risk = draft.risk;
   validateOpTargets(resolved, target);
   validatePlanOps(resolved, target);
-  if (target.scope === 'account') {
+  // Zone plans run preflight only for product ops; without them they stay as in 0.2.x.
+  let report = null;
+  if (target.scope === 'account' || hasProductOps(target, resolved)) {
     const client = createClient();
     // R2 bucket deletes are refused unless the bucket is verifiably empty.
-    if (hasR2Delete(resolved)) await assertR2DeletesEmpty(client, { account_id: draft.account_id, ops: resolved });
+    if (target.scope === 'account' && hasR2Delete(resolved)) await assertR2DeletesEmpty(client, { account_id: draft.account_id, ops: resolved });
     // Preflight embeds source_hash into source-uploading ops.
-    const report = await runPreflight(target, resolved, { client });
+    report = await runPreflight(target, resolved, { client });
     if (!report.ok) {
       throw new CfError('preflight_failed', `Preflight failed: ${failedChecks(report)}`, {
         hint: 'Run claudeflare preflight --file <draft.json> for the full report, fix the cause and try again',
       });
     }
-    resolved = report.ops;
+    if (target.scope === 'account') resolved = report.ops;
     const pending = migrationRisk(report.pending_migrations);
     if (pending) risk = `${risk ?? ''}${risk ? ' ' : ''}${pending}`;
   }
+  // Lockout lines never refuse a plan; they are stored and shown in the risk.
+  const lockout = report?.lockout_risks;
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
     scope: target.scope,
@@ -185,11 +191,17 @@ async function planNew(cwd, flags) {
     account_name: draft.account_name,
     project_dir: target.project_dir,
     summary: draft.summary,
-    risk: withIrreversibleRisk(risk, resolved, target),
+    risk: [withIrreversibleRisk(risk, resolved, target, report?.ctx), ...(lockout ?? [])].filter(Boolean).join('\n'),
     ops: target.scope === 'account' ? resolved : draft.ops,
     slug,
   });
-  return updatePlan(cwd, plan.id, { slug });
+  return updatePlan(cwd, plan.id, lockout ? { slug, lockout_risks: lockout } : { slug });
+}
+
+// Rollback plans get their lockout lines now; apply does not re-run them.
+async function rollback(cwd, positional) {
+  const created = createRollbackPlan(cwd, arg(positional, 1, 'id'));
+  return hasProductOps(created) ? addRollbackLockout(cwd, created, createClient()) : created;
 }
 
 function tail(cwd, flags) {
@@ -267,7 +279,7 @@ async function main(argv) {
     case 'plan': return printJson(await plan(cwd, positional, flags));
     case 'snapshot': return printJson(await snapshot(cwd, positional));
     case 'apply': return applyCommand(cwd, positional);
-    case 'rollback': return printJson(createRollbackPlan(cwd, arg(positional, 1, 'id')));
+    case 'rollback': return printJson(await rollback(cwd, positional));
     case 'report': return printJson(report(cwd, flags));
     case 'preflight': return preflight(cwd, flags);
     case 'tail': return printJson(await tail(cwd, flags));

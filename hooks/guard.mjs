@@ -9,7 +9,7 @@ import { keyDir } from '../scripts/lib/approval-key.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
 import { inspectCode } from './lib/inspect-code.mjs';
 import { isAllowedCall } from './lib/allowed-call.mjs';
-import { trimPeriod } from './lib/plan-text.mjs';
+import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 import { decideWrangler } from './lib/wrangler-rules.mjs';
 
 const PROTOCOL_REASON =
@@ -145,7 +145,8 @@ function decideApply(cwd, planId) {
     const result = checkApproval(cwd, planId);
     if (!result.ok) return deny(`Plan ${planId} is not approved (${result.reason}). ${askUser}`);
     const plan = readPlan(cwd, planId);
-    return ask(`Apply plan ${planId}: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(plan.risk)}. Ops: ${describeOps(plan.ops)}`);
+    const { lockout, rest } = splitRisk(plan);
+    return ask(`${lockoutLead(lockout)}Apply plan ${planId}: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(rest)}. Ops: ${describeOps(plan.ops)}`);
   } catch (err) {
     return deny(`Plan ${planId} could not be verified (${err?.message ?? err}). ${askUser}`);
   }

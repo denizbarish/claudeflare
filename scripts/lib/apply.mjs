@@ -17,6 +17,7 @@ import { computeSourceHash } from './source-hash.mjs';
 import { executeAccountOps } from './wrangler-exec.mjs';
 import { assertSecretFieldsEnv, executeRestOps, readSecretEnv } from './rest-exec.mjs';
 import { runHealthCheck } from './health-check.mjs';
+import { hasProductOps, LOCKOUT_PREFIX, runProductPreflight } from './product-preflight.mjs';
 
 // Plans whose applied ops may still be reverted by a rollback plan. After an
 // automatic rollback the earlier ops of the plan are still applied.
@@ -140,14 +141,15 @@ function wranglerRiskLines(op) {
 // "Data loss" line for KV, Queue and D1 deletes. With the plan (or its
 // target), product ops are classified by their kind and the kinds' notes
 // lines follow the "Not reversible" lines. Without it, product ops are
-// unknown and therefore not reversible, as in 0.2.x.
-export function withIrreversibleRisk(risk, ops, plan) {
+// unknown and therefore not reversible, as in 0.2.x. ctxByProduct holds the
+// product preflight reads the kinds' notes see.
+export function withIrreversibleRisk(risk, ops, plan, ctxByProduct = {}) {
   const notes = [];
   const lines = ops.flatMap((op) => {
     if (op?.kind === 'wrangler') return wranglerRiskLines(op);
     const product = plan ? classifyProductOp(op, plan) : null;
     if (product) {
-      notes.push(...(product.entry.notes?.({}, op) ?? []));
+      notes.push(...(product.entry.notes?.(ctxByProduct[product.module.product] ?? {}, op) ?? []));
       return product.entry.inverse === 'none' ? [`Not reversible: ${op.method} ${op.path}`] : [];
     }
     return classify(op).invertible ? [] : [`Not reversible: ${op.method} ${op.path}`];
@@ -193,6 +195,49 @@ function assertRollbackSourceCurrent(cwd, plan) {
       hint: 'Read the current state and create a fresh plan if a change is still needed',
     });
   }
+}
+
+// Product preflight again on fresh reads (spec 6). A failed check stops with
+// its own code; a lockout line the plan did not show stops with risk_changed,
+// because approval binds only to the ops hash and the user never saw that
+// line. Lines that disappeared do not stop apply. Plans without lockout_risks
+// (0.2.x, hand-made) and rollback plans skip this.
+async function assertProductPreflight(client, plan) {
+  if (plan.rollback_of || !Array.isArray(plan.lockout_risks) || !hasProductOps(plan)) return;
+  const report = await runProductPreflight(client, plan, plan.ops);
+  const failedCheck = report.checks.find((c) => !c.ok);
+  if (failedCheck) {
+    throw new CfError(failedCheck.code ?? 'preflight_failed', `Plan ${plan.id}: ${failedCheck.detail}`, {
+      hint: 'Nothing was written and the approval is unused; fix the cause or create a new plan',
+    });
+  }
+  const shown = new Set(plan.lockout_risks);
+  const added = report.lockout_risks.filter((line) => !shown.has(line));
+  if (added.length) {
+    throw new CfError('risk_changed', `Plan ${plan.id}: new lockout risk found since the plan was made:\n${added.join('\n')}`, {
+      hint: 'Nothing was written; create a new plan with claudeflare plan new so the user approves with these lines in view',
+    });
+  }
+}
+
+// Rollback plans skip product preflight at apply, so their lockout lines are
+// computed once here, stored and appended to risk. A failed analysis becomes
+// a lockout line itself: the rollback stays available, the user is warned.
+export async function addRollbackLockout(cwd, plan, client) {
+  if (!hasProductOps(plan)) return plan;
+  let lines;
+  try {
+    const report = await runProductPreflight(client, plan, plan.ops);
+    const blocked = report.checks.filter((c) => !c.ok && ['entitlement', 'permission', 'gather'].includes(c.name));
+    lines = [
+      ...report.lockout_risks,
+      ...blocked.map((c) => `${LOCKOUT_PREFIX} lockout analysis could not run (${c.detail}); review the ops before approving.`),
+    ];
+  } catch (err) {
+    lines = [`${LOCKOUT_PREFIX} lockout analysis could not run (${err?.message ?? err}); review the ops before approving.`];
+  }
+  const base = String(plan.risk ?? '').split('\n').filter((line) => line && !line.startsWith(LOCKOUT_PREFIX));
+  return updatePlan(cwd, plan.id, { lockout_risks: lines, risk: [...base, ...lines].join('\n') });
 }
 
 function hasWranglerOps(plan) {
@@ -304,6 +349,8 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
   assertApproved(cwd, plan, now);
   // A missing or unsafe secret env var refuses before any request, keeping the approval.
   assertSecretFieldsEnv(plan, env);
+  // Refusals here also keep the approval: nothing has been written yet.
+  await assertProductPreflight(client, plan);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);
   const file = writeApplySnapshot(cwd, plan, snapshot);

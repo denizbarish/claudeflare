@@ -75,7 +75,9 @@ export function createClient({
     }
   }
 
-  async function request(method, path, { query, body } = {}) {
+  // envelope: true returns the whole body ({ result, result_info, ... }) for
+  // paginated reads; otherwise only `result`.
+  async function request(method, path, { query, body, envelope = false } = {}) {
     const url = buildUrl(baseUrl, path, query);
     for (let attempt = 0; ; attempt++) {
       const response = await send(method, url, body);
@@ -87,7 +89,7 @@ export function createClient({
       if (!response.ok || data?.success === false) {
         throw redactError(mapError(response.status, data), token);
       }
-      return data?.result;
+      return envelope ? data : data?.result;
     }
   }
 

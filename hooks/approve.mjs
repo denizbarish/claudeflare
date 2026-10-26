@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
-import { trimPeriod } from './lib/plan-text.mjs';
+import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 
 const APPROVE_PATTERN = /^\s*\/claudeflare:approve\s+([a-z0-9-]+)\s*$/;
 const HASH_PREVIEW_LENGTH = 12;
@@ -37,9 +37,10 @@ function approve(cwd, planId, sessionId) {
   const approval = writeApproval(cwd, { plan_id: planId, session_id: sessionId });
   const opCount = Array.isArray(plan.ops) ? plan.ops.length : 0;
   const hashPreview = String(approval.ops_hash).replace(/^sha256:/, '').slice(0, HASH_PREVIEW_LENGTH);
+  const { lockout, rest } = splitRisk(plan);
   return (
-    `Approval recorded for ${planId}. Run claudeflare apply ${planId}. ` +
-    `Approved: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(plan.risk)}. ${opCount} op${opCount === 1 ? '' : 's'}, ops hash ${hashPreview}.`
+    `${lockoutLead(lockout)}Approval recorded for ${planId}. Run claudeflare apply ${planId}. ` +
+    `Approved: ${trimPeriod(plan.summary)}. Risk: ${trimPeriod(rest)}. ${opCount} op${opCount === 1 ? '' : 's'}, ops hash ${hashPreview}.`
   );
 }
 
