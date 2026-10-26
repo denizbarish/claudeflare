@@ -3,6 +3,7 @@
 // conflict-checks any op that matches one. Zone kinds of v1 stay in
 // resources.mjs.
 
+import { matchKind } from './match.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
 /**
@@ -132,7 +133,6 @@ export function baseFor(plan) {
 export function classifyProductOp(op, plan) {
   if (!plan || !op || typeof op !== 'object' || 'kind' in op) return null;
   const scope = plan.scope === 'account' ? 'account' : 'zone';
-  const method = String(op.method ?? '').toUpperCase();
   const path = String(op.path ?? '');
   const base = baseFor(plan);
   if (!path.startsWith(`${base}/`)) return null;
@@ -140,11 +140,8 @@ export function classifyProductOp(op, plan) {
   // unless the kind sets allowQuery.
   const rest = path.split('?')[0].slice(base.length);
   for (const module of PRODUCTS) {
-    for (const entry of module.kinds) {
-      if (entry.scope !== scope || !entry.methods.includes(method)) continue;
-      const match = entry.pattern.exec(rest);
-      if (match) return { entry, module, match, base };
-    }
+    const hit = matchKind(module.kinds, op.method, scope, rest);
+    if (hit) return { ...hit, module, base };
   }
   return null;
 }

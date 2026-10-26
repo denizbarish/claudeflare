@@ -29,10 +29,10 @@ const TUNNEL_SECRET = CREATED.credentials_file.TunnelSecret;
 
 // In-memory account built from the recorded responses. Lists page by
 // page/per_page like the API; dns_records filter by type and content.
-function fakeApi({ zones = fx('zones'), cnames = fx('dns-cnames') } = {}) {
+function fakeApi({ zones = fx('zones'), cnames = fx('dns-cnames'), config = fx('configurations') } = {}) {
   const store = new Map([
     [`${BASE}/cfd_tunnel/${T1}`, fx('tunnel')],
-    [`${BASE}/cfd_tunnel/${T1}/configurations`, fx('configurations')],
+    [`${BASE}/cfd_tunnel/${T1}/configurations`, config],
     [`${BASE}/cfd_tunnel/${T1}/connections`, fx('connections')],
     ...fx('routes').map((r) => [`${BASE}/teamnet/routes/${r.id}`, r]),
     ...fx('virtual-networks').map((v) => [`${BASE}/teamnet/virtual_networks/${v.id}`, v]),
@@ -93,16 +93,20 @@ function fakeApi({ zones = fx('zones'), cnames = fx('dns-cnames') } = {}) {
   };
 }
 
+// Captured once: a test may call setup twice, and its after hooks run in
+// registration order, so restoring a per-call value could point the env at a
+// temp dir that is already deleted.
+const ORIGINAL_KEY_DIR = process.env.CLAUDEFLARE_KEY_DIR;
+
 function setup(t, ops, fields = {}) {
   const cwd = mkdtempSync(join(tmpdir(), 'claudeflare-tunnel-'));
   const keyDir = mkdtempSync(join(tmpdir(), 'claudeflare-tunnelkey-'));
-  const saved = process.env.CLAUDEFLARE_KEY_DIR;
   process.env.CLAUDEFLARE_KEY_DIR = keyDir;
   t.after(() => {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(keyDir, { recursive: true, force: true });
-    if (saved === undefined) delete process.env.CLAUDEFLARE_KEY_DIR;
-    else process.env.CLAUDEFLARE_KEY_DIR = saved;
+    if (ORIGINAL_KEY_DIR === undefined) delete process.env.CLAUDEFLARE_KEY_DIR;
+    else process.env.CLAUDEFLARE_KEY_DIR = ORIGINAL_KEY_DIR;
   });
   const plan = createPlan(cwd, {
     scope: 'account', account_id: A, account_name: 'Acme', summary: 'Tunnel', risk: 'low', ops, slug: 'tunnel',
@@ -236,6 +240,21 @@ test('dropping a hostname that still has a CNAME is a Lockout risk line', async 
   assert.deepEqual(kept.lockout_risks, []);
 });
 
+test('a CNAME hostname with no rule before or after is still a Lockout risk line (it will 404)', async () => {
+  const config = { ...fx('configurations'), config: { ingress: [rule('app.example.com'), CATCH_ALL] } };
+  const report = await runProductPreflight(fakeApi({ config }), PLAN, [configOp([rule('app.example.com'), rule('api.example.com'), CATCH_ALL])]);
+  assert.equal(report.lockout_risks.length, 1);
+  assert.match(report.lockout_risks[0], /^Lockout risk: .*still has no rule for wiki\.example\.com.*404/);
+  assert.doesNotMatch(report.lockout_risks[0], /app\.example\.com/);
+});
+
+test('a path rule does not serve the whole host: dropping the full rule is a Lockout risk line', async () => {
+  const ingress = [rule('app.example.com'), { hostname: 'wiki.example.com', path: '/docs', service: 'http://localhost:8080' }, CATCH_ALL];
+  const report = await runProductPreflight(fakeApi(), PLAN, [configOp(ingress)]);
+  assert.equal(report.lockout_risks.length, 1);
+  assert.match(report.lockout_risks[0], /drops wiki\.example\.com/);
+});
+
 test('config note suggests a DNS op for a new hostname without a CNAME', async () => {
   const ops = [configOp([rule('app.example.com'), rule('wiki.example.com'), rule('api.example.com'), CATCH_ALL])];
   const report = await runProductPreflight(fakeApi(), PLAN, ops);
@@ -256,6 +275,8 @@ test('delete note names each CNAME hostname that will return 1016, across zone p
   assert.match(risk, /1016/);
   assert.match(risk, /app\.example\.com/);
   assert.match(risk, /wiki\.example\.com/);
+  // Active connectors from gather, by count and id.
+  assert.match(risk, /1 active connector\(s\) \(55555555-2222-4333-8444-555555555551\)/);
   assert.match(risk, new RegExp(`Not reversible: DELETE ${BASE}/cfd_tunnel/${T1}\\b`));
 });
 
@@ -370,6 +391,26 @@ test('config PUT verify fails on a 1033 body and passes when the hostnames serve
   const fine = await run('ok', 200);
   assert.equal(fine.status, 'applied');
   assert.ok(fine.results[0].verify.ok);
+});
+
+test('config PUT with a new hostname that has no CNAME yet skips its serving check (Ruling 18)', async (t) => {
+  const ingress = [rule('app.example.com'), rule('wiki.example.com'), rule('api.example.com'), CATCH_ALL];
+  const { cwd, plan } = setup(t, [configOp(ingress)]);
+  approve(cwd, plan);
+  const fetched = [];
+  // The new hostname would answer 1033 (no DNS); the served ones answer.
+  const fetchImpl = async (url) => {
+    fetched.push(url);
+    return url.includes('api.example.com')
+      ? new Response('error code: 1033', { status: 530 })
+      : new Response('ok', { status: 200, headers: { 'cf-ray': '8f00000000000000-FRA' } });
+  };
+  const applied = await applyPlan(cwd, fakeApi(), plan.id, T0, { fetchImpl, ...fastVerify() });
+  assert.equal(applied.status, 'applied');
+  const skip = applied.results[0].verify.checks.find((c) => c.name === 'tunnel_serving https://api.example.com/');
+  assert.deepEqual(skip, { name: 'tunnel_serving https://api.example.com/', ok: true, detail: 'skipped: no DNS record yet' });
+  assert.ok(!fetched.includes('https://api.example.com/'));
+  assert.ok(fetched.includes('https://app.example.com/'));
 });
 
 test('rename verify checks status only when the tunnel had connections', async () => {

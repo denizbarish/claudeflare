@@ -7,12 +7,12 @@
 import { CfError } from '../errors.mjs';
 import { LOCKOUT_PREFIX } from '../lockout-text.mjs';
 import { listAll } from '../paginate.mjs';
+import { matchKind, opTarget } from './match.mjs';
 import { readbackCheck, tunnelServingCheck } from '../verify.mjs';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const UUID_ONLY = new RegExp(`^${UUID}$`);
 const TUNNEL_PATH = new RegExp(`^.*/cfd_tunnel/${UUID}`);
-const ACCOUNT_PATH = /^\/accounts\/([^/]+)(\/.*)$/;
 const CNAME_SUFFIX = '.cfargotunnel.com';
 
 // Fields the API sets: dropped from restore bodies and from drift
@@ -110,8 +110,11 @@ function hostMatches(pattern, host) {
   return p === h || (p.startsWith('*.') && h.endsWith(p.slice(1)) && h.length > p.length - 1);
 }
 
+// Only a rule without a path serves the whole host; a path rule serves part of it.
 function served(ingress, host) {
-  return (Array.isArray(ingress) ? ingress : []).some((rule) => typeof rule?.hostname === 'string' && hostMatches(rule.hostname, host));
+  return (Array.isArray(ingress) ? ingress : []).some((rule) => (
+    typeof rule?.hostname === 'string' && (rule.path === undefined || rule.path === '') && hostMatches(rule.hostname, host)
+  ));
 }
 
 function ingressHostnames(ingress) {
@@ -129,7 +132,7 @@ function list(items) {
 }
 
 const notesCreate = (ctx, op) => {
-  const account = ACCOUNT_PATH.exec(String(op.path))?.[1] ?? '<account_id>';
+  const account = opTarget(op)?.base.split('/')[2] ?? '<account_id>';
   return [
     `After apply, write the connector token with claudeflare tunnel-token --account ${account} --tunnel <new tunnel id> --env-path <file>; claudeflare never prints it.`,
   ];
@@ -142,6 +145,10 @@ const notesDelete = (ctx, op) => {
   const lines = hosts.length
     ? [`Deleting tunnel ${label(ctx, id)}: ${list(hosts)} will return error 1016; remove or repoint their CNAME records to ${id}${CNAME_SUFFIX} with a zone plan.`]
     : [`Deleting tunnel ${label(ctx, id)}: no DNS CNAME in this account's zones points at ${id}${CNAME_SUFFIX}.`];
+  const connectorIds = ctx.connector_ids?.[id] ?? [];
+  if (connectorIds.length) {
+    lines.push(`Tunnel ${label(ctx, id)} has ${connectorIds.length} active connector(s) (${list(connectorIds)}); stop cloudflared on each host first, or they reconnect.`);
+  }
   const routes = (ctx.routes ?? []).filter((r) => r.tunnel_id === id).map((r) => r.network);
   if (routes.length) lines.push(`Private network routes ${list(routes)} use tunnel ${label(ctx, id)} and stop working.`);
   return lines;
@@ -245,15 +252,9 @@ function teamnetKinds(prefix, collection, type, nameField) {
 // { kind, id } of a tunnel op from its path alone (lockoutRisks and notes get
 // no plan); null for any other op.
 function parse(op) {
-  const m = ACCOUNT_PATH.exec(String(op?.path ?? '').split('?')[0]);
-  if (!m) return null;
-  const method = String(op.method ?? '').toUpperCase();
-  for (const entry of KINDS) {
-    if (!entry.methods.includes(method)) continue;
-    const hit = entry.pattern.exec(m[2]);
-    if (hit) return { kind: entry.kind, id: hit[1] ?? null };
-  }
-  return null;
+  const target = opTarget(op);
+  const hit = target && matchKind(KINDS, op.method, target.scope, target.rest);
+  return hit ? { kind: hit.entry.kind, id: hit.match[1] ?? null } : null;
 }
 
 const TOUCHES_TUNNEL = new Set(['tunnel_rename', 'tunnel_delete', 'tunnel_config_put', 'tunnel_connections_delete']);
@@ -264,14 +265,16 @@ const NEEDS_CNAMES = new Set(['tunnel_delete', 'tunnel_config_put']);
 // counts (Review Focus 1).
 async function gather(client, base, ops) {
   const items = ops.map((op, index) => ({ ...parse(op), index })).filter((p) => p.kind);
-  const ctx = { tunnels: {}, connectors: {}, configs: {}, cnames: {}, routes: [], vnets: [], cleared_routes: {} };
+  const ctx = { tunnels: {}, connectors: {}, connector_ids: {}, configs: {}, cnames: {}, routes: [], vnets: [], cleared_routes: {} };
   const ids = (kinds) => [...new Set(items.filter((p) => kinds.has(p.kind)).map((p) => p.id))];
 
   for (const id of ids(TOUCHES_TUNNEL)) {
     const tunnel = await client.request('GET', `${base}/cfd_tunnel/${id}`);
     ctx.tunnels[id] = { name: tunnel?.name ?? null, status: tunnel?.status ?? null };
     const connectors = await client.request('GET', `${base}/cfd_tunnel/${id}/connections`);
-    ctx.connectors[id] = Array.isArray(connectors) ? connectors.length : 0;
+    const running = Array.isArray(connectors) ? connectors : [];
+    ctx.connectors[id] = running.length;
+    ctx.connector_ids[id] = running.map((c) => String(c?.id ?? '')).filter(Boolean);
   }
   for (const id of ids(new Set(['tunnel_config_put']))) {
     const current = await client.request('GET', `${base}/cfd_tunnel/${id}/configurations`);
@@ -323,9 +326,10 @@ function dependencies(ctx, op, entry) {
   return users;
 }
 
-// Spec 6 item 10. A missing catch-all never reaches here: validateConfig
-// refuses it. A hostname counts as dropped when the current config serves it,
-// the new one does not, and a CNAME still sends traffic to the tunnel.
+// Spec 6 item 10 and 5.2. A missing catch-all never reaches here:
+// validateConfig refuses it. Every hostname whose CNAME sends traffic to the
+// tunnel but that no rule of the new config serves gets a line, whether the
+// config drops its rule or it had none before: it will answer 404.
 function lockoutRisks(ctx, ops) {
   const lines = [];
   for (const op of ops) {
@@ -333,10 +337,16 @@ function lockoutRisks(ctx, ops) {
     if (p?.kind !== 'tunnel_config_put') continue;
     const before = ctx.configs?.[p.id]?.ingress;
     const after = op.body?.config?.ingress;
-    const hosts = (ctx.cnames?.[p.id] ?? []).filter((host) => served(before, host) && !served(after, host));
-    if (!hosts.length) continue;
+    const unserved = (ctx.cnames?.[p.id] ?? []).filter((host) => !served(after, host));
+    if (!unserved.length) continue;
+    const dropped = unserved.filter((host) => served(before, host));
+    const never = unserved.filter((host) => !served(before, host));
+    const parts = [
+      dropped.length ? `drops ${list(dropped)}` : '',
+      never.length ? `${dropped.length ? 'and ' : ''}still has no rule for ${list(never)}` : '',
+    ].filter(Boolean).join(' ');
     lines.push(
-      `${LOCKOUT_PREFIX} the new config of tunnel ${label(ctx, p.id)} drops ${list(hosts)}, which still ${hosts.length === 1 ? 'has a CNAME' : 'have CNAMEs'} to ${p.id}${CNAME_SUFFIX}; requests fall through to the catch-all rule (usually 404). If it happens, roll this plan back with claudeflare rollback or put the rule back.`,
+      `${LOCKOUT_PREFIX} the new config of tunnel ${label(ctx, p.id)} ${parts}, which ${unserved.length === 1 ? 'has a CNAME' : 'have CNAMEs'} to ${p.id}${CNAME_SUFFIX}; requests fall through to the catch-all rule (usually 404). If it happens, roll this plan back with claudeflare rollback or add the rule.`,
     );
   }
   return lines;
@@ -360,6 +370,10 @@ function conflicts(ops, classified) {
   }
 }
 
+function skipped(name, detail) {
+  return { name, once: true, run: async () => ({ ok: true, detail }) };
+}
+
 function tunnelStatusCheck(client, path, id) {
   return {
     name: `tunnel_status ${id}`,
@@ -373,18 +387,26 @@ function tunnelStatusCheck(client, path, id) {
 }
 
 // Spec 8: read-back for every changed resource (deletes leave nothing to
-// read), tunnel_serving for each hostname of a new config (wildcards cannot be
-// fetched), and the tunnel status when it had connectors before the change.
+// read), tunnel_serving for each hostname of a new config that already had a
+// CNAME to the tunnel at preflight (Ruling 18; a new hostname has no DNS until
+// its zone plan runs, wildcards cannot be fetched), and the tunnel status when
+// it had connectors before the change.
 function verifyChecks(op, entry, ctx, result, post, deps) {
   if (String(op.method).toUpperCase() === 'DELETE') return [];
   // config_src is not echoed by every API version; the name is still compared.
   const checks = [readbackCheck(post, op.body, entry.kind === 'tunnel_create' ? ['config_src'] : [])];
+  const id = parse(op)?.id;
   if (entry.kind === 'tunnel_config_put') {
+    const cnames = ctx?.cnames?.[id];
     for (const host of ingressHostnames(op.body?.config?.ingress)) {
-      if (!host.includes('*')) checks.push(tunnelServingCheck(`https://${host}/`, { fetchImpl: deps?.fetchImpl }));
+      if (host.includes('*')) continue;
+      if (Array.isArray(cnames) && cnames.some((name) => hostMatches(name, host))) {
+        checks.push(tunnelServingCheck(`https://${host}/`, { fetchImpl: deps?.fetchImpl }));
+      } else {
+        checks.push(skipped(`tunnel_serving https://${host}/`, Array.isArray(cnames) ? 'skipped: no DNS record yet' : 'skipped: no preflight context'));
+      }
     }
   }
-  const id = parse(op)?.id;
   if ((entry.kind === 'tunnel_rename' || entry.kind === 'tunnel_config_put') && ctx?.connectors?.[id] > 0) {
     checks.push(tunnelStatusCheck(deps?.client, TUNNEL_PATH.exec(String(op.path))[0], id));
   }

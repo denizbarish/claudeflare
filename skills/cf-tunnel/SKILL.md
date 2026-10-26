@@ -118,8 +118,7 @@ claudeflare tunnel-token --account 0123456789abcdef0123456789abcdef --tunnel <tu
         { "service": "http_status:404" }
       ]
     }
-  },
-  "verify": { "expect": "tunnel_serving", "url": "https://app.example.com/" }
+  }
 }
 ```
 
@@ -129,7 +128,7 @@ claudeflare tunnel-token --account 0123456789abcdef0123456789abcdef --tunnel <tu
 { "method": "POST", "path": "/zones/{zone_id}/dns_records", "body": { "type": "CNAME", "name": "app.example.com", "content": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.cfargotunnel.com", "proxied": true } }
 ```
 
-A config PUT replaces the whole config: read the current one and keep every rule that should stay. Dropping a hostname that still has a CNAME adds a `Lockout risk:` line (it falls through to the catch-all and answers 404).
+A config PUT replaces the whole config: read the current one and keep every rule that should stay. Every hostname with a CNAME to the tunnel that no rule of the new config serves gets a `Lockout risk:` line, whether the config drops its rule or it never had one: it falls through to the catch-all and answers 404. A rule with a `path` serves only that path, not the whole host.
 
 ### Delete a tunnel
 
@@ -146,7 +145,7 @@ The plan risk names each CNAME hostname that will answer error 1016 and each pri
 
 ### Verification
 
-After apply claudeflare reads each changed resource back, fetches `https://<hostname>/` for each hostname of a new config (fails on error 1016 or 1033) and, when the tunnel had connectors before, expects status `healthy` or `degraded`. A failed check sets `applied_verify_failed` and drafts a rollback plan that still needs approval. A config PUT on a tunnel without a running connector always fails the serving check: start the connector first.
+After apply claudeflare reads each changed resource back, fetches `https://<hostname>/` for each hostname of a new config that already had a CNAME to the tunnel at preflight (fails on error 1016 or 1033; a new hostname without DNS yet shows `skipped: no DNS record yet`) and, when the tunnel had connectors before, expects status `healthy` or `degraded`. A failed check sets `applied_verify_failed` and drafts a rollback plan that still needs approval. A config PUT on a tunnel without a running connector fails the serving check for its existing hostnames: start the connector first. After the CNAME's zone plan, check a new hostname with `curl -sI https://<hostname>/` (no 1016 or 1033).
 
 ## Running the connector
 
@@ -167,7 +166,7 @@ services:
       replicas: 2
 ```
 
-Two replicas keep the hostnames up while one restarts or the token rotates. Start it with `docker compose --env-file ./cloudflared.env up -d` or plain `docker compose up -d`.
+Two replicas keep the hostnames up while one restarts or the token rotates. Start it with `docker compose up -d`.
 
 systemd (Linux host, `cloudflared` installed from the package repository):
 
