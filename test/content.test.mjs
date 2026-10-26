@@ -151,3 +151,63 @@ test('cf-troubleshoot SKILL.md links every tree', () => {
     assert.ok(text.includes(`trees/${tree}.md`), `${file} does not link trees/${tree}.md`);
   }
 });
+
+// v2 developer platform
+
+const DEV_FINDINGS = {
+  'cf-workers': [
+    'workers.compat_date.stale', 'workers.observability.off', 'workers.global_fetch.missing',
+    'workers.cpu_limit.near', 'workers.routes.unprotected_workers_dev', 'workers.versions.no_gradual',
+  ],
+  'cf-pages': ['pages.production_branch.unprotected', 'pages.build.no_cache', 'pages.preview.public', 'pages.custom_domain.missing'],
+  'cf-storage': [
+    'd1.time_travel.unused_before_migration', 'd1.migrations.pending', 'r2.bucket.public_dev_url',
+    'kv.namespace.unused', 'queues.dlq.missing',
+  ],
+};
+
+for (const [folder, ids] of Object.entries(DEV_FINDINGS)) {
+  test(`${folder} has the four domain sections in order, every finding id and sources`, () => {
+    assertDomainSkill(folder, ids, [...DOMAIN_SECTIONS, '## Sources']);
+  });
+}
+
+const DEV_TREES = ['1101', '1102', '1042', 'missing-binding', 'memory-limit', 'deploy-failed', 'pages-build-failed'];
+
+for (const tree of DEV_TREES) {
+  test(`cf-dev-troubleshoot tree ${tree} exists with Evidence, Hypotheses, Fix and Sources in order`, () => {
+    const file = `skills/cf-dev-troubleshoot/trees/${tree}.md`;
+    const text = read(file);
+    assert.ok(text.startsWith('# '), `${file} has no title`);
+    assertHeadingsInOrder(text, ['## Evidence', '## Hypotheses', '## Fix', '## Sources'], file);
+  });
+}
+
+test('cf-dev-troubleshoot links every tree and shows claudeflare tail and a workersInvocationsAdaptive GraphQL query', () => {
+  const file = 'skills/cf-dev-troubleshoot/SKILL.md';
+  const text = read(file);
+  for (const tree of DEV_TREES) assert.ok(text.includes(`trees/${tree}.md`), `${file} does not link trees/${tree}.md`);
+  assert.ok(text.includes('claudeflare tail'), `${file} does not use claudeflare tail`);
+  assert.ok(text.includes('workersInvocationsAdaptive'), `${file} has no workersInvocationsAdaptive query`);
+  assert.ok(text.includes('path: "/client/v4/graphql"'), `${file} has no GraphQL example in canonical form`);
+});
+
+test('cf-core documents account plans, the wrangler op fields, preflight, tail, secrets and the v2 errors and statuses', () => {
+  const core = read('skills/cf-core/SKILL.md');
+  for (const needle of [
+    '"scope": "account"', '"kind": "wrangler"', 'confirm_name', 'value_from_env', 'health_check', 'on_failed_check',
+    'claudeflare preflight', 'claudeflare tail', 'source_hash', 'pending_migrations',
+    'preflight_failed', 'source_changed', 'source_hash_missing', 'secret_env_missing', 'account_mismatch', 'wrangler_failed',
+    'resource_not_empty', 'rollback_not_empty', 'rollback_ambiguous', 'applied_check_failed', 'rolled_back_auto',
+  ]) {
+    assert.ok(core.includes(needle), `cf-core is missing ${needle}`);
+  }
+  assert.match(core, /never ask the user to paste a secret/i);
+});
+
+test('cf-audit lists the workers, pages and storage domains', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  for (const domain of ['workers', 'pages', 'storage']) {
+    assert.ok(audit.includes(`\`${domain}\``), `cf-audit is missing domain ${domain}`);
+  }
+});

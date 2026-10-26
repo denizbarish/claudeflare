@@ -1,9 +1,9 @@
 ---
-description: Run a scored audit of a Cloudflare zone across all domains and write a report.
+description: Run a scored audit of a Cloudflare zone across all domains, or of an account's Workers, Pages and storage, and write a report.
 argument-hint: "[zone]"
 ---
 
-Audit the Cloudflare zone `$ARGUMENTS`.
+Audit the Cloudflare zone `$ARGUMENTS` (or the account, when the user asks for Workers, Pages or storage).
 
 Load `cf-core` and `cf-audit`, then follow cf-audit from start to finish: pick the zone (if no zone was given above, list the zones and ask which one), run one `cf-auditor` per domain in parallel, merge and deduplicate findings, write the report with `claudeflare report`, and summarize the scores and top findings in the user's language.
 

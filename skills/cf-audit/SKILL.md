@@ -1,6 +1,6 @@
 ---
 name: cf-audit
-description: Scored Cloudflare zone audit. Defines the shared finding format and severity scale, runs one cf-auditor per domain in parallel, merges and deduplicates findings, and writes the report with claudeflare report. Use for audits, health checks, security or performance reviews of a zone, and whenever findings need the shared format.
+description: Scored Cloudflare zone and developer platform audit. Defines the shared finding format and severity scale, runs one cf-auditor per domain in parallel, merges and deduplicates findings, and writes the report with claudeflare report. Use for audits, health checks, security or performance reviews of a zone, and whenever findings need the shared format.
 ---
 
 # cf-audit: scored zone audit
@@ -10,6 +10,8 @@ Load `cf-core` first; it covers zone discovery and the change protocol. An audit
 ## 1. Pick the zone
 
 Use cf-core discovery to get `zone_id`, `zone_name` and the plan tier (`plan.legacy_id`). If the user did not name a zone and more than one exists, ask. Run `claudeflare init` (safe to run every time).
+
+For the developer platform domains (`workers`, `pages`, `storage`) the target is an account, not a zone: get the account `id` and `name`, and the project directory with the wrangler config when the user works in one. Audit them when the user asks for a Workers, Pages or storage audit, or for a full audit of an account. A full zone audit does not include them unless the user asks.
 
 ## 2. Domains
 
@@ -24,6 +26,9 @@ The full audit covers these domains, each checked against the skill with the sam
 | rules | `cf-rules` |
 | waf | `cf-waf` |
 | bots-ratelimit | `cf-bots-ratelimit` |
+| workers (account) | `cf-workers` |
+| pages (account) | `cf-pages` |
+| storage (account) | `cf-storage` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 
@@ -33,9 +38,11 @@ If the Agent tool is available, start one subagent per domain with `subagent_typ
 
 ```
 Domain: <domain>
-Zone name: <zone_name>
-Zone id: <zone_id>
+Zone name: <zone_name> (zone domains)
+Zone id: <zone_id> (zone domains)
 Account id: <account_id>
+Account name: <account_name> (account domains)
+Project dir: <absolute path, or none> (account domains)
 Plan tier: <free|pro|business|enterprise>
 Core rules: <absolute path to skills/cf-core/SKILL.md>
 Checklist: <absolute path to skills/cf-<domain>/SKILL.md>
@@ -110,7 +117,7 @@ Then run:
 claudeflare report --file /tmp/claudeflare-audit-example.com.json --zone example.com
 ```
 
-It writes the Markdown report under `.claudeflare/reports/<zone>/` and prints JSON: `{ "file": "<report path>", "overall": <score>, "domains": { "<domain>": <score>, ... } }`. Use these scores in the summary; do not recompute them.
+For an account audit pass the account slug (lowercase account name with dashes, for example `acme-corp`) as `--zone`. It writes the Markdown report under `.claudeflare/reports/<zone>/` and prints JSON: `{ "file": "<report path>", "overall": <score>, "domains": { "<domain>": <score>, ... } }`. Use these scores in the summary; do not recompute them.
 
 ## 8. Summarize in chat
 
