@@ -10,7 +10,9 @@
  * @property {string} product           Owning product (access).
  * @property {'account'|'zone'} scope   Plan scope the kind belongs to.
  * @property {string[]} methods         Uppercase HTTP methods.
- * @property {RegExp} pattern           Matched against the path after baseFor(plan).
+ * @property {RegExp} pattern           Matched against the path after baseFor(plan), query
+ *   removed; must be anchored with ^ and $ (registerProduct checks).
+ * @property {boolean} [allowQuery]     Accept a query string on the op path (none do yet).
  * @property {(m: RegExpExecArray) => ({ type: string, id: string } | null)} resource
  *   Conflict key; null when the op names no existing resource (a create).
  * @property {(m: RegExpExecArray, base: string) => string} [read]        Before-read path.
@@ -49,7 +51,15 @@ export const PRODUCTS = [];
 
 // Returns a function that removes the module again (tests use it so
 // registrations do not leak between files).
+// Every kind pattern must be anchored at both ends, or a pattern could match a
+// prefix or suffix of a longer path. Throws before anything is registered.
 export function registerProduct(module) {
+  for (const entry of module?.kinds ?? []) {
+    const source = entry?.pattern instanceof RegExp ? entry.pattern.source : '';
+    if (!source.startsWith('^') || !source.endsWith('$') || /(?:^|[^\\])(?:\\\\)*\\\$$/.test(source)) {
+      throw new TypeError(`Product ${module.product} kind ${entry?.kind} needs a RegExp pattern anchored with ^ and $`);
+    }
+  }
   PRODUCTS.push(module);
   return () => {
     const at = PRODUCTS.indexOf(module);
@@ -70,7 +80,9 @@ export function classifyProductOp(op, plan) {
   const path = String(op.path ?? '');
   const base = baseFor(plan);
   if (!path.startsWith(`${base}/`)) return null;
-  const rest = path.slice(base.length);
+  // The query never takes part in matching; validateProductFields refuses it
+  // unless the kind sets allowQuery.
+  const rest = path.split('?')[0].slice(base.length);
   for (const module of PRODUCTS) {
     for (const entry of module.kinds) {
       if (entry.scope !== scope || !entry.methods.includes(method)) continue;

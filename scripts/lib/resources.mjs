@@ -201,8 +201,21 @@ function isPagesRollback(method, path, accountId) {
   return method === 'POST' && path.startsWith(`${prefix}/`) && PAGES_ROLLBACK.test(path.slice(prefix.length));
 }
 
-// Zero Trust lives on the account; the zone form of Access is refused.
-const ZONE_ACCESS = /^\/zones\/[^/]+\/access(?:[/?]|$)/;
+// Zero Trust lives on the account; the zone form of Access is refused. The
+// test runs on the decoded, lowercased path part with empty segments
+// collapsed, so %61ccess, Access and //access cannot slip past it. A path
+// that does not decode counts as Access (refused).
+const ZONE_ACCESS = /^\/zones\/[^/]+\/access(?:\/|$)/;
+
+function isZoneAccess(path) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(path.split('?')[0]);
+  } catch {
+    return true;
+  }
+  return ZONE_ACCESS.test(decoded.toLowerCase().replace(/\/{2,}/g, '/'));
+}
 
 const PRODUCT_FIELDS = ['confirm_name', 'verify', 'secret_fields_from_env'];
 const VERIFY_KEYS = new Set(['expect', 'url']);
@@ -261,6 +274,11 @@ export function validateProductFields(op, entry, index) {
   const reject = (why) => {
     throw new CfError('invalid_op', `Op ${index} (${entry.kind}) ${why}`);
   };
+  // Kinds classify on the path without its query, so a query or an encoded
+  // byte could reach a different resource than the one matched.
+  const [pathPart, query] = String(op.path ?? '').split(/\?(.*)/s);
+  if (pathPart.includes('%')) reject('must not contain percent-encoding in its path');
+  if (query !== undefined && !entry.allowQuery) reject('must not carry a query string');
   if (entry.destructive || 'confirm_name' in op) {
     if (typeof op.confirm_name !== 'string' || op.confirm_name === '') {
       reject(entry.destructive ? 'is destructive and needs confirm_name equal to the resource name' : 'confirm_name must be a non-empty string');
@@ -310,12 +328,13 @@ export function validateOpTargets(ops, plan) {
       reject('still contains a placeholder; put the real id into the path');
     }
     if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
+    if (path.split('?')[0].includes('//')) reject('must not contain an empty segment (//)');
     const product = classifyProductOp(op, plan);
     if (account) {
       if (!product && !isPagesRollback(method, path, plan.account_id)) {
         reject('is not allowed on account plans (no product kind matches it and it is not POST /accounts/<account_id>/pages/projects/<project>/deployments/<id>/rollback)');
       }
-    } else if (ZONE_ACCESS.test(path)) {
+    } else if (isZoneAccess(path)) {
       reject('targets zone-scoped Access; use the account form /accounts/<account_id>/access/... on an account plan');
     } else if (!path.startsWith(prefix)) {
       reject(`must target this plan's zone (${prefix}...)`);

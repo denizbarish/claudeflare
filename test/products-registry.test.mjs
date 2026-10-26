@@ -85,6 +85,50 @@ test('zone-scoped access path is refused with a hint to the account form', () =>
   assert.throws(() => validateOpTargets([{ method: 'DELETE', path: `/zones/${Z}/access` }], zonePlan), code('invalid_op'));
 });
 
+test('zone access refusal survives encoding, case and empty segments', () => {
+  for (const path of [`/zones/${Z}/%61ccess/apps`, `/zones/${Z}/Access/apps`, `/zones/${Z}/ACCESS`, `/zones/${Z}/%41ccess/apps`]) {
+    assert.throws(() => validateOpTargets([{ method: 'POST', path, body: {} }], zonePlan), (e) => e.code === 'invalid_op' && /\/accounts\/<account_id>\/access/.test(e.message), path);
+  }
+  assert.throws(() => validateOpTargets([{ method: 'POST', path: `/zones/${Z}//access/apps`, body: {} }], zonePlan), code('invalid_op'));
+});
+
+test('empty path segments are invalid_op on every plan', () => {
+  assert.throws(() => validateOpTargets([{ method: 'POST', path: `/zones/${Z}//dns_records`, body: {} }], zonePlan), (e) => e.code === 'invalid_op' && /empty segment/.test(e.message));
+  assert.throws(() => validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/fake//things/${UUID}`, body: {} }], acctPlan), code('invalid_op'));
+});
+
+test('product kinds classify on the path without the query', () => {
+  const hit = classifyProductOp({ method: 'PUT', path: `${THING}?x=1` }, acctPlan);
+  assert.equal(hit.entry.kind, 'fake_thing_update');
+});
+
+test('product op with a query string or percent sign is invalid_op unless the kind allows queries', () => {
+  assert.throws(() => validateOpTargets([{ method: 'PUT', path: `${THING}?x=1`, body: {} }], acctPlan), (e) => e.code === 'invalid_op' && /query/.test(e.message));
+  assert.throws(() => validateOpTargets([{ method: 'PUT', path: `${THING}?x=%2F`, body: {} }], acctPlan), code('invalid_op'));
+  const loose = {
+    product: 'loose',
+    kinds: [{ kind: 'loose_list_put', product: 'loose', scope: 'account', methods: ['PUT'], pattern: /^\/loose\/(.+)$/, resource: (m) => ({ type: 'loose', id: m[1] }), readOnlyFields: [], inverse: 'none', destructive: false, allowQuery: true }],
+    probePath: () => '', gather: async () => ({}), lockoutRisks: () => [], verifyChecks: () => [],
+  };
+  const drop = registerProduct(loose);
+  try {
+    validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a?x=1`, body: {} }], acctPlan);
+    validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a?x=%20`, body: {} }], acctPlan);
+    // A percent sign in the path part is refused even when queries are allowed.
+    assert.throws(() => validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a%2Fb`, body: {} }], acctPlan), code('invalid_op'));
+  } finally {
+    drop();
+  }
+});
+
+test('registerProduct refuses kind patterns that are not anchored with ^ and $', () => {
+  const mod = (pattern) => ({ product: 'bad', kinds: [{ kind: 'bad_kind', scope: 'account', methods: ['PUT'], pattern }] });
+  for (const pattern of [/\/bad$/, /^\/bad/, /\/bad/, /^\/bad\$/, '^/bad$']) {
+    assert.throws(() => registerProduct(mod(pattern)), /anchored/, String(pattern));
+  }
+  assert.ok(!PRODUCTS.some((m) => m.product === 'bad'));
+});
+
 test('other zone writes keep the v1 open policy', () => {
   validateOpTargets([{ method: 'POST', path: `/zones/${Z}/dns_records`, body: {} }], zonePlan);
   validateOpTargets([{ method: 'PATCH', path: `/zones/${Z}/access_rules_custom/x`, body: {} }], zonePlan);
