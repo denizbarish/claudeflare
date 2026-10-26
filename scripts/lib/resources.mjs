@@ -3,6 +3,8 @@
 
 import { CfError } from './errors.mjs';
 import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, validateWranglerOp } from './wrangler-ops.mjs';
+import { classifyProductOp } from './products/index.mjs';
+import { getPath } from './products/fields.mjs';
 
 const ID = '[A-Za-z0-9]+';
 // Setting ids and phase names contain underscores (always_use_https,
@@ -105,7 +107,10 @@ const EXCLUSIVE_TARGET = {
   phase_entrypoint_put: 'phase entrypoint',
 };
 
-export function validatePlanOps(ops) {
+// `plan` is optional: without it product ops are not classified (0.2.x
+// behavior). With it, product ops claim their resource key, never share a plan
+// with wrangler ops and then go through each module's own conflict rules.
+export function validatePlanOps(ops, plan) {
   const seen = new Map();
   const claim = (key, index, what) => {
     if (seen.has(key)) {
@@ -130,9 +135,23 @@ export function validatePlanOps(ops) {
     }
     if (!prior || isDelete) resources.set(key, { index, isDelete });
   };
-  (ops ?? []).forEach((op, index) => {
+  const list = ops ?? [];
+  const classified = list.map(() => null);
+  let firstWrangler = -1;
+  let firstProduct = -1;
+  list.forEach((op, index) => {
     if (op?.kind === 'wrangler') {
+      if (firstWrangler === -1) firstWrangler = index;
       claimWrangler(op, index);
+      return;
+    }
+    const product = classifyProductOp(op, plan);
+    if (product) {
+      classified[index] = product;
+      if (firstProduct === -1) firstProduct = index;
+      // Any second op on the key conflicts, so a delete plus any op does too.
+      const key = product.entry.resource(product.match);
+      if (key) claim(`${key.type} ${key.id}`, index, `${key.type} ${key.id}`);
       return;
     }
     const { kind, readPath } = classify(op);
@@ -145,6 +164,15 @@ export function validatePlanOps(ops) {
       claim(`rule_delete ${readPath}`, index, `rule deletes in the same ruleset (${readPath})`);
     }
   });
+  if (firstWrangler !== -1 && firstProduct !== -1) {
+    throw new CfError(
+      'plan_conflict',
+      `Ops ${Math.min(firstWrangler, firstProduct)} and ${Math.max(firstWrangler, firstProduct)} mix a product REST op with a wrangler op; split them into separate plans`,
+    );
+  }
+  for (const module of new Set(classified.filter(Boolean).map((c) => c.module))) {
+    module.conflicts?.(list, classified);
+  }
 }
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -164,16 +192,82 @@ function isNormalPath(path) {
   }
 }
 
-// The only REST write accepted on account plans (relative to /accounts/<id>).
-const ACCOUNT_REST_ALLOWLIST = [
-  { method: 'POST', pattern: /^\/pages\/projects\/[A-Za-z0-9-]+\/deployments\/[A-Za-z0-9-]+\/rollback$/ },
-];
+// Account plans accept product kinds (products/index.mjs) plus this Pages
+// rollback write from 0.2.x (relative to /accounts/<id>).
+const PAGES_ROLLBACK = /^\/pages\/projects\/[A-Za-z0-9-]+\/deployments\/[A-Za-z0-9-]+\/rollback$/;
 
-function isAllowedAccountOp(method, path, accountId) {
+function isPagesRollback(method, path, accountId) {
   const prefix = `/accounts/${accountId}`;
-  if (!path.startsWith(`${prefix}/`)) return false;
-  const rest = path.slice(prefix.length);
-  return ACCOUNT_REST_ALLOWLIST.some((entry) => entry.method === method && entry.pattern.test(rest));
+  return method === 'POST' && path.startsWith(`${prefix}/`) && PAGES_ROLLBACK.test(path.slice(prefix.length));
+}
+
+// Zero Trust lives on the account; the zone form of Access is refused.
+const ZONE_ACCESS = /^\/zones\/[^/]+\/access(?:[/?]|$)/;
+
+const PRODUCT_FIELDS = ['confirm_name', 'verify', 'secret_fields_from_env'];
+const VERIFY_KEYS = new Set(['expect', 'url']);
+const VERIFY_EXPECT = /^(?:access_login|tunnel_serving|pool_healthy|tcp_open|status:[1-5][0-9]{2})$/;
+const VERIFY_NEEDS_URL = /^(?:access_login|tcp_open|status:)/;
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+
+// Credentials in the URL would land in the plan file.
+function isHttpUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function assertVerify(verify, reject) {
+  if (!verify || typeof verify !== 'object' || Array.isArray(verify)) reject('verify must be an object { expect, url }');
+  const unknown = Object.keys(verify).filter((key) => !VERIFY_KEYS.has(key));
+  if (unknown.length) reject(`verify has unknown keys ${JSON.stringify(unknown)} (only expect and url)`);
+  if (typeof verify.expect !== 'string' || !VERIFY_EXPECT.test(verify.expect)) {
+    reject('verify.expect must be access_login, status:<100-599>, tunnel_serving, pool_healthy or tcp_open');
+  }
+  if ('url' in verify && !isHttpUrl(verify.url)) reject('verify.url must be an http or https URL without credentials');
+  if (VERIFY_NEEDS_URL.test(verify.expect) && !('url' in verify)) reject(`verify.expect ${verify.expect} needs verify.url`);
+}
+
+// Error messages name field paths only, never body values: a literal there
+// may be the secret itself.
+function assertSecretFields(op, secretFields, reject) {
+  for (const path of secretFields) {
+    const value = getPath(op.body, path);
+    const literal = path.split('.').includes('*') ? value.some((v) => v !== undefined) : value !== undefined;
+    if (literal) reject(`carries a literal value at ${path}; leave it out of the body and map it in secret_fields_from_env`);
+  }
+  if (!('secret_fields_from_env' in op)) return;
+  const map = op.secret_fields_from_env;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) {
+    reject('secret_fields_from_env must be an object of body field path to env var name');
+  }
+  for (const [path, env] of Object.entries(map)) {
+    if (!secretFields.includes(path)) {
+      reject(`secret_fields_from_env names ${JSON.stringify(path)}, which is not a secret field of this kind (${secretFields.join(', ') || 'none'})`);
+    }
+    if (typeof env !== 'string' || !ENV_NAME.test(env)) {
+      reject(`secret_fields_from_env maps ${path} to an invalid env var name (must match ${ENV_NAME})`);
+    }
+  }
+}
+
+// Optional v3 op fields on an op that matched a product kind. confirm_name is
+// only checked for shape here; preflight compares it with the live name.
+export function validateProductFields(op, entry, index) {
+  const reject = (why) => {
+    throw new CfError('invalid_op', `Op ${index} (${entry.kind}) ${why}`);
+  };
+  if (entry.destructive || 'confirm_name' in op) {
+    if (typeof op.confirm_name !== 'string' || op.confirm_name === '') {
+      reject(entry.destructive ? 'is destructive and needs confirm_name equal to the resource name' : 'confirm_name must be a non-empty string');
+    }
+  }
+  if ('verify' in op) assertVerify(op.verify, reject);
+  assertSecretFields(op, entry.secretFields ?? [], reject);
 }
 
 // Structural check; subcommand and flag rules live in wrangler-ops.mjs.
@@ -187,10 +281,12 @@ function assertWranglerOpShape(op, index) {
 }
 
 // Plan ops (after {zone_id} resolution) must stay inside the plan's own zone
-// (zone plans) or match the account REST allowlist (account plans), use a
-// plain HTTP method, carry no leftover placeholders and never create a Page
-// Rule. Account plans also take `wrangler` ops. Runs on `plan new` and again
-// in applyPlan on the exact ops sent.
+// (zone plans, never its Access paths) or match a product kind or the Pages
+// rollback (account plans), use a plain HTTP method, carry no leftover
+// placeholders and never create a Page Rule. Product ops get their v3 fields
+// checked; other REST ops may not carry them. Account plans also take
+// `wrangler` ops. Runs on `plan new` and again in applyPlan on the exact ops
+// sent.
 export function validateOpTargets(ops, plan) {
   const account = plan?.scope === 'account';
   const prefix = `/zones/${plan?.zone_id}/`;
@@ -214,13 +310,21 @@ export function validateOpTargets(ops, plan) {
       reject('still contains a placeholder; put the real id into the path');
     }
     if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
+    const product = classifyProductOp(op, plan);
     if (account) {
-      if (!isAllowedAccountOp(method, path, plan.account_id)) {
-        reject('is not allowed on account plans (only POST /accounts/<account_id>/pages/projects/<project>/deployments/<id>/rollback)');
+      if (!product && !isPagesRollback(method, path, plan.account_id)) {
+        reject('is not allowed on account plans (no product kind matches it and it is not POST /accounts/<account_id>/pages/projects/<project>/deployments/<id>/rollback)');
       }
+    } else if (ZONE_ACCESS.test(path)) {
+      reject('targets zone-scoped Access; use the account form /accounts/<account_id>/access/... on an account plan');
     } else if (!path.startsWith(prefix)) {
       reject(`must target this plan's zone (${prefix}...)`);
     }
     if (method === 'POST' && PAGE_RULES.test(path)) reject('would create a Page Rule; use the modern rule types');
+    if (product) {
+      validateProductFields(op, product.entry, index);
+    } else if (PRODUCT_FIELDS.some((field) => field in op)) {
+      reject('carries confirm_name, verify or secret_fields_from_env, which only product ops take');
+    }
   });
 }

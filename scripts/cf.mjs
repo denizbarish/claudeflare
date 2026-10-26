@@ -160,7 +160,7 @@ async function planNew(cwd, flags) {
   let resolved = draftOps;
   let risk = draft.risk;
   validateOpTargets(resolved, target);
-  validatePlanOps(resolved);
+  validatePlanOps(resolved, target);
   if (target.scope === 'account') {
     const client = createClient();
     // R2 bucket deletes are refused unless the bucket is verifiably empty.

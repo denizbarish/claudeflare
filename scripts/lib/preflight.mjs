@@ -248,7 +248,7 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
   const ops = (draftOps ?? []).map(stripComputed);
   try {
     validateOpTargets(ops, target);
-    validatePlanOps(ops);
+    validatePlanOps(ops, target);
     add('ops', true, `${ops.length} op(s) valid`);
   } catch (err) {
     add('ops', false, errorText(err));

@@ -220,7 +220,7 @@ function assertSecretEnv(plan) {
 async function applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl }) {
   if (plan.rollback_of) assertRollbackSourceCurrent(cwd, plan);
   validateOpTargets(plan.ops, plan);
-  if (!plan.rollback_of) validatePlanOps(plan.ops);
+  if (!plan.rollback_of) validatePlanOps(plan.ops, plan);
   assertApproved(cwd, plan, now);
   await assertWranglerVersion(plan.project_dir, { runner });
   await assertAccountAccess(client, plan);
@@ -249,7 +249,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
     assertRollbackSourceCurrent(cwd, plan);
   } else {
     validateOpTargets(plan.ops, plan);
-    validatePlanOps(plan.ops);
+    validatePlanOps(plan.ops, plan);
   }
   assertApproved(cwd, plan, now);
   // Snapshot failures abort before any write and keep the approval.
