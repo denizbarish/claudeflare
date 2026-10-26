@@ -454,3 +454,31 @@ test('a D1 op that names the binding of a database created earlier reads nothing
   assert.equal(runner.calls.length, 0);
   assert.deepEqual(snap.entries[1].before, { exists: false });
 });
+
+test('r2.dev URL changes snapshot the managed domain and invert to the opposite command', async () => {
+  const path = `GET /accounts/${AID}/r2/buckets/assets/domains/managed`;
+  const runner = fakeRunner({});
+  const enabled = fakeClient({ [path]: { enabled: true, domain: 'pub-x.r2.dev' } });
+  const disable = await captureWranglerEntry(runner, enabled, w(['r2', 'bucket', 'dev-url', 'disable', 'assets']), PLAN);
+  assert.deepEqual(disable.before, { enabled: true });
+  const inverse = inverseForWrangler(disable, { events: [] });
+  assert.deepEqual(inverse, [w(['r2', 'bucket', 'dev-url', 'enable', 'assets'])]);
+  assertValidWrangler(inverse);
+  // Already in the target state: nothing to undo.
+  const enable = await captureWranglerEntry(runner, enabled, w(['r2', 'bucket', 'dev-url', 'enable', 'assets']), PLAN);
+  assert.deepEqual(inverseForWrangler(enable, { events: [] }), []);
+  const jurisdiction = await captureWranglerEntry(runner, noClient, w(['r2', 'bucket', 'dev-url', 'disable', 'assets', '-J', 'eu']), PLAN);
+  assert.equal(jurisdiction.invertible, false);
+  await assert.rejects(
+    captureWranglerEntry(runner, fakeClient({ [path]: {} }), w(['r2', 'bucket', 'dev-url', 'disable', 'assets']), PLAN),
+    (err) => err.code === 'snapshot_failed',
+  );
+  assert.equal(runner.calls.length, 0);
+});
+
+test('versions upload reads nothing and has nothing to roll back', async () => {
+  const runner = fakeRunner({});
+  const entry = await captureWranglerEntry(runner, noClient, w(['versions', 'upload', '--name', 'api']), PLAN);
+  assert.deepEqual(inverseForWrangler(entry, { version_id: V_CANARY, events: [] }), []);
+  assert.equal(runner.calls.length, 0);
+});

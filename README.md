@@ -102,7 +102,7 @@ Ops that rollback cannot undo are flagged in the plan's risk note before you app
 
 #### Account plans (developer platform)
 
-Workers, Pages and storage changes use account plans whose ops are wrangler commands from a fixed allowlist (`deploy`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply --remote`, `d1 time-travel restore`, create and delete for D1, R2, KV and Queues, `secret put` and `secret delete`), plus the Pages rollback REST call. On top of the steps above:
+Workers, Pages and storage changes use account plans whose ops are wrangler commands from a fixed allowlist (`deploy`, `versions upload`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply --remote`, `d1 time-travel restore`, create and delete for D1, R2, KV and Queues, `r2 bucket dev-url enable|disable`, `secret put` and `secret delete`), plus the Pages rollback REST call. On top of the steps above:
 
 - **Preflight.** `claudeflare plan new` runs `claudeflare preflight` first and refuses a failing draft. The dry-run build runs your project's own build locally (as `npm run build` would), before any approval.
 - **Code binding.** The plan stores a hash of the project source plus the deploy inputs (wrangler config, entry point, assets and Pages directories, D1 migrations), even gitignored build output. The approval binds to it: if the code changes before apply, apply refuses with `source_changed`. Pending D1 migrations are stored in the plan with their SQL.
@@ -242,7 +242,7 @@ In CI (`.github/workflows/ci.yml`), unit tests run on every push. The evals job 
 
 ## Roadmap
 
-- **v2, developer platform (0.2.0):** Workers, Pages, R2, D1, KV, Queues and Durable Objects bindings, with wrangler 4 integration. Next: `versions upload` for gradual rollouts inside claudeflare, and health checks pinned to the new version.
+- **v2, developer platform (0.2.0):** Workers, Pages, R2, D1, KV, Queues and Durable Objects bindings, with wrangler 4 integration. 0.2.1 adds `versions upload` for gradual rollouts and `r2 bucket dev-url`. Next: health checks pinned to the new version.
 - **v3, Zero Trust and network:** Access, Tunnel, Gateway, WARP, Load Balancing and Spectrum.
 
 ## Contributing

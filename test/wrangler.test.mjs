@@ -312,6 +312,16 @@ test('stopAfterMs stops the process and resolves with collected output', async (
   assert.equal(typeof result.code, 'number');
 });
 
+test('maxOutputBytes stops the process once output passes the limit and marks it truncated', async () => {
+  script({ tail: { code: 0, stdout: 'x'.repeat(200000), hang: true } });
+  const started = Date.now();
+  const result = await runWrangler(['tail'], { ...opts(), stopAfterMs: 30000, maxOutputBytes: 1000 });
+  assert.ok(Date.now() - started < 20000);
+  assert.equal(result.truncated, true);
+  assert.equal(result.stopped, true);
+  assert.ok(result.stdout.length <= 1000);
+});
+
 test('failureMessage prefers the last command-failed event', () => {
   const result = {
     code: 1,

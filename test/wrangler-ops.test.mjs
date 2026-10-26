@@ -39,6 +39,9 @@ const ACCEPTED = [
   [w(['deploy', 'src/index.ts', '--name', 'api', '--assets', 'public', '--minify', '--var', 'A:1', '--var', 'B:2', '-e', 'prod']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['deploy', '--name', 'api', '--route', 'example.com/*', '--compatibility-flag', 'nodejs_compat', '--no-bundle']), 'worker_deploy', { type: 'worker', name: 'api' }, true],
   [w(['versions', 'deploy', 'v1@50', 'v2@50', '--name', 'api']), 'worker_versions_deploy', { type: 'worker', name: 'api' }, true],
+  [w(['versions', 'upload', '--name', 'api', '--tag', 'v2', '--preview-alias', 'canary']), 'worker_versions_upload', { type: 'worker', name: 'api' }, true],
+  [w(['r2', 'bucket', 'dev-url', 'disable', 'b1']), 'r2_dev_url', { type: 'r2', name: 'b1' }, true],
+  [w(['r2', 'bucket', 'dev-url', 'enable', 'b1', '-J', 'eu']), 'r2_dev_url', { type: 'r2', name: 'b1' }, false],
   [w(['rollback', 'v-123', '--name', 'api'], { worker: 'api' }), 'worker_rollback', { type: 'worker', name: 'api' }, true],
   [w(['pages', 'deploy', 'dist', '--project-name', 'site', '--branch', 'main']), 'pages_deploy', { type: 'pages', name: 'site' }, true],
   [w(['d1', 'migrations', 'apply', 'db1', '--remote']), 'd1_migrations_apply', { type: 'd1', name: 'db1' }, true],
@@ -77,7 +80,7 @@ test('subcommands outside the allowlist are rejected (exact, case-sensitive, lea
   for (const args of [
     ['publish'], ['tail'], ['Deploy'], ['d1', 'execute', 'db', '--remote'], ['kv', 'key', 'put', 'k', 'v'],
     ['r2', 'object', 'delete', 'b/k'], ['pages', 'project', 'delete', 'site'], ['secret', 'bulk'],
-    ['versions', 'upload'], ['--env', 'production', 'deploy'], ['d1'], ['r2', 'bucket'],
+    ['versions', 'view'], ['r2', 'bucket', 'dev-url', 'get', 'b1'], ['--env', 'production', 'deploy'], ['d1'], ['r2', 'bucket'],
   ]) {
     rejects(w(args), /not allowlisted/);
   }
@@ -442,4 +445,21 @@ test('rollback deletes of created resources say they run only when empty, not th
   assert.doesNotMatch(risk, /Data loss/);
   assert.match(risk, /Deleted only if kv .* is still empty/);
   assert.match(risk, /Not deleted automatically: d1 app-db/);
+});
+
+test('versions upload refuses secrets files and build output flags', () => {
+  for (const flag of [['--secrets-file', 's.json'], ['--outdir', 'out'], ['--outfile', 'o.js'], ['--dry-run'], ['--alias', 'a:b']]) {
+    rejects(w(['versions', 'upload', '--name', 'api', ...flag]));
+  }
+  rejects(w(['versions', 'upload']), /--name/);
+  rejects(w(['r2', 'bucket', 'dev-url', 'disable', 'b1', '--force']));
+});
+
+test('only ops that change what serves traffic take a health check', () => {
+  const check = { health_check: { url: 'https://api.example.com/health' } };
+  rejects(w(['versions', 'upload', '--name', 'api'], check), /takes no health_check/);
+  rejects(w(['secret', 'put', 'K', '--name', 'api'], { value_from_env: 'K', ...check }), /takes no health_check/);
+  rejects(w(['deploy', '--name', 'api'], { on_failed_check: 'rollback' }), /needs a health_check/);
+  accepts(w(['versions', 'deploy', 'v1@100', '--name', 'api'], check));
+  accepts(w(['pages', 'deploy', 'dist', '--project-name', 'site'], check));
 });

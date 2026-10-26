@@ -11,6 +11,8 @@ Every other cf-* skill assumes you follow this one. Reads are free; writes happe
 
 Run `claudeflare init` once per project before the first plan or report. It creates `.claudeflare/` (plans, approvals, snapshots, reports) and adds `.claudeflare/` to `.gitignore`. It is safe to run again.
 
+If the shell cannot find `claudeflare` (exit code 127), run the same commands as `node <plugin root>/bin/claudeflare ...`; the plugin root is two folders above this skill's base directory. Never stop the protocol because the command is missing.
+
 ## 2. Channels
 
 | Concern | Channel |
@@ -146,9 +148,9 @@ One plan may not:
 ```
 
 - `project_dir` is absolute; path arguments (`--config`, `--assets`, a Pages directory) must stay inside it.
-- Allowed `args` (anything else is `invalid_op`): `deploy`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply <db> --remote`, `d1 time-travel restore`, `d1 create|delete`, `r2 bucket create|delete`, `kv namespace create|delete`, `queues create|delete`, `secret put|delete`. `--name` is required for Worker deploys, rollbacks, deletes and secrets. Never put `--yes`, `-y`, `--message`, `--dry-run` or `--outdir` in a draft; claudeflare adds what it needs.
+- Allowed `args` (anything else is `invalid_op`): `deploy`, `versions upload`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply <db> --remote`, `d1 time-travel restore`, `d1 create|delete`, `r2 bucket create|delete`, `r2 bucket dev-url enable|disable`, `kv namespace create|delete`, `queues create|delete`, `secret put|delete`. `--name` is required for Worker deploys, uploads, rollbacks, deletes and secrets. Never put `--yes`, `-y`, `--message`, `--dry-run` or `--outdir` in a draft; claudeflare adds what it needs.
 - Every delete op carries `"confirm_name": "<resource name>"`. R2 bucket deletes are refused unless the bucket is empty (`resource_not_empty`); KV, Queue and D1 deletes get a data-loss risk line.
-- `health_check` (optional): `url` must be `https`, `expect_status` defaults to 200. Apply tries it 3 times, 5 seconds apart. `"on_failed_check": "rollback"` reverts that op right away when the check fails.
+- `health_check` (optional, only on `deploy`, `versions deploy`, `rollback` and `pages deploy`): `url` must be `https`, `expect_status` (an integer, 100 to 599) defaults to 200. Redirects are not followed; a failure names the redirect target. Apply tries it 3 times, 5 seconds apart. `"on_failed_check": "rollback"` reverts that op right away when the check fails.
 - The only account REST op is a Pages rollback: `{ "method": "POST", "path": "/accounts/<account_id>/pages/projects/<project>/deployments/<deployment_id>/rollback" }`.
 - `source_hash`, `source_paths` and `pending_migrations` are computed by claudeflare; any value in the draft is replaced.
 
@@ -166,7 +168,7 @@ Ask the user to export `STRIPE_KEY` in the shell that runs `claudeflare apply`. 
 claudeflare preflight --file /tmp/claudeflare-draft-deploy-api.json
 ```
 
-It prints `{ "ok", "checks": [{ "name", "ok", "detail" }], "upload_size"?, "source_hash"?, "pending_migrations"? }` and exits 1 when a check fails. Checks: ops, wrangler 4 present, the token can read the account, wrangler config (the op's `--config` and `--env`), bindings exist, a dry-run build (`deploy --dry-run`, which runs the project's own build locally), pending D1 migrations with their SQL, and the source hash. On a failed check, report it and stop; fix the cause before planning. Preflight writes nothing to Cloudflare.
+It prints `{ "ok", "checks": [{ "name", "ok", "detail" }], "upload_size"? (one build) or "upload_sizes"? (`[{ worker, size }]`, several), "source_hash"?, "pending_migrations"? }` and exits 1 when a check fails. Checks: ops, wrangler 4 present, the token can read the account, wrangler config (the op's `--config` and `--env`; found as wrangler finds it, and refused when it lies outside `project_dir` or is a redirected `.wrangler/deploy/config.json`), bindings exist (KV, R2, D1, Queues, Workers behind service and Durable Object bindings, Vectorize, Hyperdrive), a dry-run build (`deploy --dry-run`, which runs the project's own build locally), pending D1 migrations with their SQL, and the source hash. On a failed check, report it and stop; fix the cause before planning. Preflight writes nothing to Cloudflare.
 
 ### 5.3 Create the plan
 

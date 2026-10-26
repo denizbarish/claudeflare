@@ -118,7 +118,7 @@ function signalTree(child, signal) {
   }
 }
 
-function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs }) {
+function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs, maxOutputBytes }) {
   return new Promise((resolvePromise, reject) => {
     let child;
     try {
@@ -137,6 +137,8 @@ function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs }
     const stderr = [];
     const timers = [];
     let reason = null; // 'timeout' | 'stopped'
+    let collected = 0;
+    let truncated = false;
     let settled = false;
 
     const result = (code, signal) => ({
@@ -144,6 +146,7 @@ function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs }
       reason,
       stdout: Buffer.concat(stdout).toString('utf8'),
       stderr: Buffer.concat(stderr).toString('utf8'),
+      truncated,
     });
     const finish = (fn, value) => {
       if (settled) return;
@@ -161,8 +164,20 @@ function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs }
     timers.push(setTimeout(() => stop('timeout'), timeoutMs));
     if (stopAfterMs !== undefined) timers.push(setTimeout(() => stop('stopped'), stopAfterMs));
 
-    child.stdout.on('data', (chunk) => stdout.push(chunk));
-    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    // maxOutputBytes bounds memory for long-running reads (tail): past it,
+    // output is dropped and the child is stopped.
+    const collect = (into) => (chunk) => {
+      if (truncated) return;
+      collected += chunk.length;
+      if (maxOutputBytes !== undefined && collected > maxOutputBytes) {
+        truncated = true;
+        stop('stopped');
+        return;
+      }
+      into.push(chunk);
+    };
+    child.stdout.on('data', collect(stdout));
+    child.stderr.on('data', collect(stderr));
     child.stdin.on('error', () => {
       // The child may exit without reading stdin (EPIPE); its exit code tells the story.
     });
@@ -188,7 +203,7 @@ function spawnAndCollect(file, argv, { cwd, env, stdin, timeoutMs, stopAfterMs }
 
 export async function runWrangler(
   args,
-  { cwd, token, accountId, stdin, secrets = [], timeoutMs = DEFAULT_TIMEOUT_MS, stopAfterMs, extraEnv = {} } = {},
+  { cwd, token, accountId, stdin, secrets = [], timeoutMs = DEFAULT_TIMEOUT_MS, stopAfterMs, maxOutputBytes, extraEnv = {} } = {},
 ) {
   const { file, prefixArgs } = wranglerCommand(cwd);
   const outputFile = join(tmpdir(), `claudeflare-wrangler-${randomUUID()}.ndjson`);
@@ -198,7 +213,7 @@ export async function runWrangler(
   try {
     let raw;
     try {
-      raw = await spawnAndCollect(file, [...prefixArgs, ...args], { cwd, env, stdin, timeoutMs, stopAfterMs });
+      raw = await spawnAndCollect(file, [...prefixArgs, ...args], { cwd, env, stdin, timeoutMs, stopAfterMs, maxOutputBytes });
     } catch (err) {
       if (err?.code === 'ENOENT') throw missing('wrangler could not be started');
       throw new CfError('wrangler_failed', sanitize(`wrangler could not be started: ${err?.message}`, sensitive));
@@ -213,6 +228,7 @@ export async function runWrangler(
       events: readEvents(outputFile, sensitive),
     };
     if (raw.reason === 'stopped') out.stopped = true;
+    if (raw.truncated) out.truncated = true;
     return out;
   } finally {
     rmSync(outputFile, { force: true });

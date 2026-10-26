@@ -1,4 +1,4 @@
-// Reads the wrangler config of a project (wrangler.jsonc, wrangler.json or
+// Reads the wrangler config of a project (wrangler.json, wrangler.jsonc or
 // wrangler.toml, or the file given with --config) for preflight: entry point,
 // assets and the resource bindings, with an --env section applied. The TOML
 // reader covers the subset wrangler configs use (tables, arrays of tables,
@@ -7,13 +7,40 @@
 // silent skip.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { CfError } from './errors.mjs';
 
-export const CONFIG_FILES = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'];
+// wrangler 4.152 looks for each name in turn, walking up from the working
+// directory, so a wrangler.json in a parent folder wins over a wrangler.toml
+// in the project. A deploy also follows .wrangler/deploy/config.json (written
+// by the Cloudflare Vite plugin) the same way.
+export const CONFIG_FILES = ['wrangler.json', 'wrangler.jsonc', 'wrangler.toml'];
+const DEPLOY_REDIRECT = join('.wrangler', 'deploy', 'config.json');
 
+function findUp(start, name) {
+  for (let dir = resolve(start); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, name))) return join(dir, name);
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+// The config wrangler would pick in projectDir, relative to it, or null.
+// One it would pick from outside projectDir, or a redirected deploy config,
+// is refused: preflight could not read or hash what wrangler would use.
 export function findConfigFile(projectDir) {
-  return CONFIG_FILES.find((name) => existsSync(join(projectDir, name))) ?? null;
+  const redirect = findUp(projectDir, DEPLOY_REDIRECT);
+  if (redirect) {
+    throw new CfError('invalid_config', `wrangler would follow the redirected deploy config ${redirect}, which claudeflare does not support; pass --config to the op`);
+  }
+  for (const name of CONFIG_FILES) {
+    const found = findUp(projectDir, name);
+    if (!found) continue;
+    if (found !== join(resolve(projectDir), name)) {
+      throw new CfError('invalid_config', `wrangler would use ${found}, outside project_dir; set project_dir to the folder that holds it or pass --config`);
+    }
+    return name;
+  }
+  return null;
 }
 
 // Walks text outside JSON strings: onChar(i) returns what to emit for a
@@ -137,7 +164,7 @@ function setPath(obj, keys, value) {
 // Keys preflight relies on; an unsupported value under them is an error.
 const RELIED_KEYS = new Set([
   'main', 'assets', 'site', 'pages_build_output_dir', 'env',
-  'kv_namespaces', 'r2_buckets', 'd1_databases', 'queues',
+  'kv_namespaces', 'r2_buckets', 'd1_databases', 'queues', 'durable_objects', 'services', 'vectorize', 'hyperdrive',
 ]);
 
 const bracketDepth = (text) => {
@@ -232,7 +259,7 @@ export function readWranglerConfig(projectDir, configPath) {
 
 // Bindings are not inherited by environments in wrangler; entry point and
 // asset settings are.
-const NON_INHERITED = ['kv_namespaces', 'r2_buckets', 'd1_databases', 'queues'];
+const NON_INHERITED = ['kv_namespaces', 'r2_buckets', 'd1_databases', 'queues', 'durable_objects', 'services', 'vectorize', 'hyperdrive'];
 
 export function applyEnv(config, envName, file) {
   if (envName === undefined) return config;
@@ -261,5 +288,9 @@ export function configBindings(config) {
       migrations_dir: str(b.migrations_dir),
     })),
     queue: list(config.queues?.producers).map((b) => ({ binding: str(b.binding), name: str(b.queue) })),
+    service: list(config.services).map((b) => ({ binding: str(b.binding), name: str(b.service) })),
+    durable: list(config.durable_objects?.bindings).map((b) => ({ binding: str(b.name), script: str(b.script_name) })),
+    vectorize: list(config.vectorize).map((b) => ({ binding: str(b.binding), name: str(b.index_name) })),
+    hyperdrive: list(config.hyperdrive).map((b) => ({ binding: str(b.binding), id: str(b.id) })),
   };
 }

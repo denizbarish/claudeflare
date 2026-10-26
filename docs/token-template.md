@@ -94,6 +94,8 @@ Read (preflight, `claudeflare get`, `claudeflare tail`, audits through the CLI):
 | Account | Workers R2 Storage Read | R2 buckets, the empty check before a bucket delete |
 | Account | Queues Read | Queues |
 | Account | Account Analytics Read | Workers invocation analytics (GraphQL) |
+| Account | Vectorize Read | Optional: preflight checks Vectorize bindings |
+| Account | Hyperdrive Read | Optional: preflight checks Hyperdrive bindings |
 | Zone | Workers Routes Read | Worker routes on your zones |
 
 Write (account plans), the read rows plus:
@@ -104,7 +106,7 @@ Write (account plans), the read rows plus:
 | Account | Cloudflare Pages Edit (API: Pages Write) | `pages deploy`, Pages rollback |
 | Account | D1 Edit (API: D1 Write) | `d1 create`, `d1 delete`, `d1 migrations apply --remote`, `d1 time-travel restore` |
 | Account | Workers KV Storage Edit (API: Workers KV Storage Write) | `kv namespace create`, `kv namespace delete` |
-| Account | Workers R2 Storage Edit (API: Workers R2 Storage Write) | `r2 bucket create`, `r2 bucket delete` |
+| Account | Workers R2 Storage Edit (API: Workers R2 Storage Write) | `r2 bucket create`, `r2 bucket delete`, `r2 bucket dev-url enable` and `disable` |
 | Account | Queues Edit (API: Queues Write) | `queues create`, `queues delete` |
 | Zone | Workers Routes Edit (API: Workers Routes Write) | Deploys that change `routes` in the wrangler config |
 

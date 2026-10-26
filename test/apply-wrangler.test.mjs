@@ -403,6 +403,12 @@ test('runHealthCheck passes on a later try and treats network errors as failures
   assert.deepEqual(down, { ok: false, status: null, attempts: 3 });
 });
 
+test('runHealthCheck reports a redirect target without its query string', async () => {
+  const fetchImpl = async () => ({ status: 301, headers: new Headers({ location: '/login?next=%2Fhealth&token=abc#x' }) });
+  const res = await runHealthCheck({ url: HEALTH.url }, { fetchImpl, sleep: async () => {} });
+  assert.deepEqual(res, { ok: false, status: 301, attempts: 3, location: `${new URL(HEALTH.url).origin}/login` });
+});
+
 // ---- CLI: plan new R2 refusal and secret canary across every written file ----
 
 function run(args, env = {}) {

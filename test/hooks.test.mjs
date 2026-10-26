@@ -639,3 +639,16 @@ test('decideWrangler checks package.json scripts that npm, pnpm, yarn and bun wo
     assert.equal(decideWrangler(cmd, { cwd: dir }), null, cmd);
   }
 });
+
+test('guard asks for claudeflare apply called by path or quoted, not only bare', (t) => {
+  const ctx = setup(t);
+  writeApproval(ctx.cwd, { plan_id: PLAN_ID, session_id: 's' });
+  for (const cmd of [
+    `node /plugin/bin/claudeflare apply ${PLAN_ID}`,
+    `./bin/claudeflare apply ${PLAN_ID}`,
+    `"/plugin dir/bin/claudeflare" apply '${PLAN_ID}'`,
+    `node scripts/cf.mjs apply ${PLAN_ID}`,
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)).permissionDecision, 'ask', cmd);
+  }
+});

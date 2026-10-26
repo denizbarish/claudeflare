@@ -20,7 +20,9 @@ const STATE_REASON = 'claudeflare state files are managed by the claudeflare CLI
 
 const MCP_EXECUTE = /^mcp__.*cloudflare.*__execute$/;
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-const APPLY_PATTERN = /(^|[\s;&|(])(claudeflare|node\s+\S*cf\.mjs)\s+apply\s+([a-z0-9-]+)/g;
+// Bare, by path (node /x/bin/claudeflare, ./bin/claudeflare, scripts/cf.mjs)
+// and quoted forms all count as an apply.
+const APPLY_PATTERN = /(^|[\s;&|(/'"])(claudeflare|cf\.mjs)['"]?\s+apply\s+['"]?([a-z0-9-]+)/g;
 const PROTECTED_COMMAND_PARTS = [
   '.claudeflare/approvals',
   '.claudeflare/plans',
