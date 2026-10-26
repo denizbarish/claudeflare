@@ -11,7 +11,7 @@ import { inspectCode } from './lib/inspect-code.mjs';
 import { isAllowedCall, isTunnelTokenRead } from './lib/allowed-call.mjs';
 import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 import { decideWrangler } from './lib/wrangler-rules.mjs';
-import { SECRET_REASON, TUNNEL_TOKEN_REASON, bashPaths, bashReadsSecret, decideCloudflared, globExcludes, secretFilesFor } from './lib/secret-rules.mjs';
+import { SECRET_REASON, TUNNEL_TOKEN_REASON, bashPaths, bashReadsSecret, decideCloudflared, globExcludes, readsTunnelToken, secretFilesFor } from './lib/secret-rules.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -37,7 +37,6 @@ const PROTECTED_COMMAND_PARTS = [
   'approval-key.mjs',
 ];
 const CF_API_HOST = 'api.cloudflare.com';
-const TUNNEL_TOKEN_TEXT = /cfd_tunnel\/[^/\s'"]+\/token(?![\w-])/i;
 const CURL_METHOD = /(?:^|\s)(?:-[A-Za-z]*X\s*|--request(?:\s+|=))['"]?([A-Za-z]+)/g;
 const CURL_BODY = /(?:^|\s)(?:-[A-Za-z]*[dFT]|--data|--json|--form|--upload-file)/;
 const ASK_OPS_LIMIT = 20;
@@ -207,7 +206,7 @@ function decideBash(toolInput, cwd) {
     touchesState(command) ? deny(STATE_REASON) : null,
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
-    TUNNEL_TOKEN_TEXT.test(command) ? deny(TUNNEL_TOKEN_REASON) : null,
+    readsTunnelToken(command) ? deny(TUNNEL_TOKEN_REASON) : null,
     bashReadsSecretIn(command, cwd) ? deny(SECRET_REASON) : null,
   ].filter(Boolean);
   const cloudflared = decideCloudflared(command);

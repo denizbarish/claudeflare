@@ -815,6 +815,112 @@ test('Bash reads of the tunnel token endpoint are denied', (t) => {
   assert.equal(guard(ctx, bash(`claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path .env`)), null);
 });
 
+// Final review H1: every token endpoint shape the security review found.
+
+const TOKEN_ENDPOINT_PATHS = [
+  `/accounts/${AID}/cfd_tunnel/${TID}/token`,
+  `/accounts/${AID}/warp_connector/${TID}/token`,
+  `/client/v4/accounts/${AID}/warp_connector/${TID}/token/`,
+  `/accounts/${AID}/tunnels/${TID}/token`,
+  `//accounts/${AID}/cfd_tunnel/${TID}/token`,
+  `/accounts/${AID}/cfd_tunnel//${TID}/token`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/x/../token`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/./token`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/%74oken`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/%2574oken`,
+  `/accounts/${AID}/cfd%5ftunnel/${TID}/token`,
+  `/accounts/${AID}/CFD_TUNNEL/${TID}/TOKEN`,
+  `/accounts/${AID}/cfd_tunnel/${TID}%2ftoken`,
+  `/accounts/${AID}\\cfd_tunnel\\${TID}\\token`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/token?x=1`,
+  `/accounts/${AID}/cfd_tunnel/${TID}/token#x`,
+];
+
+test('isAllowedCall normalizes the path before refusing token endpoints', () => {
+  for (const path of TOKEN_ENDPOINT_PATHS) {
+    assert.equal(isAllowedCall({ method: 'GET', path }), false, path);
+  }
+  for (const path of [
+    `/accounts/${AID}/cfd_tunnel/${TID}`,
+    `/accounts/${AID}/cfd_tunnel/${TID}/connections`,
+    `/accounts/${AID}/warp_connector/${TID}`,
+    `/accounts/${AID}/cfd_tunnel/${TID}/configurations`,
+    `/accounts/${AID}/cfd_tunnel/${TID}/tokens`,
+    '/user/tokens/verify',
+  ]) {
+    assert.equal(isAllowedCall({ method: 'GET', path }), true, path);
+  }
+});
+
+test('MCP execute reading any token endpoint shape is denied with the tunnel-token reason', (t) => {
+  const ctx = setup(t, { plan: false });
+  for (const path of TOKEN_ENDPOINT_PATHS) {
+    const code = `async () => { const r = await cloudflare.request({ method: 'GET', path: ${JSON.stringify(path)} }); return r.result; }`;
+    // A string with escapes is not a literal the inspector reads: denied as non-canonical.
+    if (path.includes('\\')) assert.equal(guard(ctx, execute(code)).permissionDecision, 'deny', path);
+    else assertDeny(guard(ctx, execute(code)), TUNNEL_TOKEN_REASON);
+  }
+});
+
+test('Bash token endpoint reads are denied whatever the quoting or variable use', (t) => {
+  const ctx = setup(t, { plan: false });
+  const api = 'https://api.cloudflare.com/client/v4';
+  for (const cmd of [
+    `claudeflare get /accounts/$A/cfd_tunnel/"$T"/token`,
+    `claudeflare get "/accounts/$A/cfd_tunnel/$T"/token`,
+    `claudeflare get '/accounts/${AID}/cfd_tunnel/${TID}/token'`,
+    `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}/\\token`,
+    'P=/accounts/$A/cfd_tunnel/$T; claudeflare get $P/token',
+    'P=/accounts/$A/cfd_tunnel/$T\nclaudeflare get "$P/token"',
+    'claudeflare get $P/token',
+    'claudeflare get "${TUNNEL_PATH}"/token',
+    `claudeflare get /accounts/${AID}/warp_connector/${TID}/token`,
+    `claudeflare get /accounts/$A/warp_connector/"$T"/token`,
+    `claudeflare get /accounts/${AID}/tunnels/${TID}/token`,
+    `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}/%74oken`,
+    `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}/x/../token`,
+    `curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" ${api}/accounts/$A/cfd_tunnel/"$T"/token`,
+    `curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "${api}/accounts/$A/cfd_tunnel/$T"/token`,
+    `curl -s "${api}$P/token" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"`,
+    `curl -s ${api}/accounts/${AID}/warp_connector/${TID}/token`,
+    `node scripts/cf.mjs get /accounts/$A/cfd_tunnel/"$T"/token`,
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+  }
+  for (const cmd of [
+    `claudeflare get /accounts/${AID}/cfd_tunnel/${TID}`,
+    `claudeflare get "/accounts/$A/cfd_tunnel/$T"`,
+    `claudeflare get /accounts/$A/warp_connector`,
+    `claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path .env`,
+    'cloudflared tunnel run --token-file /etc/cloudflared/token',
+    'cat $HOME/.npm/_cacache/token',
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
+test('Bash "cloudflared tunnel token <name>" is denied unless it writes to --cred-file', (t) => {
+  const ctx = setup(t, { plan: false });
+  for (const cmd of [
+    'cloudflared tunnel token my-tunnel',
+    `cloudflared tunnel token ${TID}`,
+    'sudo cloudflared tunnel --loglevel debug token my-tunnel',
+    "sh -c 'cloudflared tunnel token my-tunnel'",
+    'docker run --rm cloudflare/cloudflared:latest tunnel token my-tunnel',
+    'echo $(cloudflared tunnel token my-tunnel)',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+  }
+  for (const cmd of [
+    'cloudflared tunnel token --cred-file /etc/cloudflared/creds.json my-tunnel',
+    'cloudflared tunnel token --cred-file=/etc/cloudflared/creds.json my-tunnel',
+    'cloudflared tunnel list',
+    'cloudflared tunnel run --token-file /etc/cloudflared/token my-tunnel',
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
 test('Bash "cloudflared tunnel run --token eyJ..." is denied', (t) => {
   const ctx = setup(t, { plan: false });
   for (const cmd of [
@@ -926,6 +1032,84 @@ test('Bash naming a secret path is denied by default outside the consumer allowl
     'npx dotenv -e deploy/.env -- node -p process.env',
   ]) {
     assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+// Final review M3: globs, git object reads and container dumps.
+
+test('Bash glob words that can match an indexed secret file are denied', (t) => {
+  const ctx = secretSetup(t);
+  const tunnelEnv = join(ctx.cwd, 'deploy', 'tunnel.env');
+  writeFileSync(tunnelEnv, 'TUNNEL_TOKEN=x\n');
+  recordSecretFile(ctx.cwd, tunnelEnv);
+  mkdirSync(join(ctx.cwd, 'src'));
+  for (const cmd of [
+    'cat deploy/.*',
+    'cat deploy/.e*',
+    'cat deploy/.en?',
+    'cat deploy/.[e]nv',
+    'cat deploy/.{env,x}',
+    'head -n 50 deploy/*',
+    'grep TUNNEL deploy/*',
+    'cat deploy/*.env',
+    'cat */*.env',
+    'cat ./deploy/../deploy/*',
+    'cd deploy && cat *',
+    'cat .claudeflare/secrets/*',
+    `cat ${join(ctx.cwd, 'deploy')}/*`,
+    'cp deploy/* /tmp/out',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  for (const cmd of [
+    'cat src/*.js',
+    'ls deploy/*',
+    'rm deploy/*.bak',
+    'cat deploy/*.example',
+    "grep -n 'a.*b' README.md",
+    'echo *.md',
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
+test('Bash git show <rev>:<path> and git cat-file of an indexed file are denied', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'git show HEAD:deploy/.env',
+    'git show :deploy/.env',
+    'git show HEAD~1:./deploy/.env',
+    'git cat-file -p HEAD:deploy/.env',
+    'git cat-file blob main:deploy/.env',
+    'git --no-pager show HEAD:deploy/.env',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  for (const cmd of ['git show HEAD:src/app.js', 'git show HEAD --stat', 'git cat-file -t HEAD']) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
+test('Bash docker or podman compose config and inspect are denied while the project indexes secret files', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'docker compose config',
+    'docker compose -f deploy/compose.yml config',
+    'docker compose config --environment',
+    'podman compose config',
+    'docker-compose config',
+    'docker inspect cloudflared',
+    'docker container inspect cloudflared',
+    'podman inspect cloudflared',
+    'cd deploy && docker compose config',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  assert.equal(guard(ctx, bash('docker compose ps')), null);
+  // A project without indexed secret files keeps these commands.
+  const plain = setup(t, { plan: false });
+  for (const cmd of ['docker compose config', 'docker inspect cloudflared']) {
+    assert.equal(guard(plain, bash(cmd)), null, cmd);
   }
 });
 

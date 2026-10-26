@@ -18,15 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Lockout risk:` lines in the plan risk for changes that can lock users or admins out. They never refuse a plan. Apply analyzes again on fresh reads and stops with `risk_changed` before any write when a new line appears; Load Balancing preview lines are advisory (`advisory_lockout`, printed after apply).
 - Report-only verification after apply, retried for up to 60 seconds per op: a failed check sets `applied_verify_failed` and creates a rollback draft that needs approval. A `partially_applied` plan keeps its status. Rollback plans are verified but get no rollback draft.
 - Drift precheck on product rollbacks: an inverse whose resource changed after the original apply is skipped with `rollback_drift` (with its dependency group), and the rollback ends `partially_applied`.
-- `claudeflare tunnel-token --account <id> --tunnel <uuid> --env-path <path> [--var TUNNEL_TOKEN]`: writes the tunnel token into an env file (mode 0600 when new, other lines kept), prints only the path and warns when git does not ignore the file.
+- `claudeflare tunnel-token --account <id> --tunnel <uuid> --env-path <path> [--var TUNNEL_TOKEN]`: writes the tunnel token into an env file (mode 0600 when new, other lines kept), prints only the path, refuses a path inside a git work tree that git does not ignore, and warns outside a repo.
 - Service token secrets go to `.claudeflare/secrets/<plan id>-<op index>.json` (mode 0600, ignored by git); if that file cannot be written, apply stops `partially_applied` and says the one-time secret is lost.
-- Guard: denies MCP reads of tunnel tokens, reads of claudeflare's secret files and recorded env files (Read, Grep and Bash, deny by default with exact consumer shapes) and `cloudflared` with a literal token. `plan new` refuses zone-scoped Access paths and points to the account form.
+- Guard: denies reads of tunnel and WARP connector tokens (MCP, `claudeflare get`, `curl`, `cloudflared tunnel token`), reads of claudeflare's secret files and recorded env files (Read, Grep and Bash, deny by default with exact consumer shapes) and `cloudflared` with a literal token. `plan new` refuses zone-scoped Access paths and points to the account form.
 - Skill `cf-zt-troubleshoot` with trees for Access redirect loops, Access 403, invalid Access JWT, Tunnel 1016, 1033 and 502, Gateway over-blocking, WARP private routes, Load Balancing without a healthy pool and Spectrum apps that do not connect.
 - Evals: an Access plan with its lockout line, a tunnel setup that never exposes the token, a Gateway over-blocking diagnosis and a tunnel delete with its 1016 risk (eleven cases in total).
 - Docs: Zero Trust and network section, threat model notes on lockout and the secret file guard, and the Zero Trust and network token sets.
 
 ### Changed
 
+- The approval hash also binds a plan's `lockout_risks` and, on a rollback plan, `rollback_of`; apply rebuilds a rollback plan's ops from its source and refuses any difference (`rollback_stale`). An unapplied plan approved before this change needs a new approval.
 - `cf-core` documents product plans, the new statuses and error codes, and `tunnel-token`; `cf-audit` covers the six new domains.
 
 ## [0.2.1] - 2026-10-26

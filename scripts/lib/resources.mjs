@@ -192,6 +192,22 @@ function isNormalPath(path) {
   }
 }
 
+// An encoded slash, backslash or dot in the path part (after up to three
+// decoding rounds, as canonicalRest decodes) could make an edge that decodes
+// it resolve a different path than the one classified here (L1).
+const ENCODED_SEPARATOR = /%(?:2f|5c|2e)/i;
+
+function hasEncodedSeparator(path) {
+  let text = path.split('?')[0];
+  for (let round = 0; round < 3; round++) {
+    if (ENCODED_SEPARATOR.test(text)) return true;
+    const next = text.replace(/%[0-9a-f]{2}/gi, (hex) => String.fromCharCode(parseInt(hex.slice(1), 16)));
+    if (next === text) return false;
+    text = next;
+  }
+  return ENCODED_SEPARATOR.test(text);
+}
+
 // Account plans accept product kinds (products/index.mjs) plus this Pages
 // rollback write from 0.2.x (relative to /accounts/<id>).
 const PAGES_ROLLBACK = /^\/pages\/projects\/[A-Za-z0-9-]+\/deployments\/[A-Za-z0-9-]+\/rollback$/;
@@ -286,7 +302,7 @@ export function validateProductFields(op, entry, index) {
   // byte could reach a different resource than the one matched.
   const [pathPart, query] = String(op.path ?? '').split(/\?(.*)/s);
   if (pathPart.includes('%')) reject('must not contain percent-encoding in its path');
-  if (query !== undefined && !entry.allowQuery) reject('must not carry a query string');
+  if (query !== undefined) reject('must not carry a query string');
   if (entry.destructive || 'confirm_name' in op) {
     if (typeof op.confirm_name !== 'string' || op.confirm_name === '') {
       reject(entry.destructive ? 'is destructive and needs confirm_name equal to the resource name' : 'confirm_name must be a non-empty string');
@@ -338,6 +354,7 @@ export function validateOpTargets(ops, plan) {
       reject('still contains a placeholder; put the real id into the path');
     }
     if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
+    if (hasEncodedSeparator(path)) reject('must not contain an encoded slash, backslash or dot (%2F, %5C, %2E) in its path');
     // Drift prechecks are built by rollback from recorded post-apply states;
     // a draft cannot supply one.
     if ('precheck' in op) reject('carries precheck, which only rollback plans build');

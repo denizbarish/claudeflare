@@ -126,19 +126,19 @@ test('product kinds classify on the path without the query', () => {
   assert.equal(hit.entry.kind, 'fake_thing_update');
 });
 
-test('product op with a query string or percent sign is invalid_op unless the kind allows queries', () => {
+test('product op with a query string or percent sign is invalid_op', () => {
   assert.throws(() => validateOpTargets([{ method: 'PUT', path: `${THING}?x=1`, body: {} }], acctPlan), (e) => e.code === 'invalid_op' && /query/.test(e.message));
   assert.throws(() => validateOpTargets([{ method: 'PUT', path: `${THING}?x=%2F`, body: {} }], acctPlan), code('invalid_op'));
   const loose = {
     product: 'loose',
-    kinds: [{ kind: 'loose_list_put', product: 'loose', scope: 'account', methods: ['PUT'], pattern: /^\/loose\/(.+)$/, resource: (m) => ({ type: 'loose', id: m[1] }), readOnlyFields: [], inverse: 'none', destructive: false, allowQuery: true }],
+    kinds: [{ kind: 'loose_list_put', product: 'loose', scope: 'account', methods: ['PUT'], pattern: /^\/loose\/(.+)$/, resource: (m) => ({ type: 'loose', id: m[1] }), readOnlyFields: [], inverse: 'none', destructive: false }],
     probePath: () => '', gather: async () => ({}), lockoutRisks: () => [], verifyChecks: () => [],
   };
   const drop = registerProduct(loose);
   try {
-    validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a?x=1`, body: {} }], acctPlan);
-    validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a?x=%20`, body: {} }], acctPlan);
-    // A percent sign in the path part is refused even when queries are allowed.
+    validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a`, body: {} }], acctPlan);
+    assert.throws(() => validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a?x=1`, body: {} }], acctPlan), (e) => e.code === 'invalid_op' && /query/.test(e.message));
+    // A percent sign in the path part is refused too.
     assert.throws(() => validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/loose/a%2Fb`, body: {} }], acctPlan), code('invalid_op'));
   } finally {
     drop();

@@ -18,6 +18,8 @@ import { runTail } from './lib/tail.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
 import { DEFAULT_VARIABLE, runTunnelToken } from './lib/tunnel-token.mjs';
+import { isTokenEndpoint, TUNNEL_TOKEN_REASON } from './lib/token-endpoint.mjs';
+import { applyFailure } from './lib/apply-message.mjs';
 
 const GITIGNORE_ENTRY = '.claudeflare/';
 const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>] | tunnel-token --account <id> --tunnel <uuid> --env-path <path> [--var TUNNEL_TOKEN]';
@@ -108,6 +110,9 @@ function parseQuery(pairs = []) {
 async function get(positional, flags) {
   const path = arg(positional, 1, 'path');
   if (!path.startsWith('/')) throw usage('Path must start with /');
+  // Enforced here, not only in the guard: shell quoting or a path built from
+  // variables never reaches a token endpoint through get.
+  if (isTokenEndpoint(path)) throw new CfError('invalid_input', `${TUNNEL_TOKEN_REASON} claudeflare get refuses ${path}.`);
   return createClient().request('GET', path, { query: parseQuery(flags.query) });
 }
 
@@ -195,8 +200,10 @@ async function planNew(cwd, flags) {
     risk: [withIrreversibleRisk(risk, resolved, target, report?.ctx), ...(lockout ?? [])].filter(Boolean).join('\n'),
     ops: target.scope === 'account' ? resolved : draft.ops,
     slug,
+    // Inside the approval hash from creation (hashPlan).
+    ...(lockout ? { lockout_risks: lockout } : {}),
   });
-  return updatePlan(cwd, plan.id, lockout ? { slug, lockout_risks: lockout } : { slug });
+  return updatePlan(cwd, plan.id, { slug });
 }
 
 // Rollback plans get their lockout lines now; apply does not re-run them.
@@ -266,28 +273,6 @@ function report(cwd, flags) {
   return { file, overall: scores.overall, domains: scores.domains };
 }
 
-const APPLY_HINTS = {
-  partially_applied: (id) => `Run claudeflare rollback ${id} to revert the ops that succeeded`,
-  failed: () => 'The first op failed; a REST op wrote nothing, but a failed wrangler op (timed-out deploy, d1 migrations apply) may have partly applied, so check the resource, fix the cause and create a new plan',
-  applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
-  rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
-  applied_verify_failed: (id, result) => (result.rollback_of
-    ? 'Every op ran but verification failed and nothing was reverted; inspect the resources and create a fresh plan if needed'
-    : `Verification failed and nothing was reverted; ${draftHint(id, result)}`),
-};
-
-function draftHint(id, result) {
-  if (result.rollback_draft) return `review rollback draft ${result.rollback_draft} (claudeflare plan show ${result.rollback_draft}) and approve it to revert`;
-  return `no rollback draft was created (${result.rollback_draft_error ?? 'unknown reason'}); run claudeflare rollback ${id} after fixing the cause`;
-}
-
-// "op <i> <check>: <detail>" for every failed verification check.
-function failedVerifyChecks(result) {
-  return (result.results ?? []).flatMap((r, i) => (r?.verify?.checks ?? [])
-    .filter((c) => !c.ok)
-    .map((c) => `op ${i} ${c.name}: ${c.detail}`));
-}
-
 async function applyCommand(cwd, positional) {
   const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
@@ -296,12 +281,8 @@ async function applyCommand(cwd, positional) {
   // stays the last stderr line.
   for (const line of result.advisory_lockout ?? []) process.stderr.write(`${line}\n`);
   if (result.status !== 'applied') {
-    const failed = failedVerifyChecks(result);
-    const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';
-    let hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id, result);
-    if (failed.length && result.status === 'partially_applied' && !result.rollback_of) hint = `${hint}; ${draftHint(result.id, result)}`;
-    const why = [result.error?.message, ...(failed.length ? [`verification failed: ${failed.join('; ')}`] : [])].filter(Boolean).join('; ');
-    throw new CfError(code, `Plan ${result.id} ${result.status}: ${why}`, { hint });
+    const { code, message, hint } = applyFailure(result);
+    throw new CfError(code, message, { hint });
   }
 }
 

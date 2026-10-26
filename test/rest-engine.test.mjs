@@ -29,7 +29,7 @@ const rt = {
     { kind: 'rt_thing_update', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/things\/([0-9a-f-]{36})$/, resource: thingKey, readOnlyFields: ['id', 'created_at'], inverse: 'put_before', destructive: false, group: (m) => `thing ${m[1]}` },
     { kind: 'rt_thing_patch', product: 'resttest', scope: 'account', methods: ['PATCH'], pattern: /^\/rt\/things\/([0-9a-f-]{36})$/, resource: thingKey, readOnlyFields: ['id', 'created_at'], inverse: 'patch_before', destructive: false },
     { kind: 'rt_thing_delete', product: 'resttest', scope: 'account', methods: ['DELETE'], pattern: /^\/rt\/things\/([0-9a-f-]{36})$/, resource: thingKey, readOnlyFields: ['id', 'created_at'], inverse: 'recreate', destructive: true, nameField: 'name', collection: (m, base) => `${base}/rt/things` },
-    { kind: 'rt_widget_patch', product: 'resttest', scope: 'account', methods: ['PATCH'], pattern: /^\/rt\/widgets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_widget', id: m[1] }), readOnlyFields: ['id'], inverse: 'patch_before', putFallback: true, destructive: false, read: (m, base) => `${base}/rt/widgets/${m[1]}/full` },
+    { kind: 'rt_widget_patch', product: 'resttest', scope: 'account', methods: ['PATCH'], pattern: /^\/rt\/widgets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_widget', id: m[1] }), readOnlyFields: ['id'], inverse: 'patch_before', destructive: false, read: (m, base) => `${base}/rt/widgets/${m[1]}/full` },
     { kind: 'rt_settings_put', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/settings$/, resource: () => ({ type: 'rt_settings', id: 'account' }), readOnlyFields: [], inverse: 'none', destructive: false, notes: (ctx, op) => [`Note: settings change for ${op.path}`] },
     { kind: 'rt_secret_update', product: 'resttest', scope: 'account', methods: ['PUT'], pattern: /^\/rt\/secrets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_secret', id: m[1] }), readOnlyFields: ['id'], inverse: 'put_before', destructive: false, secretFields: ['config.client_secret'], redact: ['token'] },
     { kind: 'rt_secret_delete', product: 'resttest', scope: 'account', methods: ['DELETE'], pattern: /^\/rt\/secrets\/([0-9a-f-]{36})$/, resource: (m) => ({ type: 'rt_secret', id: m[1] }), readOnlyFields: ['id'], inverse: 'recreate', destructive: true, nameField: 'name', secretFields: ['config.client_secret'], redact: ['token'] },
@@ -138,18 +138,18 @@ test('patch_before restores only keys the op set', async () => {
   assert.deepEqual(inverseForProduct(entry, {}), [{ method: 'PATCH', path: op.path, body: { mode: 'a' } }]);
 });
 
-test('patch_before with a key absent before and no putFallback is rollback_ambiguous', async () => {
+test('patch_before with a key absent before is rollback_ambiguous', async () => {
   const op = { method: 'PATCH', path: `${BASE}/rt/things/${ID}`, body: { mode: 'b', extra: 1 } };
   const { entry } = await entryFor(op, { [`GET ${op.path}`]: BEFORE });
   assert.throws(() => inverseForProduct(entry, {}), (err) => ambiguous(err) && /extra/.test(err.message));
 });
 
-test('patch_before with a key absent before falls back to put_before when the kind sets putFallback', async () => {
+test('patch_before reads the kind read path and refuses a key absent there', async () => {
   const op = { method: 'PATCH', path: `${BASE}/rt/widgets/${ID}`, body: { extra: 1 } };
   const full = `${BASE}/rt/widgets/${ID}/full`;
   const { entry, client } = await entryFor(op, { [`GET ${full}`]: { id: ID, size: 2 } });
   assert.deepEqual(client.calls.map((c) => c.path), [full]);
-  assert.deepEqual(inverseForProduct(entry, {}), [{ method: 'PUT', path: op.path, body: { size: 2 } }]);
+  assert.throws(() => inverseForProduct(entry, {}), (err) => ambiguous(err) && /extra/.test(err.message));
 });
 
 test('recreate posts to the collection without readOnlyFields', async () => {

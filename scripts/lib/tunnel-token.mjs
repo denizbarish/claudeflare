@@ -80,6 +80,12 @@ export function isGitIgnored(file) {
   return res.status === 0;
 }
 
+// True when dir is inside a git work tree; false outside one or without git.
+function isInsideGitWorkTree(dir) {
+  const res = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return res.status === 0 && res.stdout.trim() === 'true';
+}
+
 function validate({ account, tunnel, variable }) {
   if (!ACCOUNT_ID.test(account)) throw new CfError('invalid_input', `Invalid --account ${JSON.stringify(account)}; expected a 32 character hex account id`);
   if (!TUNNEL_ID.test(tunnel)) throw new CfError('invalid_input', `Invalid --tunnel ${JSON.stringify(tunnel)}; expected a tunnel UUID`);
@@ -98,11 +104,20 @@ function prepareFile(cwd, envFile) {
     throw new CfError('invalid_input', `Cannot use ${abs}: ${err.code === 'ENOENT' ? 'its directory does not exist' : err.message}`);
   }
   const file = join(dir, basename(abs));
+  let stat;
   try {
-    return { file, stat: envFileStat(file) };
+    stat = envFileStat(file);
   } catch (err) {
     throw new CfError('invalid_input', err.message);
   }
+  // Inside a git work tree an unignored env file is one `git add -A` away
+  // from a pushed token. Outside a repo nothing changes (a warning only).
+  if (isInsideGitWorkTree(dir) && !isGitIgnored(file)) {
+    throw new CfError('invalid_input', `${file} is inside a git work tree and is not ignored by git, so a commit could publish the token; nothing was read or written`, {
+      hint: `Add ${basename(file)} (or a pattern matching it) to .gitignore, check it with "git check-ignore ${file}", then run claudeflare tunnel-token again`,
+    });
+  }
+  return { file, stat };
 }
 
 function modeWarning(file, stat) {

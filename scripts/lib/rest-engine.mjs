@@ -72,14 +72,11 @@ const INVERSES = {
   put_before: (entry, kind) => putBefore(entry, kind),
   // Restores only the top-level keys the op body set. A key the resource did
   // not have cannot be unset by PATCH.
-  patch_before: (entry, kind) => {
+  patch_before: (entry) => {
     const before = isPlainObject(entry.before) ? entry.before : {};
     const keys = entry.op_body_keys ?? [];
     const missing = keys.filter((key) => !Object.hasOwn(before, key) || before[key] === undefined);
-    if (missing.length) {
-      if (kind.putFallback) return putBefore(entry, kind);
-      throw ambiguous(`PATCH ${entry.path} set ${missing.join(', ')}, absent before; it cannot be restored with PATCH`);
-    }
+    if (missing.length) throw ambiguous(`PATCH ${entry.path} set ${missing.join(', ')}, absent before; it cannot be restored with PATCH`);
     const body = {};
     for (const key of keys) body[key] = before[key];
     return [{ method: 'PATCH', path: entry.path, body }];
@@ -168,14 +165,36 @@ export function withDriftPrecheck(entry, ops, record, applied = []) {
     if (!kind || !isPlainObject(drift) || typeof drift.read !== 'string' || !isState(drift.expect)) return { kind: 'drift', ...grouped };
     return { kind: 'drift', read: drift.read, expect: omitPaths(drift.expect, ignore), ignore, ...grouped };
   };
-  return ops.map(({ group: _tag, drift, ...op }, i) => ({ ...op, precheck: i === 0 ? first : own(drift) }));
+  // The first op may name an extra baseline in `drift`: a second resource its
+  // inverse writes besides the one it re-reads (the inactive split tunnel list
+  // a device mode-change rollback restores). An unusable one fails closed.
+  // `list: true` reads a missing list as [].
+  const extra = (drift) => {
+    if (!kind || !isPlainObject(drift) || typeof drift.read !== 'string' || !isState(drift.expect)) return { unknown: true };
+    const list = Array.isArray(drift.expect);
+    return { read: drift.read, expect: list ? drift.expect : omitPaths(drift.expect, ignore), ignore: list ? [] : ignore, ...(drift.list ? { list: true } : {}) };
+  };
+  return ops.map(({ group: _tag, drift, ...op }, i) => {
+    if (i > 0) return { ...op, precheck: own(drift) };
+    return { ...op, precheck: drift === undefined || first.unknown ? first : { ...first, also: [extra(drift)] } };
+  });
 }
 
-// Runs one drift precheck before its rollback op. Null when the op may run,
-// otherwise the reason it is skipped. Fails closed: an unknown baseline, a
-// read path outside the plan's base or any read error is drift; only an
-// expected absence accepts not_found.
+// Runs one drift precheck before its rollback op, then each extra baseline in
+// `also`. Null when the op may run, otherwise the reason it is skipped.
+// Fails closed: an unknown baseline, a read path outside the plan's base or
+// any read error is drift; only an expected absence accepts not_found.
 export async function driftDetail(client, precheck, { base } = {}) {
+  const detail = await oneDrift(client, precheck, base);
+  if (detail !== null) return detail;
+  for (const check of Array.isArray(precheck?.also) ? precheck.also : []) {
+    const extra = await oneDrift(client, check, base);
+    if (extra !== null) return extra;
+  }
+  return null;
+}
+
+async function oneDrift(client, precheck, base) {
   if (precheck?.unknown) return POST_UNKNOWN;
   if (typeof precheck?.read !== 'string') return null;
   const { read, expect } = precheck;
@@ -189,6 +208,7 @@ export async function driftDetail(client, precheck, { base } = {}) {
     return `${read} could not be read (${err?.code || 'internal'})`;
   }
   if (absent) return `${read} exists again after apply`;
+  if (precheck.list && (live === null || live === undefined)) live = [];
   return stableEqual(live, expect, precheck.ignore ?? []) ? null : `${read} changed after apply`;
 }
 

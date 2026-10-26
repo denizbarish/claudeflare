@@ -588,3 +588,30 @@ test('a hand edit of the list a mode-change PATCH set, or of a created profile, 
   assert.equal(skipped.results[0].reason, 'rollback_drift');
   assert.ok(api2.store.has(`${D}/policy/${NEW_PROFILE}`));
 });
+
+// Final review I2: the old mode's list is now inactive, but the rollback
+// PATCHes it back; a hand edit of it after apply must not be overwritten.
+test('a hand edit of the old mode list after a mode change makes the rollback skip with rollback_drift', async (t) => {
+  for (const profile of [null, P_LAB]) {
+    const op = patchProfile(profile, { include: [host(TEAM), host(OKTA)] });
+    const api = fakeApi();
+    const report = await runProductPreflight(api, PLAN, [op]);
+    const { cwd, plan } = setup(t, [op], { lockout_risks: report.lockout_risks });
+    approve(cwd, plan);
+    assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+    const rollback = createRollbackPlan(cwd, plan.id, T1);
+    const extra = rollback.ops[0].precheck.also;
+    assert.ok(Array.isArray(extra) && extra.length === 1, JSON.stringify(rollback.ops[0].precheck));
+    assert.equal(extra[0].read, `${profilePath(profile)}/exclude`);
+    assert.ok(!('drift' in rollback.ops[0]));
+    // Someone edits the (inactive) exclude list by hand.
+    const edited = [{ address: '192.168.0.0/16' }];
+    api.store.set(profilePath(profile), { ...api.store.get(profilePath(profile)), exclude: edited });
+    approve(cwd, rollback, T1);
+    const ran = await applyPlan(cwd, api, rollback.id, T1, fastVerify());
+    assert.equal(ran.status, 'partially_applied', JSON.stringify(ran.results));
+    assert.equal(ran.results[0].reason, 'rollback_drift');
+    assert.match(ran.results[0].detail, /exclude changed after apply/);
+    assert.deepEqual(api.store.get(profilePath(profile)).exclude, edited);
+  }
+});

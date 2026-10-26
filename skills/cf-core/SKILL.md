@@ -25,7 +25,7 @@ If the shell cannot find `claudeflare` (exit code 127), run the same commands as
 | Live Worker logs | `claudeflare tail --worker <name> --seconds <1..60> [--status error]` (JSON summary: `events`, `outcomes`, `top_exceptions`, `samples`, secrets redacted) |
 | Developer platform writes | Account plan with `wrangler` ops (5.2.2), `claudeflare preflight`, then the same protocol |
 | Zero Trust and network writes | Product plan (5.2.4): account plans for Access, Tunnel, Gateway, Devices, pools and monitors; zone plans for load balancers and Spectrum |
-| Tunnel token for a connector | `claudeflare tunnel-token --account <account_id> --tunnel <tunnel_id> --env-path <file> [--var TUNNEL_TOKEN]` (5.2.4); never an MCP read of the token |
+| Tunnel token for a connector | `claudeflare tunnel-token --account <account_id> --tunnel <tunnel_id> --env-path <file> [--var TUNNEL_TOKEN]` (5.2.4); never an MCP read, `claudeflare get` or `curl` of a token endpoint (refused) |
 
 Diagnosis skills: `cf-troubleshoot` (zone errors), `cf-dev-troubleshoot` (Workers and Pages), `cf-zt-troubleshoot` (Access, Tunnel, Gateway, WARP, Load Balancing, Spectrum).
 
@@ -309,7 +309,7 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 | `risk_changed` | Apply found a `Lockout risk:` line the plan did not show; nothing was written and the approval is unused. Create a new plan, show the line and get a new approval. |
 | `rollback_drift` (op result) | A rollback inverse was skipped because the resource changed after the original apply (5.7). Read the current state and draft a fresh plan for what still differs. |
 | `applied_verify_failed` (status) | Every op ran but a verification check failed; show the failed checks and the `rollback_draft` id (5.6). |
-| `write_failed` / `invalid_response` (`tunnel-token`) | The env file could not be written (path, permissions, a symlink) or the API returned no usable token; the message never holds the value. Fix the path and run `claudeflare tunnel-token` again. |
+| `write_failed` / `invalid_response` (`tunnel-token`) | The env file could not be written (path, permissions, a symlink) or the API returned no usable token; the message never holds the value. Fix the path and run `claudeflare tunnel-token` again. `invalid_input` with "not ignored by git": the path is inside a git work tree; ask the user to add it to `.gitignore`, then run it again. |
 | `not_draft` | The plan already ran or was rolled back; create a new plan for further changes. |
 | `not_approved` | Ask the user for a fresh `/claudeflare:approve <plan-id>`. |
 | `apply_failed` | Report the status and failed op. `partially_applied`: offer `claudeflare rollback <id>`. `failed`: no write was made; fix the cause and create a new plan. |
@@ -319,7 +319,7 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 | `snapshot_exists` | Apply already started for this plan once; do not retry (see the recovery note below). |
 | `invalid_zone` | Fix `zone_id` (32 hex chars) or `zone_name` from discovery and create the plan again. |
 | `invalid_op` | An op leaves the plan's zone, creates a Page Rule, keeps a placeholder or uses an odd method; fix the draft with real ids under `/zones/{zone_id}/`. On product ops also: a path no product kind matches, zone-scoped Access, a body the kind refuses, a literal secret field, a bad `verify`, or a `confirm_name` that does not match the live name. |
-| `rollback_stale` | The source plan was already rolled back; read the current state and draft a fresh plan if a change is still needed. |
+| `rollback_stale` | The source plan was already rolled back, or the rollback plan no longer matches the inverse `claudeflare rollback` builds from its source (another target, edited ops); read the current state and draft a fresh plan if a change is still needed. |
 | `bad_key` | The approval key file is damaged; tell the user to delete the file named in the hint, then approve again. |
 | `rate_limit` | Cloudflare kept returning 429 after retries; wait a minute, then retry the read. Never retry an apply; check the plan status first. |
 | `invalid_account` | Fix `account_id` (32 hex chars), `account_name` or `project_dir` (absolute path to an existing directory; it may be left out only when the plan holds no `wrangler` op) and create the plan again. |

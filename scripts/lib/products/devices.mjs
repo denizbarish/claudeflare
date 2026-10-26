@@ -197,8 +197,11 @@ function requireBefore(entry) {
 }
 
 // PATCH back the keys the op set. A mode change goes back by PATCHing the old
-// mode's list, which switches the mode back with the saved entries.
-function restoreProfile(entry) {
+// mode's list, which switches the mode back with the saved entries. That list
+// is inactive after apply, so the profile's drift precheck leaves it out; its
+// post-apply content (record) becomes a second baseline (`drift` on the first
+// op), so a hand edit of it is never overwritten silently.
+function restoreProfile(entry, _applyResult, record = null) {
   const before = requireBefore(entry);
   const keys = entry.op_body_keys ?? [];
   const body = {};
@@ -213,6 +216,7 @@ function restoreProfile(entry) {
     const saved = recorded(before, mode);
     if (!saved) throw ambiguous(`No ${mode} list recorded for ${entry.path}`);
     body[mode] = saved;
+    return [{ method: 'PATCH', path: entry.path, body, drift: { read: `${entry.path}/${mode}`, expect: record?.state?.lists?.[mode], list: true } }];
   }
   return Object.keys(body).length ? [{ method: 'PATCH', path: entry.path, body }] : [];
 }

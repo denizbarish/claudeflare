@@ -52,13 +52,30 @@ export function hashOps(ops) {
   return sha256(ops);
 }
 
+// Plan fields that change what apply checks: a rollback plan's source
+// (rollback_of switches op validation to the rebuilt inverse and marks the
+// source rolled back) and the lockout lines the user saw (risk_changed
+// compares against them). Bound only when present, so plans without them
+// keep their earlier hash; an approval made before they were bound no longer
+// matches a plan that has them, and the user approves again (fail closed).
+function boundFields(plan) {
+  const bound = {};
+  if (plan.rollback_of !== undefined && plan.rollback_of !== null) bound.rollback_of = plan.rollback_of;
+  if (plan.lockout_risks !== undefined) bound.lockout_risks = plan.lockout_risks;
+  return bound;
+}
+
 // The approval hash. Zone plans keep the v1 value (ops only) so existing
 // approvals stay valid; account plans also bind the account and project dir.
+// Both add the bound fields when present.
 export function hashPlan(plan) {
-  if (plan.scope !== 'account') return hashOps(plan.ops);
+  const bound = boundFields(plan);
+  if (plan.scope !== 'account') return Object.keys(bound).length ? sha256({ ops: plan.ops, ...bound }) : hashOps(plan.ops);
   const { scope, account_id, project_dir, ops } = plan;
-  return sha256({ scope, account_id, project_dir, ops });
+  return sha256({ scope, account_id, project_dir, ops, ...bound });
 }
+
+const HASHED_FIELDS = ['ops', 'rollback_of', 'lockout_risks', 'scope', 'account_id', 'project_dir'];
 
 // State directories (snapshots) are keyed by zone name or account slug.
 export function planStateName(plan) {
@@ -105,7 +122,7 @@ export function needsProjectDir(ops) {
 }
 
 export function createPlan(cwd, fields, now = new Date()) {
-  const { scope = 'zone', summary, risk, ops, slug } = fields;
+  const { scope = 'zone', summary, risk, ops, slug, rollback_of, lockout_risks } = fields;
   if (!SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
   const account = scope === 'account';
   const target = account ? accountTarget(fields, { requireProjectDir: needsProjectDir(ops) }) : zoneTarget(fields);
@@ -121,6 +138,8 @@ export function createPlan(cwd, fields, now = new Date()) {
     ops: resolved,
     status: 'draft',
   };
+  if (rollback_of !== undefined && rollback_of !== null) plan.rollback_of = assertPlanId(rollback_of);
+  if (lockout_risks !== undefined) plan.lockout_risks = lockout_risks;
   plan.ops_hash = hashPlan(plan);
   mkdirSync(paths(cwd).plans, { recursive: true });
   try {
@@ -158,9 +177,12 @@ export function listPlans(cwd) {
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id));
 }
 
+// A patch of a hashed field (addRollbackLockout's lockout_risks) refreshes
+// the stored ops_hash, so it always shows the hash an approval binds to.
 export function updatePlan(cwd, id, patch) {
   const plan = readPlan(cwd, id);
   const updated = { ...plan, ...patch, id: plan.id };
+  if (HASHED_FIELDS.some((field) => Object.hasOwn(patch, field))) updated.ops_hash = hashPlan(updated);
   writeFileSync(planFile(cwd, id), toJson(updated));
   return updated;
 }

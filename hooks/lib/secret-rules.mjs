@@ -11,12 +11,13 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'no
 import { fileURLToPath } from 'node:url';
 import { keyDir } from '../../scripts/lib/approval-key.mjs';
 import { STATE_DIR, claudeflareRoot } from '../../scripts/lib/project-root.mjs';
+import { TOKEN_RESOURCES, TUNNEL_TOKEN_REASON } from '../../scripts/lib/token-endpoint.mjs';
 import { parseShell } from './wrangler-rules.mjs';
+
+export { TUNNEL_TOKEN_REASON };
 
 export const SECRET_REASON =
   'This file holds a credential written by claudeflare and must not be read into the conversation. Let the program that needs it read it (for example cloudflared reading TUNNEL_TOKEN from the environment).';
-export const TUNNEL_TOKEN_REASON =
-  'Tunnel tokens are never read into the conversation. Run "claudeflare tunnel-token --account <id> --tunnel <id> --env-path <path>" to write the token into an env file without showing it.';
 export const CLOUDFLARED_REASON =
   'A literal tunnel token on a cloudflared command line ends up in the transcript and shell history. Write it with "claudeflare tunnel-token" and let cloudflared read TUNNEL_TOKEN from the environment, or run cloudflared with --token-file yourself.';
 
@@ -493,6 +494,80 @@ function inSecretsDir(canonicalPath) {
 
 const namesSecret = (word, names) => wordPaths(word).some((path) => names.has(basename(path).toLowerCase()));
 
+// Glob words: the shell expands them before the command sees them, so the
+// guard tests the pattern itself against the indexed files (never the disk).
+// `*` and `?` stay inside one path segment (dot files included: fail
+// closed), `**` crosses segments, a class is any one character and a brace
+// list ({a,b}, {1..3}) anything.
+const GLOB_WORD = /[*?[]|\{[^}]*(?:,|\.\.)[^}]*\}/;
+
+function globSource(pattern) {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        out += '.*';
+        i++;
+      } else out += '[^/]*';
+    } else if (c === '?') out += '[^/]';
+    else if (c === '[' && pattern.indexOf(']', i + 2) >= 0) {
+      out += '[^/]';
+      i = pattern.indexOf(']', i + 2);
+    } else if (c === '{' && /^\{[^}]*(?:,|\.\.)[^}]*\}/.test(pattern.slice(i))) {
+      out += '.*';
+      i = pattern.indexOf('}', i);
+    } else out += c.replace(/[.+^$()|\\[\]{}]/g, '\\$&');
+  }
+  return out;
+}
+
+// True when the glob path, resolved in dir, can name one of files. Only the
+// static directory part is canonicalized (it may not exist yet for the rest).
+function globReaches(candidate, dir, files, canonical) {
+  const parts = resolve(dir, expandHome(candidate)).split(sep);
+  const first = parts.findIndex((part) => GLOB_WORD.test(part));
+  if (first < 0) return false;
+  const prefix = canonical(parts.slice(0, first).join(sep) || sep);
+  const source = `${prefix === sep ? '' : prefix.replace(/[.+^$()|\\[\]{}*?]/g, '\\$&')}/${globSource(parts.slice(first).join('/'))}`;
+  const pattern = new RegExp(`^${source}$`, CASE_INSENSITIVE_FS ? 'i' : '');
+  return files.some((file) => pattern.test(file));
+}
+
+// git show <rev>:<path> and git cat-file <type> <rev>:<path> print a file from
+// the object store, which may hold a committed secret: the path part of each
+// <rev>:<path> word, or [] for other commands.
+const GIT_OBJECT_COMMANDS = new Set(['show', 'cat-file']);
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+
+function gitObjectPaths(tokens) {
+  const at = headIndex(tokens);
+  if (basename(tokens[at] ?? '') !== 'git') return [];
+  let i = at + 1;
+  while (i < tokens.length && tokens[i].startsWith('-')) i += GIT_VALUE_OPTIONS.has(tokens[i]) ? 2 : 1;
+  if (!GIT_OBJECT_COMMANDS.has(tokens[i])) return [];
+  return tokens.slice(i + 1).filter((w) => !w.startsWith('-') && w.includes(':')).map((w) => w.slice(w.indexOf(':') + 1)).filter(Boolean);
+}
+
+// docker|podman compose config prints the interpolated .env compose reads
+// implicitly; docker|podman inspect prints a container's environment.
+function dumpsContainerEnv(tokens) {
+  const at = headIndex(tokens);
+  const head = basename(tokens[at] ?? '');
+  const args = tokens.slice(at + 1);
+  if (head === 'docker-compose' || head === 'podman-compose') return args.includes('config');
+  if (head !== 'docker' && head !== 'podman') return false;
+  return (args.includes('compose') && args.includes('config')) || args.includes('inspect');
+}
+
+// The project a command runs in holds indexed secret files.
+function projectHasSecrets(dirs, files, isInside) {
+  return dirs.some((dir) => {
+    const root = claudeflareRoot(dir) ?? dir;
+    return files.some((file) => isInside(root, file));
+  });
+}
+
 // Deny by default: a command that names a secret file or the secrets folder
 // (as an argument, a redirection, inside $(...), backticks or sh -c) is
 // denied unless the argument is exempt under one of the exact consumer shapes
@@ -519,9 +594,13 @@ export function bashReadsSecret(command, cwd, { files, rawFiles = [] }, { canoni
         for (const dir of dirs) {
           const path = canonical(resolve(dir, expandHome(candidate)));
           if (files.includes(path) || inSecretsDir(path)) return true;
+          if (GLOB_WORD.test(candidate) && globReaches(candidate, dir, absolutes, canonical)) return true;
         }
       }
     }
+    // A <rev>:<path> word counts by its name, like a read verb's argument.
+    if (gitObjectPaths(tokens).some((path) => namesSecret(path, names) || dirs.some((dir) => files.includes(canonical(resolve(dir, path)))))) return true;
+    if (dumpsContainerEnv(tokens) && projectHasSecrets(dirs, files, isInside)) return true;
     for (const dir of dirs) {
       const search = searchOf(tokens, dir);
       if (search && searchReaches(search, files, isInside)) return true;
@@ -552,6 +631,46 @@ function cloudflaredLiteral(tokens) {
     return args.slice(service + 2).some((a) => !a.startsWith('-') && isLiteral(a));
   }
   return false;
+}
+
+// cloudflared tunnel [options] token <name> prints the token, unless
+// --cred-file sends it to a file.
+function cloudflaredPrintsToken(tokens) {
+  const at = tokens.findIndex((t) => CLOUDFLARED.test(t));
+  if (at < 0) return false;
+  const args = tokens.slice(at + 1);
+  const tunnel = args.indexOf('tunnel');
+  if (tunnel < 0) return false;
+  const rest = args.slice(tunnel + 1);
+  return rest.includes('token') && !rest.some((a) => /^--?cred-file(?:=|$)/.test(a));
+}
+
+// Token endpoint reads in a shell command, after the shell would have removed
+// quotes and backslashes: a token resource and a /token segment anywhere in
+// the command, a Cloudflare API read whose path ends in /token after a
+// variable ($P/token: fail closed), or cloudflared printing a token.
+const TOKEN_RESOURCE_TEXT = new RegExp(TOKEN_RESOURCES.map((r) => (r === 'tunnels' ? '/tunnels\\b' : r)).join('|'));
+const TOKEN_SEGMENT_TEXT = /\/token(?![\w-])/;
+const CF_API_READ_TEXT = /api\.cloudflare\.com|(?:^|[\s/;&|(])(?:claudeflare|cf\.mjs)\s+get\b/;
+const VARIABLE_TOKEN_TEXT = /[$`)}][^\s;&|]*\/token(?![\w-])/;
+const DECODE_ROUNDS = 3;
+
+function shellText(command) {
+  let text = command.replace(/['"\\]/g, '');
+  for (let round = 0; round < DECODE_ROUNDS; round++) {
+    const next = text.replace(/%[0-9a-f]{2}/gi, (hex) => String.fromCharCode(parseInt(hex.slice(1), 16)));
+    if (next === text) break;
+    text = next;
+  }
+  return text.toLowerCase().replace(/\/{2,}/g, '/');
+}
+
+export function readsTunnelToken(command) {
+  const text = shellText(command);
+  if (TOKEN_RESOURCE_TEXT.test(text) && TOKEN_SEGMENT_TEXT.test(text)) return true;
+  if (CF_API_READ_TEXT.test(text) && VARIABLE_TOKEN_TEXT.test(text)) return true;
+  if (!text.includes('cloudflared')) return false;
+  return allCommands(command).some(cloudflaredPrintsToken);
 }
 
 // Returns the deny reason, or null.

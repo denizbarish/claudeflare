@@ -1,11 +1,14 @@
 // The MCP execute allowlist: which inspected calls the guard lets through.
-const GRAPHQL_PATHS = new Set(['/graphql', '/client/v4/graphql']);
-// GET /accounts/<id>/cfd_tunnel/<id>/token returns the tunnel token in clear;
-// only `claudeflare tunnel-token` reads it, straight into an env file.
-const TUNNEL_TOKEN_PATH = /^\/(?:client\/v4\/)?accounts\/[^/]+\/cfd_tunnel\/[^/]+\/token\/?(?:[?#]|$)/i;
+import { isTokenEndpoint } from '../../scripts/lib/token-endpoint.mjs';
 
+const GRAPHQL_PATHS = new Set(['/graphql', '/client/v4/graphql']);
+
+// GET .../cfd_tunnel/<id>/token (and the warp_connector and legacy tunnels
+// token endpoints) return a token in clear; only `claudeflare tunnel-token`
+// reads one, straight into an env file. The path is normalized first
+// (decoding, dot segments, repeated slashes, case).
 export function isTunnelTokenRead({ path }) {
-  return typeof path === 'string' && TUNNEL_TOKEN_PATH.test(path);
+  return isTokenEndpoint(path);
 }
 
 export function isAllowedCall({ method, path }) {

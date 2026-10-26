@@ -64,20 +64,21 @@ function writeApplySnapshot(cwd, plan, snapshot) {
 // the read failed (the rollback then fails closed). Written once (wx); a
 // failed write only loses the baseline, so it never fails the apply.
 function writePostFile(cwd, plan, outcome) {
-  const ops = plan.ops ?? [];
-  const records = ops.map((op, i) => {
-    const classified = classifyProductOp(op, plan);
-    const result = outcome.results?.[i];
-    if (!classified || result === null || result === undefined || result?.skipped) return null;
-    const deleted = String(op.method).toUpperCase() === 'DELETE';
-    const read = productReadPath(op, classified, result) ?? null;
-    return { op_index: i, read, state: deleted ? { absent: true } : (outcome.post?.[i] ?? null) };
-  });
-  if (!ops.some((op) => classifyProductOp(op, plan))) return;
   try {
+    const ops = plan.ops ?? [];
+    if (!ops.some((op) => classifyProductOp(op, plan))) return;
+    const records = ops.map((op, i) => {
+      const classified = classifyProductOp(op, plan);
+      const result = outcome.results?.[i];
+      if (!classified || result === null || result === undefined || result?.skipped) return null;
+      const deleted = String(op.method).toUpperCase() === 'DELETE';
+      const read = productReadPath(op, classified, result) ?? null;
+      return { op_index: i, read, state: deleted ? { absent: true } : (outcome.post?.[i] ?? null) };
+    });
     writeJson(postFile(cwd, plan), { plan_id: plan.id, ops: records }, 'wx');
   } catch {
-    // createRollbackPlan treats a missing post file as an unknown baseline.
+    // Ops already ran, so nothing here may fail the apply: createRollbackPlan
+    // treats a missing post file as an unknown baseline.
   }
 }
 
@@ -188,26 +189,45 @@ function consumeQuietly(cwd, id) {
   }
 }
 
+const STALE_HINT = 'Read the current state and create a fresh plan if a change is still needed';
+
+const sameTarget = (a, b) => (a.scope === 'account'
+  ? b.scope === 'account' && a.account_id === b.account_id && (a.project_dir ?? null) === (b.project_dir ?? null)
+  : b.scope !== 'account' && a.zone_id === b.zone_id && a.zone_name === b.zone_name);
+
 // A rollback plan is only valid while its source is still applied or partially
-// applied; once another rollback ran, its inverse ops are stale.
-function assertRollbackSourceCurrent(cwd, plan) {
+// applied (once another rollback ran, its inverse ops are stale), targets the
+// same zone or account, and holds exactly the inverse ops claudeflare rollback
+// builds from the source's snapshot. A plan that only names rollback_of (a
+// hand edit) therefore never skips op validation and product preflight.
+function assertRollbackSource(cwd, plan) {
   let source = null;
   try {
     source = readPlan(cwd, plan.rollback_of);
   } catch (err) {
     if (!(err instanceof CfError)) throw err;
   }
+  const stale = (why) => new CfError('rollback_stale', `Rollback plan ${plan.id} is stale: ${why}`, { hint: STALE_HINT });
   if (!source || !ROLLBACK_SOURCE_STATUSES.has(source.status)) {
-    throw new CfError('rollback_stale', `Rollback plan ${plan.id} is stale: source plan ${plan.rollback_of} has status ${source?.status ?? 'missing'}`, {
-      hint: 'Read the current state and create a fresh plan if a change is still needed',
-    });
+    throw stale(`source plan ${plan.rollback_of} has status ${source?.status ?? 'missing'}`);
+  }
+  if (!sameTarget(source, plan)) throw stale(`source plan ${plan.rollback_of} has another scope or target`);
+  let rebuilt;
+  try {
+    rebuilt = targetOps(rollbackOpsFor(cwd, source).ops, plan);
+  } catch (err) {
+    if (!(err instanceof CfError)) throw err;
+    throw stale(`its ops could not be rebuilt from source plan ${plan.rollback_of} (${err.code}: ${err.message})`);
+  }
+  if (JSON.stringify(rebuilt) !== JSON.stringify(plan.ops)) {
+    throw stale(`its ops differ from the inverse rebuilt from source plan ${plan.rollback_of}; only plans made by claudeflare rollback apply as rollbacks`);
   }
 }
 
 // Product preflight again on fresh reads (spec 6). A failed check stops with
 // its own code; a lockout line the plan did not show stops with risk_changed,
-// because approval binds only to the ops hash and the user never saw that
-// line. Lines that disappeared do not stop apply. Rollback plans and plans
+// because the user approved only the lines the plan showed (lockout_risks is
+// inside the approval hash). Lines that disappeared do not stop apply. Rollback plans and plans
 // without product ops (0.2.x) skip this. Returns { ctx, advisory }: the
 // per-product ctx the reads produced ({} when skipped), which verification
 // reuses, and the advisory lockout lines the plan did not show (Ruling 27),
@@ -327,7 +347,7 @@ function assertSecretEnv(plan) {
 // Account plans with wrangler ops. Every refusal happens before the snapshot,
 // so a refused apply keeps its approval and runs nothing.
 async function applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl }) {
-  if (plan.rollback_of) assertRollbackSourceCurrent(cwd, plan);
+  if (plan.rollback_of) assertRollbackSource(cwd, plan);
   validateOpTargets(plan.ops, plan);
   if (!plan.rollback_of) validatePlanOps(plan.ops, plan);
   assertApproved(cwd, plan, now);
@@ -456,7 +476,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), {
   assertDraft(plan);
   if (hasWranglerOps(plan)) return applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl });
   if (plan.rollback_of) {
-    assertRollbackSourceCurrent(cwd, plan);
+    assertRollbackSource(cwd, plan);
   } else {
     validateOpTargets(plan.ops, plan);
     validatePlanOps(plan.ops, plan);
@@ -500,6 +520,25 @@ function readSnapshot(cwd, plan) {
   }
 }
 
+// The inverse ops of an applied plan, built from its snapshot, results and
+// post file. createRollbackPlan stores them; apply rebuilds them to check a
+// rollback plan against its source.
+function rollbackOpsFor(cwd, plan) {
+  // Ops that were rolled back automatically or skipped are not applied.
+  const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : applyResultOf(r)));
+  const unresolved = [];
+  const snapshot = readSnapshot(cwd, plan);
+  // Only product (v3) entries get a drift baseline; v1 and v2 rollbacks are unchanged.
+  const post = snapshot.entries.some((e) => e?.op_kind === 'product') ? { post: readPostOps(cwd, plan) } : {};
+  return { ops: buildRollbackOps(snapshot, results, { unresolved, ...post }), unresolved };
+}
+
+// The ops as createPlan stores them for target: zone paths get the zone id.
+function targetOps(ops, target) {
+  const resolved = target.scope === 'account' ? ops : ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(target.zone_id) }));
+  return JSON.parse(JSON.stringify(resolved));
+}
+
 export function createRollbackPlan(cwd, id, now = new Date()) {
   const plan = readPlan(cwd, id);
   if (!ROLLBACK_SOURCE_STATUSES.has(plan.status)) {
@@ -510,13 +549,7 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
       hint: 'Read the current state and create a fresh plan for any change still needed',
     });
   }
-  // Ops that were rolled back automatically or skipped are not applied.
-  const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : applyResultOf(r)));
-  const unresolved = [];
-  const snapshot = readSnapshot(cwd, plan);
-  // Only product (v3) entries get a drift baseline; v1 and v2 rollbacks are unchanged.
-  const post = snapshot.entries.some((e) => e?.op_kind === 'product') ? { post: readPostOps(cwd, plan) } : {};
-  const ops = buildRollbackOps(snapshot, results, { unresolved, ...post });
+  const { ops, unresolved } = rollbackOpsFor(cwd, plan);
   if (!ops.length) {
     const why = unresolved.length ? ` (${unresolved.join('; ')})` : '';
     throw new CfError('nothing_to_rollback', `Plan ${id} has no applied ops that can be reversed${why}`);
@@ -534,8 +567,10 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
       risk: withIrreversibleRisk([`Restores the state captured before ${id} was applied.`, ...notes].join(' '), ops, { scope: plan.scope, ...target }),
       ops,
       slug,
+      // Inside the approval hash from creation (hashPlan).
+      rollback_of: id,
     },
     now,
   );
-  return updatePlan(cwd, created.id, { slug, rollback_of: id });
+  return updatePlan(cwd, created.id, { slug });
 }

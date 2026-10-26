@@ -119,6 +119,48 @@ test('isGitIgnored follows .gitignore inside a git repo and is false outside one
   assert.equal(isGitIgnored(join(repo, 'other.env')), false);
 });
 
+// Final review M4: inside a git work tree the env file must be git-ignored.
+function gitRepo(t) {
+  const repo = tempDir(t, 'claudeflare-tt-repo-');
+  if (spawnSync('git', ['init', '-q'], { cwd: repo }).status !== 0) return null;
+  return repo;
+}
+
+test('tunnel-token refuses a path in a git work tree that git does not ignore, before reading the token', async (t) => {
+  const repo = gitRepo(t);
+  if (!repo) return t.skip('git not available');
+  mkdirSync(join(repo, 'deploy'));
+  const { base, seen } = await stub(t);
+  for (const envPath of ['.env', 'deploy/tunnel.env', join(repo, 'deploy', '.env')]) {
+    const res = await run(repo, args(envPath), { CLOUDFLARE_API_BASE: base });
+    assert.equal(res.code, 1, envPath);
+    const { error } = JSON.parse(res.stderr);
+    assert.equal(error.code, 'invalid_input', envPath);
+    assert.match(error.message, /not ignored by git/);
+    assert.match(`${error.message} ${error.hint}`, /\.gitignore/);
+  }
+  assert.deepEqual(seen, []);
+  assert.equal(existsSync(join(repo, '.env')), false);
+});
+
+test('tunnel-token writes a git-ignored path inside a git work tree', async (t) => {
+  const repo = gitRepo(t);
+  if (!repo) return t.skip('git not available');
+  mkdirSync(join(repo, 'deploy'));
+  writeFileSync(join(repo, '.gitignore'), '.env\ndeploy/*.env\n');
+  const { base } = await stub(t);
+  for (const envPath of ['.env', 'deploy/tunnel.env']) {
+    const res = await run(repo, args(envPath), { CLOUDFLARE_API_BASE: base });
+    assert.equal(res.code, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.gitignored, true);
+    assert.equal(out.gitignore_warning, undefined);
+  }
+  // Run from a subdirectory: the repo's .gitignore still applies.
+  const res = await run(join(repo, 'deploy'), args('tunnel.cfg'), { CLOUDFLARE_API_BASE: base });
+  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_input');
+});
+
 test('tunnel-token records the env file in secret-files.json', async (t) => {
   const cwd = tempDir(t);
   const { base } = await stub(t);
