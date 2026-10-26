@@ -22,8 +22,10 @@ function failureCode(err) {
   return err.code === 'permission' ? 'missing_permission' : err.code;
 }
 
-function permissionName(module) {
-  return module.permission?.edit ?? module.permission?.read ?? module.product;
+// A product with kinds in both scopes names its permission per plan base.
+function permissionName(module, base) {
+  const permission = typeof module.permission === 'function' ? module.permission(base) : module.permission;
+  return permission?.edit ?? permission?.read ?? module.product;
 }
 
 // One line each: messages split the risk on newlines.
@@ -100,7 +102,7 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
     add('permission', true, `${product}: token can read ${probe}`);
   } catch (err) {
     const code = failureCode(err);
-    if (code === 'missing_permission') return fail('permission', code, `the token cannot read ${probe}; it needs "${permissionName(module)}"`);
+    if (code === 'missing_permission') return fail('permission', code, `the token cannot read ${probe}; it needs "${permissionName(module, base)}"`);
     return fail('permission', code, err.message);
   }
 

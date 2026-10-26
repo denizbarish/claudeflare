@@ -7,6 +7,7 @@ import { matchKind } from './match.mjs';
 import { ACCESS } from './access.mjs';
 import { DEVICES } from './devices.mjs';
 import { GATEWAY } from './gateway.mjs';
+import { LOAD_BALANCING } from './load-balancing.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
 /**
@@ -68,8 +69,10 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {string} product
  * @property {ProductKind[]} kinds
  * @property {(client: object, base: string) => Promise<{ ok: boolean, detail: string }>} [entitlement]
- * @property {{ read: string, edit: string }} [permission]  Token template permission names;
- *   a 403 on the probe names `edit` (then `read`, then the product) in missing_permission.
+ * @property {{ read: string, edit: string }|((base: string) => { read: string, edit: string })} [permission]
+ *   Token template permission names, or a function of the plan base for a product with kinds
+ *   in both scopes (Load Balancing); a 403 on the probe names `edit` (then `read`, then the
+ *   product) in missing_permission.
  * @property {(base: string) => string} probePath   Cheap GET proving token access.
  * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.
@@ -175,3 +178,4 @@ registerProduct(TUNNEL);
 registerProduct(ACCESS);
 registerProduct(GATEWAY);
 registerProduct(DEVICES);
+registerProduct(LOAD_BALANCING);

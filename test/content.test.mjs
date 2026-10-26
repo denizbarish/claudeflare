@@ -230,6 +230,7 @@ const ZT_FINDINGS = {
   'cf-devices': [
     'devices.switch.unlocked_with_posture', 'devices.exclude.no_local_networks', 'devices.profile.unused', 'devices.posture.unused',
   ],
+  'cf-load-balancing': ['lb.pool.no_monitor', 'lb.monitor.interval_short', 'lb.fallback.missing', 'lb.pool.single_origin'],
 };
 
 for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
@@ -314,4 +315,22 @@ test('cf-audit lists the devices domain', () => {
   const audit = read('skills/cf-audit/SKILL.md');
   assert.ok(audit.includes('`cf-devices`'), 'cf-audit does not name cf-devices');
   assert.ok(audit.includes('`devices`'), 'cf-audit is missing domain devices');
+});
+
+test('cf-load-balancing documents both scopes, the preview, the lockout lines and the Healthy wait', () => {
+  const file = 'skills/cf-load-balancing/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    '"scope": "account"', '/zones/{zone_id}/load_balancers', 'not_entitled', 'missing_permission', 'resource_in_use', 'invalid_op',
+    'confirm_name', 'Lockout risk:', 'references', 'referrer', '/preview', 'preview skipped:', 'never blocks a plan',
+    'pop_health', 'minimum_origins', 'rollback_drift', 'new id',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the load_balancing domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-load-balancing`'), 'cf-audit does not name cf-load-balancing');
+  assert.ok(audit.includes('`load_balancing`'), 'cf-audit is missing domain load_balancing');
 });

@@ -1,0 +1,51 @@
+[
+  {
+    "id": "b0000000000000000000000000000001",
+    "created_on": "2026-09-01T10:05:00Z",
+    "modified_on": "2026-09-01T10:05:00Z",
+    "name": "web-primary",
+    "description": "Primary web origins",
+    "enabled": true,
+    "minimum_origins": 1,
+    "monitor": "a0000000000000000000000000000001",
+    "check_regions": ["WEU", "ENAM"],
+    "notification_email": "",
+    "origin_steering": { "policy": "random" },
+    "origins": [
+      { "name": "web-1", "address": "192.0.2.10", "enabled": true, "weight": 1, "header": {} },
+      { "name": "web-2", "address": "192.0.2.11", "enabled": true, "weight": 1, "header": {} }
+    ]
+  },
+  {
+    "id": "b0000000000000000000000000000002",
+    "created_on": "2026-09-01T10:06:00Z",
+    "modified_on": "2026-09-01T10:06:00Z",
+    "name": "web-backup",
+    "description": "Backup web origin",
+    "enabled": true,
+    "minimum_origins": 1,
+    "monitor": "a0000000000000000000000000000001",
+    "check_regions": ["WEU"],
+    "notification_email": "",
+    "origin_steering": { "policy": "random" },
+    "origins": [
+      { "name": "backup-1", "address": "198.51.100.20", "enabled": true, "weight": 1, "header": {} }
+    ]
+  },
+  {
+    "id": "b0000000000000000000000000000003",
+    "created_on": "2026-09-03T10:00:00Z",
+    "modified_on": "2026-09-03T10:00:00Z",
+    "name": "api-pool",
+    "description": "API origin without a monitor",
+    "enabled": true,
+    "minimum_origins": 1,
+    "monitor": null,
+    "check_regions": ["WEU"],
+    "notification_email": "",
+    "origin_steering": { "policy": "random" },
+    "origins": [
+      { "name": "api-1", "address": "203.0.113.30", "enabled": true, "weight": 1, "header": {} }
+    ]
+  }
+]

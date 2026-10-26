@@ -244,6 +244,12 @@ test('statusCheck, readbackCheck, poolHealthyCheck and tcpOpenCheck', async () =
   assert.equal(sick.ok, false);
   assert.match(sick.detail, /fra/);
   assert.equal((await poolHealthyCheck(pool({}), `${BASE}/load_balancers/pools/p1`).run()).ok, false);
+  // The flattened shape of the API reference example: { healthy, origins } on pop_health itself.
+  const flat = (healthy) => pool({ healthy, origins: [{ ip: { healthy, failure_reason: 'No failure reasons', response_code: 200, rtt: '201.5ms' } }] });
+  assert.equal((await poolHealthyCheck(flat(true), `${BASE}/load_balancers/pools/p1`).run()).ok, true);
+  const flatSick = await poolHealthyCheck(flat(false), `${BASE}/load_balancers/pools/p1`).run();
+  assert.equal(flatSick.ok, false);
+  assert.match(flatSick.detail, /unhealthy/);
 
   const opened = [];
   const connect = async (host, port, timeoutMs) => { opened.push([host, port, timeoutMs]); };

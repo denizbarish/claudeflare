@@ -21,6 +21,8 @@ The `gateway` domain audits an account as well: its Gateway rules and their orde
 
 The `devices` domain audits an account as well: its WARP device profiles, split tunnel and fallback lists, posture rules and device settings. A full account audit includes it when a Zero Trust organization exists. Its `fix` ops use `/accounts/{account_id}/devices/...` (an account plan).
 
+The `load_balancing` domain audits both scopes: the account's monitors and pools, and the zone's load balancers. Its checklist skill is `cf-load-balancing`. A full zone audit includes it when the zone has load balancers (GET `/zones/{zone_id}/load_balancers` returns any); a full account audit includes it when the account has pools. Its `fix` ops use `/accounts/{account_id}/load_balancers/...` for monitors and pools (an account plan) and `/zones/{zone_id}/load_balancers/...` for load balancers (a separate zone plan).
+
 ## 2. Domains
 
 The full audit covers these domains, each checked against the skill with the same name:
@@ -41,6 +43,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | access (account) | `cf-access` |
 | gateway (account) | `cf-gateway` |
 | devices (account) | `cf-devices` |
+| load_balancing (account and zone) | `cf-load-balancing` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 

@@ -172,13 +172,20 @@ export function tunnelServingCheck(url, { fetchImpl = globalThis.fetch } = {}) {
 }
 
 // poolPath: the pool resource path (/accounts/<a>/load_balancers/pools/<id>).
-// ok when the health endpoint lists at least one data center and all are healthy.
+// ok when the health endpoint lists at least one region and all are healthy.
+// pop_health is described as a map of regions to { healthy, origins }; the API
+// reference example shows one flattened { healthy, origins } instead, so a
+// boolean `healthy` directly on pop_health is read as the pool's own state.
 export function poolHealthyCheck(client, poolPath) {
   return {
     name: `pool_healthy ${poolPath}`,
     run: async () => {
       const health = await client.request('GET', `${poolPath}/health`);
-      const pops = Object.entries(health?.pop_health ?? {});
+      const popHealth = isPlainObject(health?.pop_health) ? health.pop_health : {};
+      if (typeof popHealth.healthy === 'boolean') {
+        return popHealth.healthy ? { ok: true, detail: 'pool reports healthy' } : { ok: false, detail: 'pool reports unhealthy' };
+      }
+      const pops = Object.entries(popHealth);
       if (!pops.length) return { ok: false, detail: 'no health data yet' };
       const sick = pops.filter(([, value]) => value?.healthy !== true).map(([pop]) => pop);
       return sick.length ? { ok: false, detail: `unhealthy from ${sick.join(', ')}` } : { ok: true, detail: `healthy from ${pops.length} data centers` };
