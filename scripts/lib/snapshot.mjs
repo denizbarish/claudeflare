@@ -189,7 +189,8 @@ export function buildRollbackOps(snapshot, results, { unresolved = [], post } = 
       continue;
     }
     if (entry.op_kind === 'product' && post !== undefined) {
-      inverse = withDriftPrecheck(entry, inverse, post?.[entry.op_index] ?? null);
+      const applied = snapshot.entries.filter((e) => results[e?.op_index] !== null && results[e?.op_index] !== undefined);
+      inverse = withDriftPrecheck(entry, inverse, post?.[entry.op_index] ?? null, applied);
     }
     if (entry.op_kind !== 'product' && entry.kind === 'rule_create' && inverse.length) {
       createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);

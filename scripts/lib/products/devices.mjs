@@ -30,10 +30,9 @@ const MODE_KEYS = ['include', 'exclude'];
 const LIST_KEYS = ['include', 'exclude', 'fallback_domains'];
 
 // Fields Cloudflare sets on a profile. `lists` is claudeflare's own record of
-// the list endpoints (snapshot and post state), never sent back. The list
-// fields themselves stay out of a profile's drift precheck (driftIgnore): the
-// list kinds write them and carry their own baselines, so a rollback that
-// first puts a list back does not look like drift to the profile restore.
+// the list endpoints (snapshot and post state), never sent back. Which list
+// fields a profile's drift precheck compares is decided per op
+// (profileDriftIgnore).
 const PROFILE_READ_ONLY = ['policy_id', 'id', 'default', 'gateway_unique_id', 'target_tests', 'created_at', 'updated_at', 'lists'];
 const POSTURE_READ_ONLY = ['id', 'created_at', 'updated_at'];
 
@@ -240,6 +239,22 @@ function recreateProfile(entry) {
   return ops;
 }
 
+// Profile list fields left out of the drift precheck of a profile write.
+// The inverse never restores fallback_domains or the inactive mode list from
+// live state, so they are always left out. The mode list the op itself set is
+// compared, unless a later applied op of the plan PUT that same list of this
+// profile: that op's rollback runs first with its own baseline and shares
+// the group profile:<id>, so a hand edit still skips both.
+function profileDriftIgnore(entry, applied = []) {
+  const set = MODE_KEYS.filter((key) => (entry.op_body_keys ?? []).includes(key));
+  const ignore = LIST_KEYS.filter((key) => !set.includes(key));
+  for (const key of set) {
+    const listPath = `${entry.path}/${key}`;
+    if (applied.some((e) => e?.op_index > entry.op_index && e.kind === `device_split_${key}_put` && e.path === listPath)) ignore.push(key);
+  }
+  return ignore;
+}
+
 // put_before for a whole list (an array `before`, which the engine's
 // put_before refuses).
 function restoreList(entry) {
@@ -267,22 +282,22 @@ function listKind(kind, name, type) {
 const KINDS = [
   {
     ...account, kind: 'device_default_profile_patch', methods: ['PATCH'], pattern: /^\/devices\/policy$/,
-    resource: () => ({ type: 'device_profile', id: 'default' }), read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS,
+    resource: () => ({ type: 'device_profile', id: 'default' }), read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: profileDriftIgnore,
     capture: captureProfile, capturePost: capturePostProfile, inverse: restoreProfile, group: profileGroup, validate: profileValidator('patch'),
   },
   {
     ...account, kind: 'device_profile_create', methods: ['POST'], pattern: /^\/devices\/policy$/, resource: () => null,
-    idField: 'policy_id', readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capturePost: capturePostProfile, inverse: 'delete_created',
+    idField: 'policy_id', readOnlyFields: PROFILE_READ_ONLY, capturePost: capturePostProfile, inverse: 'delete_created',
     validate: profileValidator('create'),
   },
   {
     ...account, kind: 'device_profile_patch', methods: ['PATCH'], pattern: ONE_PROFILE, resource: (m) => ({ type: 'device_profile', id: m[1] }),
-    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capture: captureProfile, capturePost: capturePostProfile,
+    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: profileDriftIgnore, capture: captureProfile, capturePost: capturePostProfile,
     inverse: restoreProfile, group: profileGroup, validate: profileValidator('patch'),
   },
   {
     ...account, kind: 'device_profile_delete', methods: ['DELETE'], pattern: ONE_PROFILE, resource: (m) => ({ type: 'device_profile', id: m[1] }),
-    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: LIST_KEYS, capture: captureProfile, inverse: recreateProfile, group: profileGroup,
+    read: profileRead, readOnlyFields: PROFILE_READ_ONLY, driftIgnore: profileDriftIgnore, capture: captureProfile, inverse: recreateProfile, group: profileGroup,
     destructive: true, nameField: 'name', notes: (ctx, op) => notesProfileDelete(ctx, op),
   },
   listKind('device_split_include_put', 'include', 'device_split_include'),

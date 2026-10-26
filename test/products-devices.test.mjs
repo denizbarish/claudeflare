@@ -555,3 +555,36 @@ test('list read-back ignores order and normalizes hosts, bare IPs and empty desc
   const swapped = await DEVICES.verifyChecks(patch, pe, {}, {}, { name: 'Lab', include: [host(OKTA.toUpperCase()), host(TEAM)] }, {})[0].run();
   assert.equal(swapped.ok, true, swapped.detail);
 });
+
+test('a hand edit of the list a mode-change PATCH set, or of a created profile, makes the rollback skip with rollback_drift', async (t) => {
+  // (a) A PATCH-only mode change; someone then adds an include entry by hand.
+  const op = patchProfile(P_LAB, { include: [host(TEAM), host(OKTA)] });
+  const api = fakeApi();
+  const report = await runProductPreflight(api, PLAN, [op]);
+  const { cwd, plan } = setup(t, [op], { lockout_risks: report.lockout_risks });
+  approve(cwd, plan);
+  assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+  const edited = [host(TEAM), host(OKTA), host('wiki.example.com')];
+  api.store.set(`${D}/policy/${P_LAB}`, { ...api.store.get(`${D}/policy/${P_LAB}`), include: edited });
+  const rollback = createRollbackPlan(cwd, plan.id, T1);
+  assert.ok('include' in rollback.ops[0].precheck.expect);
+  for (const field of ['exclude', 'fallback_domains']) assert.ok(!(field in rollback.ops[0].precheck.expect), field);
+  approve(cwd, rollback, T1);
+  const ran = await applyPlan(cwd, api, rollback.id, T1, fastVerify());
+  assert.equal(ran.status, 'partially_applied');
+  assert.equal(ran.results[0].reason, 'rollback_drift');
+  assert.deepEqual(api.store.get(`${D}/policy/${P_LAB}`).include, edited);
+
+  // (b) A created profile whose exclude list is edited by hand is not deleted.
+  const second = setup(t, [createProfile()]);
+  const api2 = fakeApi();
+  approve(second.cwd, second.plan);
+  assert.equal((await applyPlan(second.cwd, api2, second.plan.id, T0, fastVerify())).status, 'applied');
+  api2.store.set(`${D}/policy/${NEW_PROFILE}`, { ...api2.store.get(`${D}/policy/${NEW_PROFILE}`), exclude: [{ address: '10.0.0.0/8' }] });
+  const back = createRollbackPlan(second.cwd, second.plan.id, T1);
+  approve(second.cwd, back, T1);
+  const skipped = await applyPlan(second.cwd, api2, back.id, T1, fastVerify());
+  assert.equal(skipped.status, 'partially_applied');
+  assert.equal(skipped.results[0].reason, 'rollback_drift');
+  assert.ok(api2.store.has(`${D}/policy/${NEW_PROFILE}`));
+});

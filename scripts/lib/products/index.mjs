@@ -34,9 +34,11 @@ import { TUNNEL } from './tunnel.mjs';
  *   it is not `id` (a device profile answers `policy_id`); used by `delete_created` and the
  *   post read of a create.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
- * @property {string[]} [driftIgnore]   Fields left out of drift prechecks only, because other
- *   kinds write them and have their own baselines (a device profile's split tunnel lists);
- *   unlike readOnlyFields they stay writable in bodies.
+ * @property {string[]|((entry: object, applied: object[]) => string[])} [driftIgnore]
+ *   Fields left out of drift prechecks only, because other kinds write them and have their
+ *   own baselines (a device profile's split tunnel lists); unlike readOnlyFields they stay
+ *   writable in bodies. A function gets the snapshot entry and the snapshot entries of the
+ *   source plan's ops that ran.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
  *   A function is called as inverse(snapshotEntry, applyResult, postRecord) and returns ops
  *   (postRecord is { read, state } or null). An op may carry `group` when its drift group

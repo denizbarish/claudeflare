@@ -139,7 +139,9 @@ const POST_UNKNOWN = 'post-apply state unknown';
 // resource: later ops of the same source would see the first op's own write,
 // so they carry just the group and skip together with it, unless an op names
 // a baseline of its own in `drift`.
-export function withDriftPrecheck(entry, ops, record) {
+// applied: the snapshot entries of the source plan's ops that ran; a kind's
+// driftIgnore function gets them to see what later ops of the plan wrote.
+export function withDriftPrecheck(entry, ops, record, applied = []) {
   if (!ops.length) return ops;
   const kind = kindByName(entry.kind);
   // A function inverse may tag its ops with a group known only after apply.
@@ -148,8 +150,10 @@ export function withDriftPrecheck(entry, ops, record) {
   const grouped = group === undefined ? {} : { group };
   const state = record?.state;
   // Read-only and secret fields never take part in the comparison, nor do
-  // fields the kind leaves to other kinds (driftIgnore).
-  const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(kind.driftIgnore ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
+  // fields the kind leaves to other kinds (driftIgnore: a list, or a
+  // function of the entry and the applied entries of the source plan).
+  const left = typeof kind?.driftIgnore === 'function' ? kind.driftIgnore(entry, applied) : kind?.driftIgnore;
+  const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(Array.isArray(left) ? left : []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
   let first;
   // A whole-list resource (device split tunnel entries) has an array state.
   if (!kind || !isState(state) || typeof record.read !== 'string' || record.op_index !== entry.op_index) {
