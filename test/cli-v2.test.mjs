@@ -454,4 +454,7 @@ test('deploy inputs from a config file resolve against its directory; args again
   assert.deepEqual(deployInputs('/work/app', 'sub/wrangler.toml', config, wops(['d1', 'migrations', 'apply', 'DB', '--remote'])), ['sub/db', 'sub/wrangler.toml']);
   assert.deepEqual(deployInputs('/work/app', null, {}, wops(['pages', 'deploy', '.', '--project-name', 'site'])), ['.']);
   assert.throws(() => deployInputs('/work/app', null, {}, wops(['pages', 'deploy', '..', '--project-name', 'site'])), (err) => err.code === 'invalid_input');
+  for (const main of ['/etc/passwd', '../../outside.js']) {
+    assert.throws(() => deployInputs('/work/app', 'sub/wrangler.toml', { main }, wops(['deploy', '--name', 'api'])), (err) => err.code === 'invalid_input', main);
+  }
 });

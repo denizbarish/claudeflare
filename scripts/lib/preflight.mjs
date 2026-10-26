@@ -109,9 +109,11 @@ function d1Entry(config, name) {
 }
 
 // wrangler resolves paths in a config file against the file's directory;
-// args and flags resolve against the project directory.
+// args and flags resolve against the project directory. An absolute path
+// stays absolute, so insideRel can reject it.
 function fromConfig(configFile, path) {
-  return typeof path === 'string' && path ? join(configFile ? dirname(configFile) : '.', path) : undefined;
+  if (typeof path !== 'string' || !path) return undefined;
+  return isAbsolute(path) ? path : join(configFile ? dirname(configFile) : '.', path);
 }
 
 const migrationsDir = (configFile, config, name) => fromConfig(configFile, d1Entry(config, name)?.migrations_dir ?? 'migrations');
@@ -175,7 +177,7 @@ function readSql(dir, name) {
 // pending; otherwise `d1 migrations list --remote` names them.
 async function pendingMigrations(runner, target, { file, config }, op, created) {
   const parsed = parseWranglerOp(op);
-  const dir = join(target.project_dir, migrationsDir(file, config, parsed.name));
+  const dir = resolve(target.project_dir, migrationsDir(file, config, parsed.name));
   let names;
   // The op may name the binding; creates name the database.
   const database = d1Entry(config, parsed.name)?.name ?? parsed.name;
