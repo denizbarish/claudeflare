@@ -14,7 +14,7 @@ const EXIT_GRACE_MS = 1000;
 const FAILURE_TAIL_LINES = 20;
 const REQUIRED_MAJOR = 4;
 const INSTALL_HINT = 'Install wrangler 4 in the project: npm i -D wrangler@4';
-const RESERVED_ENV = new Set(['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'WRANGLER_OUTPUT_FILE_PATH']);
+const RESERVED_ENV = new Set(['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_KEY', 'CLOUDFLARE_EMAIL', 'WRANGLER_OUTPUT_FILE_PATH']);
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 const USE_PROCESS_GROUP = process.platform !== 'win32';
 
@@ -69,8 +69,9 @@ function buildEnv({ token, accountId, outputFile, extraEnv }) {
     if (RESERVED_ENV.has(key)) throw new CfError('invalid_input', `extraEnv may not set ${key}`);
   }
   const env = { ...process.env, ...extraEnv };
-  delete env.CLOUDFLARE_API_TOKEN;
-  delete env.CLOUDFLARE_ACCOUNT_ID;
+  // Only the token passed here reaches wrangler (and any build it runs, such
+  // as the preflight dry-run); a Global API Key never does.
+  for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_KEY', 'CLOUDFLARE_EMAIL']) delete env[key];
   if (token) env.CLOUDFLARE_API_TOKEN = token;
   if (accountId) env.CLOUDFLARE_ACCOUNT_ID = accountId;
   env.WRANGLER_SEND_METRICS = 'false';

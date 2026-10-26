@@ -1,10 +1,11 @@
 // Preflight for plan drafts: validates ops and, for account plans, checks
 // wrangler, account access, config bindings, a dry-run build, pending D1
-// migrations and the source hash. Writes nothing to Cloudflare. `plan new`
-// runs the same checks and stores the returned ops (with source_hash and
-// source_paths embedded) in the plan.
+// migrations and the source hash. Writes nothing to Cloudflare, but the
+// dry-run runs the project's own build locally. `plan new` runs the same
+// checks and stores the returned ops (with source_hash, source_paths and
+// pending_migrations embedded) in the plan.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CfError } from './errors.mjs';
@@ -12,7 +13,7 @@ import { validateOpTargets, validatePlanOps } from './resources.mjs';
 import { assertAccountAccess } from './apply.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { assertWranglerVersion, failureMessage, runWrangler } from './wrangler.mjs';
-import { configBindings, readWranglerConfig } from './wrangler-config.mjs';
+import { applyEnv, configBindings, readWranglerConfig } from './wrangler-config.mjs';
 import { parseWranglerOp, SOURCE_KINDS } from './wrangler-ops.mjs';
 
 const KV_ID = /^[0-9a-f]{32}$/;
@@ -27,7 +28,7 @@ function errorText(err) {
 // Plan new recomputes these; a draft never supplies them.
 function stripComputed(op) {
   if (op?.kind !== 'wrangler') return op;
-  const { source_hash: _hash, source_paths: _paths, ...rest } = op;
+  const { source_hash: _hash, source_paths: _paths, pending_migrations: _pending, ...rest } = op;
   return rest;
 }
 
@@ -116,8 +117,21 @@ export function deployInputs(projectDir, configFile, config, op) {
   } else if (parsed.kind === 'd1_migrations_apply') {
     candidates.push(d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
   }
+  // Inputs that do not exist yet are hashed as missing, so one that appears
+  // before apply changes the hash.
   const rels = candidates.filter((p) => typeof p === 'string' && p).map((p) => insideRel(projectDir, p));
-  return [...new Set(rels)].filter((rel) => existsSync(join(projectDir, rel))).sort();
+  return [...new Set(rels)].sort();
+}
+
+const targetFlags = (parsed) => ['--config', '--env'].flatMap((name) => (parsed.flags.get(name) ?? []).flatMap((v) => [name, v]));
+
+// Config the op's wrangler run sees: its --config file (or the default one)
+// with its --env section applied.
+export function opConfig(projectDir, op) {
+  const parsed = parseWranglerOp(op);
+  const configFlag = parsed.flags.get('--config')?.[0];
+  const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag));
+  return { file, config: applyEnv(config, parsed.flags.get('--env')?.[0], file) };
 }
 
 async function dryRun(runner, projectDir, op) {
@@ -132,26 +146,37 @@ async function dryRun(runner, projectDir, op) {
   }
 }
 
-async function pendingMigrations(runner, target, config, op) {
-  const parsed = parseWranglerOp(op);
-  const result = await runner(['d1', 'migrations', 'list', parsed.name, '--remote'], {
-    cwd: target.project_dir,
-    token: process.env.CLOUDFLARE_API_TOKEN,
-    accountId: target.account_id,
-  });
-  if (result.code !== 0) throw new CfError('wrangler_failed', `d1 migrations list failed: ${failureMessage(result)}`);
-  const names = [...new Set(result.stdout.match(/[\w.-]+\.sql\b/g) ?? [])];
-  const dir = join(target.project_dir, d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
-  const files = names.map((name) => {
-    let sql = null;
-    try {
-      sql = readFileSync(join(dir, name), 'utf8');
-    } catch {
-      return { name, sql: null };
-    }
+function readSql(dir, name) {
+  try {
+    const sql = readFileSync(join(dir, name), 'utf8');
     return sql.length > MAX_SQL_CHARS ? { name, sql: sql.slice(0, MAX_SQL_CHARS), truncated: true } : { name, sql };
-  });
-  return { database: parsed.name, files };
+  } catch {
+    return { name, sql: null };
+  }
+}
+
+// A database created earlier in the same draft has every local migration
+// pending; otherwise `d1 migrations list --remote` names them.
+async function pendingMigrations(runner, target, config, op, created) {
+  const parsed = parseWranglerOp(op);
+  const dir = join(target.project_dir, d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
+  let names;
+  if (created.has(`d1:${parsed.name}`)) {
+    try {
+      names = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    } catch {
+      names = [];
+    }
+  } else {
+    const result = await runner(['d1', 'migrations', 'list', parsed.name, '--remote', ...targetFlags(parsed)], {
+      cwd: target.project_dir,
+      token: process.env.CLOUDFLARE_API_TOKEN,
+      accountId: target.account_id,
+    });
+    if (result.code !== 0) throw new CfError('wrangler_failed', `d1 migrations list failed: ${failureMessage(result)}`);
+    names = [...new Set(result.stdout.match(/[\w.-]+\.sql\b/g) ?? [])];
+  }
+  return { database: parsed.name, files: names.map((name) => readSql(dir, name)) };
 }
 
 // target: { scope, zone_id } or { scope: 'account', account_id, project_dir }.
@@ -197,61 +222,63 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
     result.ops = ops;
     return result;
   }
-  let config;
-  let configFile;
+  const configs = new Map();
   try {
-    ({ file: configFile, config } = readWranglerConfig(target.project_dir));
-    add('config', true, configFile ? `read ${configFile}` : 'no wrangler config file');
+    for (const op of sourceOps) {
+      const loaded = opConfig(target.project_dir, op);
+      configs.set(op, loaded);
+    }
+    const files = [...new Set([...configs.values()].map((c) => c.file ?? 'no wrangler config file'))];
+    add('config', true, `read ${files.join(', ')}`);
   } catch (err) {
     add('config', false, errorText(err));
     return result;
   }
 
+  const created = createdInDraft(ops);
   const deploys = sourceOps.filter((op) => parseWranglerOp(op).kind === 'worker_deploy');
-  if (deploys.length) {
+  for (const op of deploys) {
     try {
-      const problems = await bindingProblems(client, target.account_id, config, ops);
+      const problems = await bindingProblems(client, target.account_id, configs.get(op).config, ops);
       add('bindings', problems.length === 0, problems.length ? problems.join('; ') : 'all bindings exist');
     } catch (err) {
       add('bindings', false, `could not verify bindings: ${errorText(err)}`);
     }
-    for (const op of deploys) {
-      const built = await dryRun(runner, target.project_dir, op);
-      add('build', built.ok, built.detail);
-      if (built.size) result.upload_size = built.size;
-    }
+    const built = await dryRun(runner, target.project_dir, op);
+    add('build', built.ok, built.detail);
+    if (built.size) result.upload_size = built.size;
   }
 
-  const pending = [];
+  const pending = new Map();
   for (const op of sourceOps.filter((o) => parseWranglerOp(o).kind === 'd1_migrations_apply')) {
     try {
-      const entry = await pendingMigrations(runner, target, config, op);
-      pending.push(entry);
+      const entry = await pendingMigrations(runner, target, configs.get(op).config, op, created);
+      pending.set(op, entry);
       const names = entry.files.map((f) => f.name);
       add('migrations', true, names.length ? `pending on ${entry.database}: ${names.join(', ')}` : `no pending migrations on ${entry.database}`);
     } catch (err) {
       add('migrations', false, errorText(err));
     }
   }
-  if (pending.length) result.pending_migrations = pending;
+  if (pending.size) result.pending_migrations = [...pending.values()];
 
+  // Hashed after the dry-run, so build output it writes into the project is included.
   const hashes = new Set();
-  const withHashes = [];
   try {
-    for (const op of ops) {
-      if (!sourceOps.includes(op)) {
-        withHashes.push(op);
-        continue;
-      }
-      const extraPaths = deployInputs(target.project_dir, configFile, config, op);
+    result.ops = ops.map((op) => {
+      if (!configs.has(op)) return op;
+      const { file, config } = configs.get(op);
+      const extraPaths = deployInputs(target.project_dir, file, config, op);
       const hash = computeSourceHash(target.project_dir, { extraPaths });
       hashes.add(hash);
-      withHashes.push({ ...op, source_hash: hash, source_paths: extraPaths });
-    }
+      const out = { ...op, source_hash: hash, source_paths: extraPaths };
+      if (pending.has(op)) out.pending_migrations = pending.get(op).files;
+      return out;
+    });
     add('source', true, [...hashes].join(', '));
     if (hashes.size === 1) result.source_hash = [...hashes][0];
-    result.ops = withHashes;
   } catch (err) {
+    delete result.ops;
     add('source', false, errorText(err));
   }
   result.ok = checks.every((c) => c.ok);

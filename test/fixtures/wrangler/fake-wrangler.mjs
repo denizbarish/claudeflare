@@ -38,6 +38,7 @@ log({
     WRANGLER_SEND_METRICS: process.env.WRANGLER_SEND_METRICS,
     NO_COLOR: process.env.NO_COLOR,
     hasToken: Boolean(process.env.CLOUDFLARE_API_TOKEN),
+    hasGlobalKey: Boolean(process.env.CLOUDFLARE_API_KEY || process.env.CLOUDFLARE_EMAIL),
   },
 });
 

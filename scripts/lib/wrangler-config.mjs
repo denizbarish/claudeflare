@@ -1,8 +1,10 @@
-// Reads the top-level wrangler config of a project (wrangler.jsonc,
-// wrangler.json or wrangler.toml) for preflight: entry point, assets and
-// the resource bindings. The TOML reader covers the subset wrangler configs
-// use for these keys (tables, arrays of tables, strings, numbers, booleans,
-// one-line arrays and inline tables); anything else is ignored.
+// Reads the wrangler config of a project (wrangler.jsonc, wrangler.json or
+// wrangler.toml, or the file given with --config) for preflight: entry point,
+// assets and the resource bindings, with an --env section applied. The TOML
+// reader covers the subset wrangler configs use (tables, arrays of tables,
+// strings, numbers, booleans, arrays and inline tables, multi-line arrays);
+// an unsupported value under a key preflight relies on is an error, never a
+// silent skip.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,11 +33,13 @@ function stripJsonc(text) {
       i = text.indexOf('*/', i + 2);
       if (i === -1) break;
       i++;
+    } else if (c === ',' && /^\s*[}\]]/.test(text.slice(i + 1))) {
+      // trailing comma: dropped
     } else {
       out += c;
     }
   }
-  return out.replace(/,(\s*[}\]])/g, '$1');
+  return out;
 }
 
 // Splits on `sep` outside quotes and brackets.
@@ -118,11 +122,34 @@ function setPath(obj, keys, value) {
   node[keys.at(-1)] = value;
 }
 
+// Keys preflight relies on; an unsupported value under them is an error.
+const RELIED_KEYS = new Set([
+  'main', 'assets', 'site', 'pages_build_output_dir', 'env',
+  'kv_namespaces', 'r2_buckets', 'd1_databases', 'queues',
+]);
+
+const bracketDepth = (text) => {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\' && quote === '"') i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '[' || c === '{') depth++;
+    else if (c === ']' || c === '}') depth--;
+  }
+  return depth;
+};
+
 export function parseToml(text) {
   const root = {};
   let table = root;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = stripTomlComment(rawLine).trim();
+  let tablePath = [];
+  const lines = text.split(/\r?\n/);
+  for (let n = 0; n < lines.length; n++) {
+    let line = stripTomlComment(lines[n]).trim();
     if (!line) continue;
     let m = /^\[\[([^\]]+)\]\]$/.exec(line);
     if (m) {
@@ -136,27 +163,50 @@ export function parseToml(text) {
       if (!Array.isArray(parent[last])) parent[last] = [];
       table = {};
       parent[last].push(table);
+      tablePath = keys;
       continue;
     }
     m = /^\[([^\]]+)\]$/.exec(line);
     if (m) {
       table = {};
-      setPath(root, tomlKey(m[1]), table);
+      tablePath = tomlKey(m[1]);
+      setPath(root, tablePath, table);
       continue;
     }
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
-    const value = tomlValue(line.slice(eq + 1).trim());
-    if (value !== UNSUPPORTED) setPath(table, tomlKey(line.slice(0, eq)), value);
+    const key = tomlKey(line.slice(0, eq));
+    let raw = line.slice(eq + 1).trim();
+    const relied = [...tablePath, ...key].some((k) => RELIED_KEYS.has(k));
+    const delim = raw.startsWith('"""') ? '"""' : raw.startsWith("'''") ? "'''" : null;
+    if (delim) {
+      // Multi-line string: skipped (never under a relied key).
+      if (relied) throw new Error(`multi-line string under ${key.join('.')} is not supported`);
+      if (raw.length < 6 || !raw.endsWith(delim)) {
+        while (n + 1 < lines.length && !lines[++n].includes(delim));
+      }
+      continue;
+    }
+    while (bracketDepth(raw) > 0 && n + 1 < lines.length) raw += ` ${stripTomlComment(lines[++n]).trim()}`;
+    raw = raw.replace(/,\s*([\]}])/g, '$1');
+    const value = tomlValue(raw);
+    if (value !== UNSUPPORTED) setPath(table, key, value);
+    else if (relied) throw new Error(`unsupported value for ${[...tablePath, ...key].join('.')}`);
   }
   return root;
 }
 
-// Returns { file, config } or { file: null, config: {} } when there is no config.
-export function readWranglerConfig(projectDir) {
-  const file = findConfigFile(projectDir);
+// Returns { file, config }, or { file: null, config: {} } when there is no
+// config. `file` is the --config path (relative to projectDir) when given.
+export function readWranglerConfig(projectDir, configPath) {
+  const file = configPath ?? findConfigFile(projectDir);
   if (!file) return { file: null, config: {} };
-  const text = readFileSync(join(projectDir, file), 'utf8');
+  let text;
+  try {
+    text = readFileSync(join(projectDir, file), 'utf8');
+  } catch (err) {
+    throw new CfError('invalid_config', `${file} could not be read: ${err.code || err.message}`);
+  }
   try {
     const config = file.endsWith('.toml') ? parseToml(text) : JSON.parse(stripJsonc(text));
     if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('not an object');
@@ -164,6 +214,22 @@ export function readWranglerConfig(projectDir) {
   } catch (err) {
     throw new CfError('invalid_config', `${file} could not be parsed: ${err.message}`);
   }
+}
+
+// Bindings are not inherited by environments in wrangler; entry point and
+// asset settings are.
+const NON_INHERITED = ['kv_namespaces', 'r2_buckets', 'd1_databases', 'queues'];
+
+export function applyEnv(config, envName, file) {
+  if (envName === undefined) return config;
+  const section = config.env?.[envName];
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    throw new CfError('invalid_config', `${file ?? 'wrangler config'} has no env.${envName} section`);
+  }
+  const merged = { ...config };
+  for (const key of NON_INHERITED) delete merged[key];
+  delete merged.env;
+  return { ...merged, ...section };
 }
 
 const list = (value) => (Array.isArray(value) ? value.filter((v) => v && typeof v === 'object') : []);

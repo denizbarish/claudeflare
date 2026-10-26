@@ -126,7 +126,10 @@ function touchesState(command) {
 
 function describeOps(ops) {
   const list = Array.isArray(ops) ? ops : [];
-  const shown = list.slice(0, ASK_OPS_LIMIT).map((op) => `${op.method} ${op.path}`).join('; ');
+  const shown = list
+    .slice(0, ASK_OPS_LIMIT)
+    .map((op) => (op?.kind === 'wrangler' ? `wrangler ${(op.args ?? []).join(' ')}` : `${op.method} ${op.path}`))
+    .join('; ');
   const more = list.length > ASK_OPS_LIMIT ? ` (+${list.length - ASK_OPS_LIMIT} more)` : '';
   return `${shown}${more}`;
 }

@@ -20,13 +20,18 @@ export function clampSeconds(value) {
   return Math.min(MAX_SECONDS, Math.max(1, n));
 }
 
-// Long hex ids, base64 or JWT-like runs, bearer tokens and URL query strings.
+// URL query strings and credentials, bearer and basic auth, values of
+// secret-named keys, Stripe-style keys, long hex ids and long base64 runs.
 export function redactText(value) {
   return String(value)
-    .replace(/(Bearer\s+)\S+/gi, '$1[REDACTED]')
     .replace(/(https?:\/\/[^\s?#"']+)\?[^\s#"']*/g, '$1?[REDACTED]')
+    .replace(/(\/\/)[^\/@\s"']+@/g, '$1[REDACTED]@')
+    .replace(/((?:Bearer|Basic)\s+)\S+/gi, '$1[REDACTED]')
+    .replace(/((?:password|passwd|pass|secret|token|api[_-]?key|authorization|auth|cookie|session)["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk|pk|rk|whsec)_(?:live_|test_)?[A-Za-z0-9]{8,}/g, '[REDACTED]')
     .replace(/\b[0-9a-f]{32,}\b/gi, '[REDACTED]')
-    .replace(/[A-Za-z0-9+/_.-]{40,}={0,2}/g, '[REDACTED]')
+    // Long runs with letters and digits mixed (keys, JWT parts), not long hostnames or slugs.
+    .replace(/[A-Za-z0-9+_-]{40,}={0,2}/g, (run) => (/\d/.test(run) && /[A-Za-z]/.test(run) ? '[REDACTED]' : run))
     .slice(0, MAX_TEXT);
 }
 

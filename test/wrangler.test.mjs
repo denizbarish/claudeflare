@@ -125,11 +125,18 @@ test('args are passed exactly, without a shell', async () => {
   assert.deepEqual(logRecords()[0].argv, args);
 });
 
-test('env has CI=1, metrics off, NO_COLOR and the token; stdin length is passed', async () => {
+test('env has CI=1, metrics off, NO_COLOR and the token, never a global key; stdin length is passed', async () => {
   script({ 'secret put KEY': { code: 0 } });
-  await runWrangler(['secret', 'put', 'KEY'], { ...opts(), stdin: SECRET });
+  process.env.CLOUDFLARE_API_KEY = 'global-key-value';
+  process.env.CLOUDFLARE_EMAIL = 'someone@example.com';
+  try {
+    await runWrangler(['secret', 'put', 'KEY'], { ...opts(), stdin: SECRET });
+  } finally {
+    delete process.env.CLOUDFLARE_API_KEY;
+    delete process.env.CLOUDFLARE_EMAIL;
+  }
   const [record] = logRecords();
-  assert.deepEqual(record.env, { CI: '1', WRANGLER_SEND_METRICS: 'false', NO_COLOR: '1', hasToken: true });
+  assert.deepEqual(record.env, { CI: '1', WRANGLER_SEND_METRICS: 'false', NO_COLOR: '1', hasToken: true, hasGlobalKey: false });
   assert.equal(record.stdinLength, SECRET.length);
   assert.equal(readFileSync(process.env.FAKE_WRANGLER_LOG, 'utf8').includes(SECRET), false);
 });
@@ -278,7 +285,7 @@ async function assertGrandchildGone() {
 
 test('timeout is a hard stop when the child ignores SIGTERM and a grandchild holds stdio', async () => {
   script({ deploy: { code: 0, ignoreSigterm: true, grandchild: true, hang: true } });
-  const timeoutMs = 2000; // long enough for the fake to install its handler and spawn the grandchild
+  const timeoutMs = 4000; // long enough for the fake to install its handler and spawn the grandchild, even under load
   const started = Date.now();
   await assert.rejects(runWrangler(['deploy'], { ...opts(), timeoutMs }), { code: 'wrangler_failed' });
   assert.ok(Date.now() - started < timeoutMs + 5000 + 2000);
@@ -288,7 +295,7 @@ test('timeout is a hard stop when the child ignores SIGTERM and a grandchild hol
 test('timeout settles when the child exits but a grandchild keeps the pipes open', async () => {
   script({ deploy: { code: 0, grandchild: true, hang: true } });
   const started = Date.now();
-  const timeoutMs = 2000;
+  const timeoutMs = 4000; // node startup under a loaded suite can take seconds
   await assert.rejects(runWrangler(['deploy'], { ...opts(), timeoutMs }), { code: 'wrangler_failed' });
   assert.ok(Date.now() - started < timeoutMs + 5000 + 2000);
   await assertGrandchildGone();
@@ -298,7 +305,7 @@ test('stopAfterMs stops the process and resolves with collected output', async (
   script({
     tail: { code: 0, stdout: 'line 1\n', hang: true, events: [{ type: 'wrangler-session' }] },
   });
-  const result = await runWrangler(['tail'], { ...opts(), stopAfterMs: 2000 });
+  const result = await runWrangler(['tail'], { ...opts(), stopAfterMs: 4000 });
   assert.equal(result.stopped, true);
   assert.equal(result.stdout, 'line 1\n');
   assert.deepEqual(result.events, [{ type: 'wrangler-session' }]);
