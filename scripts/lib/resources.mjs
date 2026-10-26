@@ -353,7 +353,7 @@ export function validateOpTargets(ops, plan) {
       reject(`must target this plan's zone (${prefix}...)`);
     } else {
       const owner = zoneProductPathOwner(op, plan);
-      if (owner) reject(`targets a path the ${owner.product} module manages; use ${owner.methods.join(' or ')} (PUT sends the whole resource)`);
+      if (owner) reject(`targets ${owner.collection}, which the ${owner.product} module manages; use ${owner.methods.join(', ')} on its exact paths (lowercase ids, no trailing slash or encoding; PUT sends the whole resource)`);
     }
     if (method === 'POST' && PAGE_RULES.test(path)) reject('would create a Page Rule; use the modern rule types');
     if (product) {

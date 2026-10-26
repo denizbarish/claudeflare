@@ -506,6 +506,9 @@ test('Ruling 27: a preview-only lockout line found at apply is advisory and does
   const applied = await applyPlan(cwd, api, plan.id, T0, fastVerify());
   assert.equal(applied.status, 'applied', JSON.stringify(applied));
   assert.ok(api.store.has(`${ZB}/load_balancers/${NEW_LB}`));
+  // The advisory line is recorded on the result and the stored plan.
+  assert.deepEqual(applied.advisory_lockout, fresh.lockout_risks);
+  assert.deepEqual(readPlan(cwd, plan.id).advisory_lockout, fresh.lockout_risks);
 
   // A new line that does not rest on the preview still stops apply.
   const dead = updateLb(LB2, lbBody(LB2, { ttl: 60 }));
@@ -525,7 +528,26 @@ test('Ruling 26: a zone write on a load balancer path with a method no kind take
   ]) {
     assert.throws(() => validateOpTargets([op], ZONE), (e) => e.code === 'invalid_op' && /load_balancing module/.test(e.message), `${op.method} ${op.path}`);
   }
-  assert.throws(() => validateOpTargets([{ method: 'PATCH', path: `${ZB}/load_balancers/${LB1}`, body: {} }], ZONE), /use PUT or DELETE/);
+  assert.throws(() => validateOpTargets([{ method: 'PATCH', path: `${ZB}/load_balancers/${LB1}`, body: {} }], ZONE), /use POST, PUT, DELETE on its exact paths/);
+  // Path variants of the owned collection are refused for every write method.
+  const variants = [
+    `${ZB}/load_balancers/${LB1}/`,
+    `${ZB}/load_balancers/`,
+    `${ZB}/load_balancers/${LB1.toUpperCase()}`,
+    `${ZB}/%6coad_balancers/${LB1}`,
+    `${ZB}/load_balancers/%63${LB1.slice(1)}`,
+    `${ZB}/load_balancers/${LB1}/x`,
+    `${ZB}/load_balancers/${LB1}/pools/x`,
+  ];
+  for (const path of variants) {
+    for (const method of ['PATCH', 'PUT', 'POST', 'DELETE']) {
+      assert.throws(() => validateOpTargets([{ method, path, body: {} }], ZONE), (e) => e.code === 'invalid_op' && /load_balancing module/.test(e.message), `${method} ${path}`);
+    }
+    validateOpTargets([{ method: 'GET', path }], ZONE);
+  }
+  // An uppercase id does not slip past the lowercase kind patterns.
+  assert.throws(() => validateOpTargets([{ method: 'PATCH', path: `${ZB}/load_balancers/${LB1.toUpperCase()}`, body: {} }], ZONE), (e) => e.code === 'invalid_op' && /load_balancing module/.test(e.message));
+  assert.throws(() => validateOpTargets([{ method: 'PATCH', path: `${ZB}/Load_Balancers/${LB1}`, body: {} }], ZONE), { code: 'invalid_op' });
   validateOpTargets([
     { method: 'POST', path: `${ZB}/dns_records`, body: {} },
     { method: 'PATCH', path: `${ZB}/settings/ssl`, body: { value: 'strict' } },
@@ -557,4 +579,19 @@ test('Ruling 28: a monitor without a description is confirmed by its id; preview
   const zoneReport = await preflight(odd, ZONE, [updateLb(LB2, lbBody(LB2, { ttl: 60 }))]);
   assert.match(zoneReport.ctx.load_balancing.preview[P3].skipped, /not 32 hex/);
   assert.ok(!odd.calls.some((c) => c.path.includes('../x')));
+});
+
+test('advisory marking is set by the module, not by text: a pool named after the preview phrase keeps its line binding', async (t) => {
+  const phrase = 'and the preview found it critical';
+  const api = fakeApi();
+  api.store.set(`${LBA}/pools/${P3}`, { ...pool(P3), name: `api ${phrase}`, enabled: false });
+  const report = await preflight(api, ZONE, [updateLb(LB2, lbBody(LB2, { ttl: 60 }))]);
+  assert.equal(report.lockout_risks.length, 1);
+  assert.ok(report.lockout_risks[0].includes(phrase), report.lockout_risks[0]);
+  assert.match(report.lockout_risks[0], /no usable pool/);
+  assert.deepEqual(report.advisory_lockout, []);
+  // So apply still stops on it when the plan did not show it.
+  const { cwd, plan } = setup(t, [updateLb(LB2, lbBody(LB2, { ttl: 60 }))], { zone: true, lockout_risks: [] });
+  approve(cwd, plan);
+  await assert.rejects(() => applyPlan(cwd, api, plan.id, T0, fastVerify()), { code: 'risk_changed' });
 });

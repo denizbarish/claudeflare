@@ -137,12 +137,16 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
     }
   }
 
+  // A module marks an advisory line by returning { line, advisory: true }
+  // (never by matching text, which may hold user-chosen names).
   const lines = module.lockoutRisks(ctx, ops) ?? [];
-  for (const line of lines) {
+  for (const item of lines) {
+    const advisory = item !== null && typeof item === 'object' && item.advisory === true;
+    const line = advisory ? item.line : item;
     if (typeof line !== 'string' || !line.trim()) continue;
     const flat = asLockoutLine(line);
     out.lockout_risks.push(flat);
-    if (module.advisoryLockout?.(flat)) out.advisory_lockout.push(flat);
+    (advisory ? out.advisory_lockout : out.binding_lockout).push(flat);
   }
   return null;
 }
@@ -151,17 +155,20 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
 // Failed checks carry `code` (not_entitled, missing_permission,
 // resource_in_use, invalid_op, ...) so apply can throw it unchanged.
 // `unanalyzed` lists { product, detail } for products whose lockout analysis
-// did not run. `advisory_lockout` holds the lockout lines a module marks as
-// advisory (advisoryLockout): apply does not stop with risk_changed for them.
+// did not run. `advisory_lockout` holds the lockout lines a module returned
+// as { line, advisory: true }: apply does not stop with risk_changed for them.
+// A text a module also returned as a plain line is not advisory.
 // options.alwaysLockout: see productChecks.
 export async function runProductPreflight(client, plan, ops, options = {}) {
-  const out = { checks: [], lockout_risks: [], advisory_lockout: [], dependencies: {}, ctx: {}, unanalyzed: [] };
+  const out = { checks: [], lockout_risks: [], advisory_lockout: [], binding_lockout: [], dependencies: {}, ctx: {}, unanalyzed: [] };
   const add = (name, ok, detail, code) => out.checks.push(ok ? { name, ok, detail } : { name, ok, detail, code });
   for (const [module, items] of groupByProduct(plan, ops ?? [])) {
     const detail = await productChecks(client, module, items, out, add, options);
     if (detail !== null) out.unanalyzed.push({ product: module.product, detail });
   }
   out.lockout_risks = [...new Set(out.lockout_risks)];
-  out.advisory_lockout = [...new Set(out.advisory_lockout)];
+  const binding = new Set(out.binding_lockout);
+  out.advisory_lockout = [...new Set(out.advisory_lockout)].filter((line) => !binding.has(line));
+  delete out.binding_lockout;
   return out;
 }

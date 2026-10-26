@@ -208,10 +208,12 @@ function assertRollbackSourceCurrent(cwd, plan) {
 // its own code; a lockout line the plan did not show stops with risk_changed,
 // because approval binds only to the ops hash and the user never saw that
 // line. Lines that disappeared do not stop apply. Rollback plans and plans
-// without product ops (0.2.x) skip this. Returns the per-product ctx the
-// reads produced ({} when skipped), which verification reuses.
+// without product ops (0.2.x) skip this. Returns { ctx, advisory }: the
+// per-product ctx the reads produced ({} when skipped), which verification
+// reuses, and the advisory lockout lines the plan did not show (Ruling 27),
+// which apply stores on the plan and its result.
 async function assertProductPreflight(client, plan) {
-  if (plan.rollback_of || !hasProductOps(plan)) return {};
+  if (plan.rollback_of || !hasProductOps(plan)) return { ctx: {}, advisory: [] };
   const report = await runProductPreflight(client, plan, plan.ops);
   const failedCheck = report.checks.find((c) => !c.ok);
   if (failedCheck) {
@@ -229,7 +231,7 @@ async function assertProductPreflight(client, plan) {
       hint: 'Nothing was written; create a new plan with claudeflare plan new so the user approves with these lines in view',
     });
   }
-  return report.ctx ?? {};
+  return { ctx: report.ctx ?? {}, advisory: [...advisory].filter((line) => !shown.has(line)) };
 }
 
 // Rollback plans skip product preflight at apply, so their lockout lines are
@@ -463,7 +465,7 @@ export async function applyPlan(cwd, client, id, now = new Date(), {
   // A missing or unsafe secret env var refuses before any request, keeping the approval.
   assertSecretFieldsEnv(plan, env);
   // Refusals here also keep the approval: nothing has been written yet.
-  const ctxByProduct = await assertProductPreflight(client, plan);
+  const { ctx: ctxByProduct, advisory } = await assertProductPreflight(client, plan);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);
   const file = writeApplySnapshot(cwd, plan, snapshot);
@@ -480,7 +482,9 @@ export async function applyPlan(cwd, client, id, now = new Date(), {
   const verifyFailed = await verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep, connect, clock, env });
   // A partial apply keeps its status so the partial state stays visible.
   if (verifyFailed && outcome.status === 'applied') outcome.status = 'applied_verify_failed';
-  const recorded = recordOutcome(cwd, plan, outcome, file, now);
+  // Advisory lockout lines first found at apply (Ruling 27) did not stop it;
+  // they are stored on the plan, so the printed result shows them.
+  const recorded = recordOutcome(cwd, plan, outcome, file, now, advisory.length ? { advisory_lockout: advisory } : {});
   // Rollback plans are verified but get no draft of their own.
   return verifyFailed && !plan.rollback_of ? draftRollback(cwd, client, plan, now, env, addLockout) : recorded;
 }

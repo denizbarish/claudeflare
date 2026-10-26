@@ -78,10 +78,11 @@ import { TUNNEL } from './tunnel.mjs';
  * @property {(base: string) => string} probePath   Cheap GET proving token access.
  * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.
- * @property {(ctx: object, ops: object[]) => string[]} lockoutRisks  Lines start with `Lockout risk:`.
- * @property {(line: string) => boolean} [advisoryLockout]  True for a lockout line that rests on
- *   an asynchronous read (the Load Balancing pool preview), so it may appear at apply without
- *   having been shown at plan new; apply then does not stop with risk_changed for it.
+ * @property {(ctx: object, ops: object[]) => (string|{ line: string, advisory: true })[]} lockoutRisks
+ *   Lines start with `Lockout risk:`. A line that rests on an asynchronous read (the Load
+ *   Balancing pool preview) may appear at apply without having been shown at plan new; the
+ *   module returns it as { line, advisory: true }, and apply records it instead of stopping
+ *   with risk_changed.
  * @property {(ctx: object, op: object, entry: ProductKind) => string[]} [dependencies]
  *   Descriptions of what still uses the resource (resource_in_use).
  * @property {(op: object, entry: ProductKind, ctx: object, result: object, post: (object|null), deps: object) => object[]} verifyChecks
@@ -178,20 +179,44 @@ export function classifyProductOp(op, plan) {
   return null;
 }
 
+// First path segment a kind's pattern fixes (`load_balancers` for
+// /^\/load_balancers\/([0-9a-f]{32})$/); null when it starts with a group.
+function ownedCollection(entry) {
+  const m = /^\^\/([A-Za-z0-9_-]+)(?:\\?\/|\$|\(|\?)/.exec(entry.pattern.source.replace(/\\\//g, '/'));
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Path canonical for ownership checks: decoded, lowercased, no repeated or
+// trailing slashes. Null when it cannot be decoded.
+function canonicalRest(path, base) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(path.split('?')[0].slice(base.length));
+  } catch {
+    return null;
+  }
+  return decoded.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+}
+
 // Zone plans accept other zone writes under the v1 open policy (spec 4.3),
-// but a path a zone product kind owns must go through that kind (Ruling 26):
-// returns { product, methods } when the op's path matches a zone kind's
-// pattern while no kind takes its method, else null. GET is never refused.
+// but a collection a zone product kind owns (its first path segment, such as
+// load_balancers) is written only through those kinds (Ruling 26). Returns
+// { product, collection, methods } for a non-GET zone op inside such a
+// collection that matches no kind exactly (another method, a trailing slash,
+// an uppercase or percent-encoded segment, an extra subpath), else null.
 export function zoneProductPathOwner(op, plan) {
   if (!plan || plan.scope === 'account' || !op || typeof op !== 'object' || 'kind' in op) return null;
   if (String(op.method ?? '').toUpperCase() === 'GET' || classifyProductOp(op, plan)) return null;
   const path = String(op.path ?? '');
   const base = baseFor(plan);
   if (!path.startsWith(`${base}/`)) return null;
-  const rest = path.split('?')[0].slice(base.length);
+  // An undecodable path is refused earlier by the zone Access check.
+  const rest = canonicalRest(path, base);
+  if (rest === null) return null;
+  const first = rest.split('/')[1];
   for (const module of PRODUCTS) {
-    const owners = module.kinds.filter((k) => k.scope === 'zone' && k.pattern.test(rest));
-    if (owners.length) return { product: module.product, methods: [...new Set(owners.flatMap((k) => k.methods))] };
+    const owners = module.kinds.filter((k) => k.scope === 'zone' && ownedCollection(k) === first);
+    if (owners.length) return { product: module.product, collection: first, methods: [...new Set(owners.flatMap((k) => k.methods))] };
   }
   return null;
 }

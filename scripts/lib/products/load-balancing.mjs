@@ -386,18 +386,15 @@ function lbLines(ctx, p, body) {
   if (only?.healthy === false) {
     // No failure reasons here (they stay in the preview note): the line must
     // read the same whenever the preview finds the pool critical.
-    lines.push(`${LOCKOUT_PREFIX} load balancer ${name} has one pool, ${poolLabel(ctx, refs[0])}, ${PREVIEW_CRITICAL}; ${name} fails for every visitor while it is. Fix the origins or add a healthy pool. ${HINT}`);
+    // Ruling 27: the preview runs asynchronously, so plan new often sees no
+    // result while apply sees one. This line rests on the preview alone and is
+    // advisory: apply records it but does not stop with risk_changed.
+    lines.push({
+      advisory: true,
+      line: `${LOCKOUT_PREFIX} load balancer ${name} has one pool, ${poolLabel(ctx, refs[0])}, and the preview found it critical; ${name} fails for every visitor while it is. Fix the origins or add a healthy pool. ${HINT}`,
+    });
   }
   return lines;
-}
-
-// Ruling 27: the preview runs asynchronously, so plan new often sees no
-// result while apply sees one. A line that rests on the preview alone is
-// advisory: apply shows it but does not stop with risk_changed for it.
-const PREVIEW_CRITICAL = 'and the preview found it critical';
-
-function advisoryLockout(line) {
-  return typeof line === 'string' && line.startsWith(`${LOCKOUT_PREFIX} load balancer `) && line.includes(PREVIEW_CRITICAL);
 }
 
 function lockoutRisks(ctx, ops) {
@@ -522,6 +519,5 @@ export const LOAD_BALANCING = {
   gather,
   dependencies,
   lockoutRisks,
-  advisoryLockout,
   verifyChecks,
 };
