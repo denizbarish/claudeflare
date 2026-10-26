@@ -7,12 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceHash } from '../scripts/lib/source-hash.mjs';
-import { configBindings, parseToml, readWranglerConfig } from '../scripts/lib/wrangler-config.mjs';
+import { configBindings, findConfigFile, parseToml, readWranglerConfig } from '../scripts/lib/wrangler-config.mjs';
 import { clampSeconds, redactText, runTail, splitJsonObjects } from '../scripts/lib/tail.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { applyPlan } from '../scripts/lib/apply.mjs';
-import { deployInputs } from '../scripts/lib/preflight.mjs';
+import { bindingProblems, deployInputs } from '../scripts/lib/preflight.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
 const FAKE = fileURLToPath(new URL('./fixtures/wrangler/fake-wrangler.mjs', import.meta.url));
@@ -252,7 +252,73 @@ FLAGS = ["a", "b#c"]
     r2: [],
     d1: [{ binding: 'DB', name: 'app-db', id: undefined, migrations_dir: 'db/migrations' }],
     queue: [{ binding: 'JOBS', name: 'jobs' }],
+    service: [],
+    durable: [],
+    vectorize: [],
+    hyperdrive: [],
   });
+});
+
+test('config discovery follows wrangler: json, jsonc, toml in turn, walking up; outside or redirected is refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'claudeflare-find-'));
+  try {
+    const proj = join(root, 'proj');
+    mkdirSync(proj);
+    writeFileSync(join(proj, 'wrangler.toml'), 'name = "api"\n');
+    writeFileSync(join(proj, 'wrangler.jsonc'), '{ "name": "api" }');
+    assert.equal(findConfigFile(proj), 'wrangler.jsonc');
+    writeFileSync(join(proj, 'wrangler.json'), '{ "name": "api" }');
+    assert.equal(findConfigFile(proj), 'wrangler.json');
+    rmSync(join(proj, 'wrangler.json'));
+    writeFileSync(join(root, 'wrangler.json'), '{ "name": "parent" }');
+    assert.throws(() => findConfigFile(proj), (err) => err.code === 'invalid_config' && /outside project_dir/.test(err.message));
+    rmSync(join(root, 'wrangler.json'));
+    mkdirSync(join(proj, '.wrangler', 'deploy'), { recursive: true });
+    writeFileSync(join(proj, '.wrangler', 'deploy', 'config.json'), JSON.stringify({ configPath: '../../dist/api/wrangler.json' }));
+    // Only builds (deploy, versions upload) follow the redirect.
+    assert.equal(findConfigFile(proj), 'wrangler.jsonc');
+    assert.throws(
+      () => findConfigFile(proj, { followsRedirect: true }),
+      (err) => err.code === 'invalid_config' && /redirected deploy config/.test(err.message) && err.message.includes('"--config", "dist/api/wrangler.json"'),
+    );
+    // A positional script starts the search in its own folder.
+    mkdirSync(join(proj, 'worker'));
+    writeFileSync(join(proj, 'worker', 'wrangler.toml'), 'name = "w"\n');
+    // wrangler.jsonc in the project still wins over worker/wrangler.toml (name order first).
+    assert.equal(findConfigFile(proj, { start: join(proj, 'worker') }), 'wrangler.jsonc');
+    writeFileSync(join(proj, 'worker', 'wrangler.jsonc'), '{ "name": "w" }');
+    assert.equal(findConfigFile(proj, { start: join(proj, 'worker') }), 'worker/wrangler.jsonc');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('preflight checks Workers behind service and Durable Object bindings, Vectorize indexes and Hyperdrive configs', async () => {
+  const base = `/accounts/${AID}`;
+  const existing = new Set([`${base}/workers/scripts/auth/settings`, `${base}/vectorize/v2/indexes/docs`]);
+  const calls = [];
+  const client = {
+    async request(method, path) {
+      calls.push(path);
+      if (existing.has(path)) return {};
+      throw new CfError('not_found', 'not found');
+    },
+  };
+  const config = {
+    services: [{ binding: 'AUTH', service: 'auth' }, { binding: 'BILL', service: 'billing' }, { binding: 'NEXT', service: 'web' }],
+    durable_objects: { bindings: [{ name: 'SELF', class_name: 'A' }, { name: 'OWN', class_name: 'B', script_name: 'api' }, { name: 'EXT', class_name: 'C', script_name: 'rooms' }] },
+    vectorize: [{ binding: 'IDX', index_name: 'docs' }, { binding: 'GONE', index_name: 'old' }],
+    hyperdrive: [{ binding: 'HD', id: 'not-an-id' }],
+  };
+  const ops = [{ kind: 'wrangler', args: ['deploy', '--name', 'web'] }];
+  const problems = await bindingProblems(client, AID, config, ops, 'api');
+  assert.deepEqual(problems, [
+    'Worker billing (service binding BILL) does not exist',
+    'Worker rooms (Durable Object binding EXT) does not exist',
+    'Vectorize index old (binding GONE) does not exist',
+    'Hyperdrive binding HD has no valid id',
+  ]);
+  assert.ok(!calls.some((p) => p.includes('/workers/scripts/web/') || p.includes('/workers/scripts/api/')));
 });
 
 const TAIL_EVENTS = [

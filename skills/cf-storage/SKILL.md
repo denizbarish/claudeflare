@@ -65,7 +65,11 @@ Notes for findings:
 
 - `d1.time_travel.unused_before_migration`: Time Travel is always on for `version: production` databases; the gap is the missing bookmark, not a setting. Retention is 30 days on Workers Paid and 7 days on Workers Free. `wrangler d1 migrations apply` also captures its own backup, but only a bookmark taken right before gives a known restore point. For `version: alpha` databases, say the database uses the legacy snapshot backups and set `fix: []`.
 - `d1.migrations.pending`: include the pending file names and their SQL in `reason`. The fix is a plan with a `d1 migrations apply` op (Applying changes); preflight lists the pending migrations again and claudeflare embeds them in the plan.
-- `r2.bucket.public_dev_url`: claudeflare has no op for it, so `fix: []`. Tell the user: R2, select the bucket, Settings, Public Development URL, Disable, type `disallow` to confirm. Connected custom domains keep working. Ask first whether something depends on the `r2.dev` URL.
+- `r2.bucket.public_dev_url`: fix with an account plan op (reversible: the snapshot records the current state and rollback restores it). Connected custom domains keep working. Ask first whether something depends on the `r2.dev` URL. Jurisdiction buckets (`-J`) cannot be snapshotted, so that op is marked not reversible.
+
+  ```json
+  { "kind": "wrangler", "args": ["r2", "bucket", "dev-url", "disable", "BUCKET"] }
+  ```
 - `kv.namespace.unused`: never delete on this finding alone. A preview namespace (`--preview`) or a namespace used only through the REST API looks unused. The fix is a delete op with `confirm_name` and a data-loss risk line.
 - `queues.dlq.missing`: the fix is a config edit in the consumer Worker's wrangler file (the user's file, with consent) plus a deploy plan for that Worker (cf-workers). If the named DLQ does not exist, Cloudflare creates it automatically.
 

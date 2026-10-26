@@ -13,7 +13,7 @@ const ACCOUNT_ID = /^[a-f0-9]{32}$/;
 const R2_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const KV_NAMESPACE_ID = /^[a-f0-9]{32}$/;
 const TARGET_FLAGS = ['--config', '--env'];
-const VERSION_EVENT_TYPES = new Set(['deploy', 'version-deploy']);
+const VERSION_EVENT_TYPES = new Set(['deploy', 'version-deploy', 'version-upload']);
 
 function runOptions(plan) {
   return { cwd: plan.project_dir, token: process.env.CLOUDFLARE_API_TOKEN, accountId: plan.account_id };
@@ -37,6 +37,7 @@ export function executorArgs(op, planId) {
   const parsed = parseWranglerOp(op);
   if (parsed?.kind === 'worker_rollback') return [...op.args, '--yes', '--message', `claudeflare ${planId}`];
   if (parsed?.kind === 'resource_delete' && (parsed.type === 'kv' || parsed.type === 'd1')) return [...op.args, '-y'];
+  if (parsed?.kind === 'r2_dev_url') return [...op.args, '--force'];
   return [...op.args];
 }
 
@@ -203,6 +204,8 @@ async function runWranglerOp(ctx, op) {
   const out = { events };
   const versionId = lastVersionId(events);
   if (versionId) out.version_id = versionId;
+  const previewUrl = events.findLast((e) => e?.type === 'version-upload')?.preview_url;
+  if (typeof previewUrl === 'string' && previewUrl) out.preview_url = previewUrl;
   const parsed = parseWranglerOp(op);
   if (parsed?.kind === 'resource_create' && parsed.type === 'kv') {
     out.resource_id = await findKvNamespaceId(runner, plan, parsed);
@@ -250,7 +253,7 @@ function checkFailure(index, check, health) {
   return {
     op_index: index,
     code: 'check_failed',
-    message: `Health check failed: GET ${check.url} returned ${seen} after ${health.attempts} attempt(s), expected ${check.expect_status ?? 200}`,
+    message: `Health check failed: GET ${check.url} returned ${seen}${health.location ? ` (redirect to ${health.location}; redirects are not followed)` : ''} after ${health.attempts} attempt(s), expected ${check.expect_status ?? 200}`,
   };
 }
 

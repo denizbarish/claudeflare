@@ -14,11 +14,15 @@ import { assertAccountAccess } from './apply.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { assertWranglerVersion, failureMessage, runWrangler } from './wrangler.mjs';
 import { applyEnv, configBindings, readWranglerConfig } from './wrangler-config.mjs';
-import { parseWranglerOp, SOURCE_KINDS } from './wrangler-ops.mjs';
+import { parseWranglerOp, SOURCE_KINDS, WORKER_BUILD_KINDS } from './wrangler-ops.mjs';
 
 const KV_ID = /^[0-9a-f]{32}$/;
 const D1_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_SQL_CHARS = 4000;
+const WORKER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
+const RESOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const HYPERDRIVE_ID = /^[0-9a-f]{32}$/;
+const IGNORES_DEPLOY_REDIRECT = new Set(['pages_deploy', 'd1_migrations_apply']);
 
 function errorText(err) {
   if (err instanceof CfError) return `${err.code}: ${err.message}`;
@@ -51,18 +55,38 @@ function createdInDraft(ops) {
   for (const op of ops) {
     const parsed = op?.kind === 'wrangler' ? parseWranglerOp(op) : null;
     if (parsed?.kind === 'resource_create' && parsed.name) created.add(`${parsed.type}:${parsed.name}`);
+    // A Worker the same draft deploys counts as existing for service bindings.
+    if (WORKER_BUILD_KINDS.has(parsed?.kind) && parsed.name) created.add(`worker:${parsed.name}`);
   }
   return created;
 }
 
+// Workers named by service bindings and by Durable Object bindings that point
+// at another script. self is the Worker being deployed.
+async function workerProblems(client, base, config, created, self) {
+  const { service, durable } = configBindings(config);
+  const targets = [
+    ...service.map((b) => ({ what: `service binding ${b.binding}`, name: b.name, missing: !b.name && `Service binding ${b.binding} has no service name` })),
+    ...durable.filter((b) => b.script && b.script !== self).map((b) => ({ what: `Durable Object binding ${b.binding}`, name: b.script })),
+  ];
+  const problems = [];
+  for (const t of targets) {
+    if (t.missing) problems.push(t.missing);
+    else if (t.name === self || created.has(`worker:${t.name}`)) continue;
+    else if (!WORKER_NAME.test(t.name)) problems.push(`Worker ${JSON.stringify(t.name)} (${t.what}) is not a valid Worker name`);
+    else if (!(await exists(client, `${base}/workers/scripts/${t.name}/settings`))) problems.push(`Worker ${t.name} (${t.what}) does not exist`);
+  }
+  return problems;
+}
+
 // Returns a list of problems; resources created earlier in the same draft
 // are skipped (KV bindings entirely, since a new namespace id is unknown).
-async function bindingProblems(client, accountId, config, ops) {
+export async function bindingProblems(client, accountId, config, ops, self) {
   const base = `/accounts/${accountId}`;
   const created = createdInDraft(ops);
   const kvCreated = [...created].some((key) => key.startsWith('kv:'));
-  const { kv, r2, d1, queue } = configBindings(config);
-  const problems = [];
+  const { kv, r2, d1, queue, vectorize, hyperdrive } = configBindings(config);
+  const problems = await workerProblems(client, base, config, created, self);
   if (!kvCreated) {
     for (const b of kv) {
       if (!b.id || !KV_ID.test(b.id)) problems.push(`KV binding ${b.binding} has no valid namespace id`);
@@ -93,6 +117,14 @@ async function bindingProblems(client, accountId, config, ops) {
     for (const b of queueNames) if (!names.has(b.name)) problems.push(`Queue ${b.name} (binding ${b.binding}) does not exist`);
   }
   for (const b of queue) if (!b.name) problems.push(`Queue binding ${b.binding} has no queue name`);
+  for (const b of vectorize) {
+    if (!b.name || !RESOURCE_NAME.test(b.name)) problems.push(`Vectorize binding ${b.binding} has no valid index_name`);
+    else if (!(await exists(client, `${base}/vectorize/v2/indexes/${b.name}`))) problems.push(`Vectorize index ${b.name} (binding ${b.binding}) does not exist`);
+  }
+  for (const b of hyperdrive) {
+    if (!b.id || !HYPERDRIVE_ID.test(b.id)) problems.push(`Hyperdrive binding ${b.binding} has no valid id`);
+    else if (!(await exists(client, `${base}/hyperdrive/configs/${b.id}`))) problems.push(`Hyperdrive config ${b.id} (binding ${b.binding}) does not exist`);
+  }
   return problems;
 }
 
@@ -124,7 +156,7 @@ export function deployInputs(projectDir, configFile, config, op) {
   const parsed = parseWranglerOp(op);
   const flag = (name) => parsed.flags.get(name)?.[0];
   const candidates = configFile ? [configFile] : [];
-  if (parsed.kind === 'worker_deploy') {
+  if (WORKER_BUILD_KINDS.has(parsed.kind)) {
     candidates.push(
       parsed.positionals[0] ?? fromConfig(configFile, config.main),
       flag('--assets') ?? fromConfig(configFile, config.assets?.directory),
@@ -148,7 +180,15 @@ const targetFlags = (parsed) => ['--config', '--env'].flatMap((name) => (parsed.
 export function opConfig(projectDir, op) {
   const parsed = parseWranglerOp(op);
   const configFlag = parsed.flags.get('--config')?.[0];
-  const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag));
+  // wrangler searches from a positional script's folder. The deploy redirect
+  // is assumed followed (fail closed) except by the commands wrangler 4.152
+  // is known to run without it.
+  const script = WORKER_BUILD_KINDS.has(parsed.kind) ? parsed.positionals[0] : undefined;
+  const findOptions = {
+    start: script ? dirname(resolve(projectDir, insideRel(projectDir, script))) : projectDir,
+    followsRedirect: !IGNORES_DEPLOY_REDIRECT.has(parsed.kind),
+  };
+  const { file, config } = readWranglerConfig(projectDir, configFlag === undefined ? undefined : insideRel(projectDir, configFlag), findOptions);
   return { file, config: applyEnv(config, parsed.flags.get('--env')?.[0], file) };
 }
 
@@ -256,18 +296,23 @@ export async function runPreflight(target, draftOps, { client, runner = runWrang
   }
 
   const created = createdInDraft(ops);
-  const deploys = sourceOps.filter((op) => parseWranglerOp(op).kind === 'worker_deploy');
+  const deploys = sourceOps.filter((op) => WORKER_BUILD_KINDS.has(parseWranglerOp(op).kind));
+  const sizes = [];
   for (const op of deploys) {
     try {
-      const problems = await bindingProblems(client, target.account_id, configs.get(op).config, ops);
+      const problems = await bindingProblems(client, target.account_id, configs.get(op).config, ops, parseWranglerOp(op).name);
       add('bindings', problems.length === 0, problems.length ? problems.join('; ') : 'all bindings exist');
     } catch (err) {
       add('bindings', false, `could not verify bindings: ${errorText(err)}`);
     }
     const built = await dryRun(runner, target.project_dir, op);
-    add('build', built.ok, built.detail);
-    if (built.size) result.upload_size = built.size;
+    const worker = parseWranglerOp(op).name;
+    add('build', built.ok, deploys.length > 1 ? `${worker}: ${built.detail}` : built.detail);
+    if (built.size) sizes.push({ worker, size: built.size });
   }
+  // upload_size stays a string for one build; upload_sizes lists every build.
+  if (sizes.length === 1) result.upload_size = sizes[0].size;
+  if (sizes.length > 1) result.upload_sizes = sizes;
 
   const pending = new Map();
   for (const op of sourceOps.filter((o) => parseWranglerOp(o).kind === 'd1_migrations_apply')) {

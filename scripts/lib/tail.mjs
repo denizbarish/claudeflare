@@ -13,6 +13,8 @@ const SAMPLE_COUNT = 5;
 const LOGS_PER_SAMPLE = 5;
 const MAX_TEXT = 500;
 const TOP_EXCEPTIONS = 5;
+// Output kept from wrangler tail; a busy Worker stops the tail early past it.
+const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
 export function clampSeconds(value) {
   const n = Math.trunc(Number(value));
@@ -114,10 +116,12 @@ export async function runTail({ cwd, worker, seconds, status, accountId }, { run
     token: process.env.CLOUDFLARE_API_TOKEN,
     accountId,
     stopAfterMs: limit * 1000,
+    maxOutputBytes: MAX_OUTPUT_BYTES,
     timeoutMs: limit * 1000 + 15000,
   });
   if (!result.stopped && result.code !== 0) {
     throw new CfError('wrangler_failed', `wrangler tail failed: ${failureMessage(result)}`);
   }
-  return { worker, seconds: limit, ...summarizeTail(splitJsonObjects(result.stdout)) };
+  const summary = { worker, seconds: limit, ...summarizeTail(splitJsonObjects(result.stdout)) };
+  return result.truncated ? { ...summary, truncated: true } : summary;
 }

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-26
+
+### Added
+
+- `versions upload` op: upload a Worker version without traffic (preflight builds and hashes it; the apply result carries `version_id` and `preview_url`), for gradual rollouts with a later `versions deploy`.
+- `r2 bucket dev-url enable` and `disable` ops, snapshotted and reversible; `r2.bucket.public_dev_url` now has a fix.
+- Preflight checks Workers behind service and Durable Object bindings, Vectorize indexes and Hyperdrive configs.
+- Preflight reports `upload_sizes` per Worker when a plan builds several.
+
+### Changed
+
+- wrangler config discovery matches wrangler 4: `wrangler.json`, then `wrangler.jsonc`, then `wrangler.toml`, each searched upward. A config outside `project_dir` fails preflight instead of being read wrongly; for `deploy` and `versions upload`, so does a redirected `.wrangler/deploy/config.json` (the error names the `--config` to add). The search starts in a positional script's folder, as in wrangler.
+- Health checks are accepted only on ops that change what serves traffic; `on_failed_check` needs a `health_check`. A failed check names the redirect target.
+
+### Fixed
+
+- The guard now asks before `claudeflare apply` called by path (`node /x/bin/claudeflare apply`, `./bin/claudeflare apply`) or quoted, not only bare; a folder named claudeflare (`git -C ~/claudeflare apply x.patch`) is not mistaken for it.
+- `claudeflare tail` bounds the output it keeps (4 MiB) and reports `truncated`.
+- The skill example test also checks indented code blocks.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added
@@ -45,7 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
 
-[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/denizbarish/claudeflare/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/denizbarish/claudeflare/releases/tag/v0.1.0
 [0.1.0]: https://github.com/denizbarish/claudeflare/releases/tag/v0.1.0

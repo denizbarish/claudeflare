@@ -17,6 +17,7 @@ const TARGET_FLAGS = ['--config', '--env'];
 const WORKER_NOT_FOUND = /\b10007\b/;
 const WORKER_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
 const D1_KINDS = new Set(['d1_migrations_apply', 'd1_restore']);
+const R2_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 
 function snapshotFailed(message) {
   return new CfError('snapshot_failed', message);
@@ -41,6 +42,10 @@ function targetOf(op, plan) {
   if (parsed.name) target.name = parsed.name;
   const jurisdiction = parsed.flags.get('--jurisdiction')?.[0];
   if (typeof jurisdiction === 'string' && jurisdiction) target.jurisdiction = jurisdiction;
+  if (parsed.kind === 'r2_dev_url') {
+    target.account_id = plan.account_id;
+    target.enable = parsed.words.at(-1) === 'enable';
+  }
   if (parsed.kind === 'pages_deploy') {
     target.account_id = plan.account_id;
     const branch = parsed.flags.get('--branch')?.[0];
@@ -143,6 +148,18 @@ async function readPages(client, target) {
   return { before, invertible: true };
 }
 
+// before = { enabled } from the bucket's managed (r2.dev) domain. Jurisdiction
+// buckets need a header the client does not send, so they are not read.
+async function readDevUrl(client, target) {
+  if (target.jurisdiction) return notInvertible(null, `bucket in jurisdiction ${target.jurisdiction}`);
+  if (!R2_BUCKET_NAME.test(target.name ?? '')) throw snapshotFailed(`${JSON.stringify(target.name)} is not a valid R2 bucket name`);
+  const domain = await client.request('GET', `/accounts/${target.account_id}/r2/buckets/${target.name}/domains/managed`);
+  if (typeof domain?.enabled !== 'boolean') {
+    throw snapshotFailed(`Snapshot read (r2.dev URL of bucket ${target.name}) returned no enabled flag`);
+  }
+  return { before: { enabled: domain.enabled }, invertible: true };
+}
+
 // before = { bookmark } current before the op.
 async function readD1(runner, target, plan) {
   const info = await readJson(runner, ['d1', 'time-travel', 'info', target.name, ...target.target_args], plan);
@@ -169,6 +186,7 @@ export async function captureWranglerEntry(runner, client, op, plan, { created =
   else if (WORKER_KINDS.has(kind)) state = await readWorker(runner, target, plan);
   else if (kind === 'pages_deploy') state = await readPages(client, target);
   else if (D1_KINDS.has(kind)) state = await readD1(runner, target, plan);
+  else if (kind === 'r2_dev_url') state = await readDevUrl(client, target);
   const entry = { kind, before: state.before, invertible: state.invertible, target };
   if (state.reason) entry.reason = state.reason;
   return entry;
@@ -224,6 +242,12 @@ function invertD1({ before, target }) {
   return [wrangler(['d1', 'time-travel', 'restore', target.name, '--bookmark', before.bookmark, '--json', ...target.target_args])];
 }
 
+// Restores the r2.dev state before the op; nothing to do when it was unchanged.
+function invertDevUrl({ before, target }) {
+  if (typeof before?.enabled !== 'boolean' || before.enabled === target.enable) return [];
+  return [wrangler(['r2', 'bucket', 'dev-url', before.enabled ? 'enable' : 'disable', target.name, ...target.target_args])];
+}
+
 // precheck 'empty': the executor deletes only if the resource is still empty.
 function invertCreate({ target }, result) {
   const deleteOp = (args, name) => [wrangler([...args, ...target.target_args], { confirm_name: name, precheck: 'empty' })];
@@ -252,5 +276,6 @@ export function inverseForWrangler(entry, result) {
   if (entry.kind === 'pages_deploy') return invertPages(entry);
   if (D1_KINDS.has(entry.kind)) return invertD1(entry);
   if (entry.kind === 'resource_create') return invertCreate(entry, result);
+  if (entry.kind === 'r2_dev_url') return invertDevUrl(entry);
   return [];
 }

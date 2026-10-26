@@ -16,9 +16,12 @@ function markdownFiles(dir, recursive) {
   });
 }
 
+// Fenced js blocks, including ones indented under a list item (dedented).
 function jsBlocks(file) {
   const text = readFileSync(file, 'utf8');
-  return [...text.matchAll(/^```js\n([\s\S]*?)^```/gm)].map((m) => m[1]);
+  return [...text.matchAll(/^( *)```js\n([\s\S]*?)^\1```/gm)].map(([, indent, body]) =>
+    body.split('\n').map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line)).join('\n'),
+  );
 }
 
 const files = [

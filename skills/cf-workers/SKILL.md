@@ -72,7 +72,7 @@ Notes for findings:
 - `workers.global_fetch.missing`: with the flag on, a same-zone fetch enters Cloudflare like an Internet request and can loop back to the same Worker. Check the route patterns before recommending it. Custom Domains can be fetched from the same zone; Routes cannot be the target of a same-zone `fetch()`.
 - `workers.cpu_limit.near`: CPU time excludes time spent waiting on `fetch()`, KV, D1 and other I/O. Confirm the unit of `cpuTimeP50` and `cpuTimeP99` against the dashboard Metrics tab before comparing to the limit; the GraphQL tutorial does not state it.
 - `workers.routes.unprotected_workers_dev`: if the config has `routes` and no `workers_dev`, wrangler infers `false` on the next deploy. Disabling `workers.dev` does not disable Version URLs or Preview URLs.
-- `workers.versions.no_gradual`: the change protocol cannot upload a version without deploying it (`versions upload` is not an allowlisted op). New versions for a split come from the user's CI (`wrangler versions upload`) or the dashboard; claudeflare then plans the `versions deploy`. Say so in `fix`.
+- `workers.versions.no_gradual`: the fix is two plans. Plan 1 uploads the new version without traffic (`versions upload`, below); plan 2 splits traffic with `versions deploy` using the `version_id` from plan 1's apply result. Say so in `fix`.
 - Placement: `placement.mode: "smart"` helps a Worker that makes several round trips to one backend far from users; it is available on all plans and needs up to 15 minutes of analysis after deploy. Recommend it only with evidence of backend-bound latency; it is not a finding.
 
 ## Applying changes
@@ -91,6 +91,12 @@ Deploy (reversible: the snapshot keeps the previous active version and rollback 
 ```
 
 Add `"--env", "production"` when the config uses environments. Preflight runs a dry-run build, checks bindings and embeds `source_hash`; changing code after approval fails apply with `source_changed`.
+
+Upload a new version without sending it traffic (not reversible: the version and its preview URL stay on the Worker, though no traffic reaches it until a `versions deploy`; preflight builds and hashes it like a deploy). The apply result carries its `version_id` and, when previews are on, a `preview_url` to test before the split. It takes no `health_check`:
+
+```json
+{ "kind": "wrangler", "args": ["versions", "upload", "--name", "api", "--tag", "v42"] }
+```
 
 Gradual deployment of an uploaded version (reversible). Shorthand `<version-id>@<percentage>`; omitted percentages share the rest. Take version ids from `wrangler versions list --name <w> --json`:
 

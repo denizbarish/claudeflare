@@ -42,6 +42,22 @@ const ALLOWLIST = [
     required: ['--name'],
   },
   {
+    // Uploads a version without traffic; a later versions deploy splits it in.
+    // --secrets-file, --outdir, --outfile and --dry-run are deliberately absent.
+    words: ['versions', 'upload'],
+    kind: 'worker_versions_upload',
+    type: 'worker',
+    positionals: [{ role: 'script', type: 'path' }],
+    flags: {
+      '--name': 'string', '--tag': 'string', '--no-bundle': 'bool', '--compatibility-date': 'string',
+      '--compatibility-flags': 'list', '--latest': 'bool', '--assets': 'path', '--var': 'list', '--define': 'list',
+      '--jsx-factory': 'string', '--jsx-fragment': 'string', '--tsconfig': 'path', '--minify': 'bool',
+      '--upload-source-maps': 'bool', '--keep-vars': 'bool', '--strict': 'bool', '--preview-alias': 'string',
+    },
+    aliases: { '--compatibility-flag': '--compatibility-flags' },
+    required: ['--name'],
+  },
+  {
     words: ['versions', 'deploy'],
     kind: 'worker_versions_deploy',
     type: 'worker',
@@ -115,6 +131,22 @@ const ALLOWLIST = [
     aliases: { '-J': '--jurisdiction' },
   },
   {
+    words: ['r2', 'bucket', 'dev-url', 'enable'],
+    kind: 'r2_dev_url',
+    type: 'r2',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--jurisdiction': 'string' },
+    aliases: { '-J': '--jurisdiction' },
+  },
+  {
+    words: ['r2', 'bucket', 'dev-url', 'disable'],
+    kind: 'r2_dev_url',
+    type: 'r2',
+    positionals: [{ role: 'name', type: 'string', required: true }],
+    flags: { '--jurisdiction': 'string' },
+    aliases: { '-J': '--jurisdiction' },
+  },
+  {
     words: ['kv', 'namespace', 'create'],
     kind: 'resource_create',
     type: 'kv',
@@ -171,11 +203,16 @@ const ALLOWLIST = [
   },
 ];
 
-const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete']);
+// An uploaded version (and its preview URL) stays on the Worker; rollback cannot remove it.
+const NOT_INVERTIBLE = new Set(['resource_delete', 'secret_put', 'secret_delete', 'worker_delete', 'worker_versions_upload']);
 export const DELETE_KINDS = new Set(['resource_delete', 'worker_delete']);
 export const DEPLOY_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback']);
 // Kinds that upload project files; apply refuses them without a source_hash.
-export const SOURCE_KINDS = new Set(['worker_deploy', 'pages_deploy', 'd1_migrations_apply']);
+export const SOURCE_KINDS = new Set(['worker_deploy', 'worker_versions_upload', 'pages_deploy', 'd1_migrations_apply']);
+// Kinds that build and upload a Worker bundle (preflight dry-runs them).
+export const WORKER_BUILD_KINDS = new Set(['worker_deploy', 'worker_versions_upload']);
+// Kinds that change what serves traffic; only these take a health check.
+export const HEALTH_CHECK_KINDS = new Set(['worker_deploy', 'worker_versions_deploy', 'worker_rollback', 'pages_deploy']);
 // Deletes whose contents are lost with the resource (R2 deletes are refused
 // at preflight when the bucket is not empty).
 export const DATA_LOSS_TYPES = new Set(['kv', 'queue', 'd1']);
@@ -319,7 +356,9 @@ export function classifyWranglerOp(op) {
   const entry = matchEntry(args);
   if (!entry) return { kind: 'unknown', invertible: false };
   const parsed = parseArgs(entry, args.slice(entry.words.length));
-  const result = { kind: entry.kind, invertible: !NOT_INVERTIBLE.has(entry.kind) };
+  // The r2.dev state of a jurisdiction bucket cannot be read for the snapshot.
+  const unreadable = entry.kind === 'r2_dev_url' && parsed.flags.has('--jurisdiction');
+  const result = { kind: entry.kind, invertible: !NOT_INVERTIBLE.has(entry.kind) && !unreadable };
   const name = resourceName(entry, parsed, op);
   if (name) result.resource = { type: entry.type, name };
   return result;
@@ -332,7 +371,7 @@ export function parseWranglerOp(op) {
   const entry = matchEntry(args);
   if (!entry) return null;
   const parsed = parseArgs(entry, args.slice(entry.words.length));
-  return { kind: entry.kind, type: entry.type, name: resourceName(entry, parsed, op), flags: parsed.flags, positionals: parsed.positionals };
+  return { kind: entry.kind, type: entry.type, words: entry.words, name: resourceName(entry, parsed, op), flags: parsed.flags, positionals: parsed.positionals };
 }
 
 function isInside(dir, target) {
@@ -432,11 +471,17 @@ function assertSecretPut(parsed, op, reject) {
   }
 }
 
-function assertHealth(op, reject) {
+function assertHealth(entry, op, reject) {
   if (op.on_failed_check !== undefined && op.on_failed_check !== 'rollback') {
     reject('on_failed_check must be "rollback" or absent');
   }
-  if (op.health_check === undefined) return;
+  if (op.health_check === undefined) {
+    if (op.on_failed_check !== undefined) reject('on_failed_check needs a health_check');
+    return;
+  }
+  if (!HEALTH_CHECK_KINDS.has(entry.kind)) {
+    reject(`takes no health_check: "${entry.words.join(' ')}" does not change what serves traffic`);
+  }
   const url = op.health_check?.url;
   let parsed = null;
   try {
@@ -469,5 +514,5 @@ export function validateWranglerOp(op, plan, index) {
     const name = resourceName(entry, parsed, op);
     if (op.confirm_name !== name) reject(`needs confirm_name equal to the resource name (${JSON.stringify(name)})`);
   }
-  assertHealth(op, reject);
+  assertHealth(entry, op, reject);
 }
