@@ -8,9 +8,10 @@ import { checkApproval } from '../scripts/lib/approvals.mjs';
 import { keyDir } from '../scripts/lib/approval-key.mjs';
 import { readPlan } from '../scripts/lib/plans.mjs';
 import { inspectCode } from './lib/inspect-code.mjs';
-import { isAllowedCall } from './lib/allowed-call.mjs';
+import { isAllowedCall, isTunnelTokenRead } from './lib/allowed-call.mjs';
 import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 import { decideWrangler } from './lib/wrangler-rules.mjs';
+import { SECRET_REASON, TUNNEL_TOKEN_REASON, bashReadsSecret, decideCloudflared, globMatchesName, readSecretIndex } from './lib/secret-rules.mjs';
 
 const PROTOCOL_REASON =
   'Writes are not allowed through MCP. Create a plan with "claudeflare plan new" and follow the change protocol (skills/cf-core).';
@@ -36,6 +37,7 @@ const PROTECTED_COMMAND_PARTS = [
   'approval-key.mjs',
 ];
 const CF_API_HOST = 'api.cloudflare.com';
+const TUNNEL_TOKEN_TEXT = /cfd_tunnel\/[^/\s'"]+\/token(?![\w-])/i;
 const CURL_METHOD = /(?:^|\s)(?:-[A-Za-z]*X\s*|--request(?:\s+|=))['"]?([A-Za-z]+)/g;
 const CURL_BODY = /(?:^|\s)(?:-[A-Za-z]*[dFT]|--data|--json|--form|--upload-file)/;
 const ASK_OPS_LIMIT = 20;
@@ -58,6 +60,7 @@ function writeDetected(code, calls) {
 function decideExecute(toolInput) {
   if (typeof toolInput.code !== 'string') return deny(CANONICAL_REASON);
   const { calls, determinable } = inspectCode(toolInput.code);
+  if (calls.some(isTunnelTokenRead)) return deny(TUNNEL_TOKEN_REASON);
   // Allowlist: code must make at least one readable call, and only allowed ones.
   if (determinable && calls.length > 0 && calls.every(isAllowedCall)) return null;
   return deny(writeDetected(toolInput.code, calls) ? PROTOCOL_REASON : CANONICAL_REASON);
@@ -99,9 +102,25 @@ function decideFileTool(toolInput, cwd) {
   return hit ? deny(STATE_REASON) : null;
 }
 
-// Plans and snapshots stay readable; only the approval key is off limits.
+// Secret files: anything under a .claudeflare/secrets folder, and every file
+// listed in secret-files.json (canonical paths).
+function secretFiles(cwd) {
+  return readSecretIndex(cwd).map(canonicalPath);
+}
+
+function inSecretsDir(target) {
+  const parts = canonicalPath(target).split(sep);
+  return parts.some((part, i) => part === '.claudeflare' && parts[i + 1] === 'secrets');
+}
+
+const isSecret = (target, files) => inSecretsDir(target) || files.includes(canonicalPath(target));
+
+// Plans and snapshots stay readable; the approval key and secret files are off limits.
 function decideRead(toolInput, cwd) {
-  return toolTargets(toolInput, cwd).some(inKeyDir) ? deny(STATE_REASON) : null;
+  const targets = toolTargets(toolInput, cwd);
+  if (targets.some(inKeyDir)) return deny(STATE_REASON);
+  const files = secretFiles(cwd);
+  return targets.some((target) => isSecret(target, files)) ? deny(SECRET_REASON) : null;
 }
 
 // Static directory part of an absolute glob, e.g. /a/b for /a/b/**/*.key.
@@ -120,7 +139,17 @@ function decideSearch(toolName, toolInput, cwd) {
   if (toolName === 'Glob' && typeof toolInput.pattern === 'string' && isAbsolute(toolInput.pattern)) {
     roots.push(globBase(toolInput.pattern));
   }
-  return roots.some(inKeyDir) ? deny(STATE_REASON) : null;
+  if (roots.some(inKeyDir)) return deny(STATE_REASON);
+  const files = secretFiles(cwd);
+  if (roots.some((root) => isSecret(root, files))) return deny(SECRET_REASON);
+  return toolName === 'Grep' && grepCanReachSecret(toolInput, roots, files) ? deny(SECRET_REASON) : null;
+}
+
+// Grep reads contents: a root that holds a listed file is denied unless the
+// Grep glob cannot match that file's name. Glob only lists names.
+function grepCanReachSecret(toolInput, roots, files) {
+  const glob = typeof toolInput.glob === 'string' && toolInput.glob !== '' ? toolInput.glob : null;
+  return files.some((file) => roots.some((root) => isInside(root, file)) && (glob === null || globMatchesName(glob, basename(file))));
 }
 
 function touchesState(command) {
@@ -172,7 +201,11 @@ function decideBash(toolInput, cwd) {
     touchesState(command) ? deny(STATE_REASON) : null,
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
+    TUNNEL_TOKEN_TEXT.test(command) ? deny(TUNNEL_TOKEN_REASON) : null,
+    bashReadsSecret(command, cwd, secretFiles(cwd), canonicalPath) ? deny(SECRET_REASON) : null,
   ].filter(Boolean);
+  const cloudflared = decideCloudflared(command);
+  if (cloudflared) decisions.push(deny(cloudflared));
   const wrangler = decideWrangler(command, { cwd });
   if (wrangler) decisions.push(deny(wrangler));
   if (decisions.length === 0) return null;

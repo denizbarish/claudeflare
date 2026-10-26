@@ -16,7 +16,7 @@ const SAFE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 const GITIGNORE_LINE = 'secrets/';
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
-function lstatOrNull(path) {
+export function lstatOrNull(path) {
   try {
     return lstatSync(path);
   } catch (err) {
@@ -25,7 +25,7 @@ function lstatOrNull(path) {
   }
 }
 
-function refuseLink(path, stat) {
+export function refuseLink(path, stat) {
   if (stat?.isSymbolicLink()) throw new Error(`Refusing to write through the symlink ${path}`);
 }
 
@@ -47,7 +47,7 @@ function writeFd(fd, content, mode) {
 }
 
 // Replaces file with content, never following a link at the file itself.
-function replaceFile(file, content, mode) {
+export function replaceFile(file, content, mode) {
   const stat = lstatOrNull(file);
   refuseLink(file, stat);
   if (stat) {
@@ -58,7 +58,7 @@ function replaceFile(file, content, mode) {
   writeFd(fd, content, mode);
 }
 
-function readOrEmpty(file) {
+export function readOrEmpty(file) {
   const stat = lstatOrNull(file);
   if (!stat) return '';
   refuseLink(file, stat);

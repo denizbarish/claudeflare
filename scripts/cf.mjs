@@ -17,9 +17,10 @@ import { hasProductOps } from './lib/product-preflight.mjs';
 import { runTail } from './lib/tail.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
+import { DEFAULT_VARIABLE, runTunnelToken } from './lib/tunnel-token.mjs';
 
 const GITIGNORE_ENTRY = '.claudeflare/';
-const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>]';
+const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>] | tunnel-token --account <id> --tunnel <uuid> --env-file <path> [--var TUNNEL_TOKEN]';
 
 function usage(message) {
   return new CfError('usage', message, { hint: `Usage: ${USAGE}` });
@@ -217,6 +218,16 @@ function tail(cwd, flags) {
   });
 }
 
+// Writes the tunnel token into an env file; prints the path, never the value.
+function tunnelToken(cwd, flags) {
+  return runTunnelToken(cwd, {
+    account: flag(flags, 'account'),
+    tunnel: flag(flags, 'tunnel'),
+    envFile: flag(flags, 'env-file'),
+    variable: flags.var?.at(-1) ?? DEFAULT_VARIABLE,
+  });
+}
+
 async function plan(cwd, positional, flags) {
   const sub = arg(positional, 1, 'new|show|list');
   if (sub === 'new') return planNew(cwd, flags);
@@ -304,6 +315,7 @@ async function main(argv) {
     case 'report': return printJson(report(cwd, flags));
     case 'preflight': return preflight(cwd, flags);
     case 'tail': return printJson(await tail(cwd, flags));
+    case 'tunnel-token': return printJson(await tunnelToken(cwd, flags));
     default: throw usage(command ? `Unknown command: ${command}` : 'Missing command');
   }
 }
