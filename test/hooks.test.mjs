@@ -62,7 +62,7 @@ function runHook(script, ctx, input) {
   const res = spawnSync(process.execPath, [script], {
     input: stdin,
     encoding: 'utf8',
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDEFLARE_KEY_DIR: ctx.keyDir },
+    env: { PATH: ctx.path ?? process.env.PATH, HOME: process.env.HOME, CLAUDEFLARE_KEY_DIR: ctx.keyDir },
   });
   assert.equal(res.status, 0, `hook exited ${res.status}: ${res.stderr}`);
   assert.equal(res.stderr, '');
@@ -734,16 +734,11 @@ test('Bash cat of a listed env file is denied', (t) => {
   }
   // The basename with a read verb is enough: the guard cannot follow every cd.
   assertDeny(guard(ctx, bash('cat .env')), SECRET_REASON);
-  // Only programs that consume the file without printing it are allowed.
+  // Only the exact consumer shapes of ruling 14 are allowed (see the round 3 tests).
   for (const cmd of [
     'cat other.env', 'cat deploy/.env.example', 'ls deploy', 'npm test', 'echo .env', 'git add .env.example',
-    'git add deploy/.env', 'git -C . add deploy/.env', 'git rm --cached deploy/.env', 'git status deploy/.env',
-    'git check-ignore -q deploy/.env', 'git ls-files deploy/.env',
-    'docker compose --env-file deploy/.env up -d', `docker run --env-file=${ctx.envFile} img`, 'podman compose --env-file deploy/.env up',
-    'docker-compose --env-file deploy/.env up', 'systemctl restart cloudflared',
-    `claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path deploy/.env`,
-    `node bin/cf.mjs tunnel-token --account ${AID} --tunnel ${TID} --env-path ${ctx.envFile}`,
-    `cloudflared tunnel --no-autoupdate run --token-file ${ctx.envFile}`,
+    'git add deploy/.env', 'git rm --cached -- deploy/.env', 'systemctl restart cloudflared',
+    'docker compose --env-file deploy/.env up -d', `docker run -d --env-file=${ctx.envFile} img`,
     'chmod 600 deploy/.env', 'chown me deploy/.env', 'ls -l deploy/.env', 'stat deploy/.env', 'test -f deploy/.env', '[ -f deploy/.env ]',
     'rm deploy/.env', 'ls .claudeflare/secrets', 'rm -rf .claudeflare/secrets',
   ]) {
@@ -993,4 +988,144 @@ test('the per-user index covers an env file outside any project index', async (t
   assert.ok(existsSync(join(ctx.keyDir, 'secret-files.json')));
   assertDeny(guard(ctx, read(join(loose, '.env'))), SECRET_REASON);
   assertDeny(guard(ctx, bash(`nl ${join(loose, '.env')}`)), SECRET_REASON);
+});
+
+// Fix round 3 (ruling 14): exact consumer shapes, exemption per argument.
+
+const REPO = fileURLToPath(new URL('..', import.meta.url));
+const OWN_BIN = join(REPO, 'bin', 'claudeflare');
+const OWN_CF = join(REPO, 'scripts', 'cf.mjs');
+
+test('round 3: container commands that can print the env file are denied', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'docker compose --env-file deploy/.env config',
+    'docker run --env-file deploy/.env alpine env',
+    'cd deploy && docker compose --env-file .env run app printenv',
+    'docker compose --env-file deploy/.env exec app env',
+    'docker compose --env-file deploy/.env up',
+    'docker compose --env-file deploy/.env up -d --build x',
+    'docker compose -f deploy/.env --env-file deploy/.env up -d',
+    'docker run --env-file deploy/.env alpine',
+    'docker run -d --env-file deploy/.env alpine printenv',
+    'docker run -d --privileged --env-file deploy/.env alpine',
+    'podman compose --env-file deploy/.env logs',
+    'docker-compose --env-file deploy/.env up -d',
+    'docker inspect --env-file deploy/.env x',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+test('round 3: a prefix head never makes a reader a consumer (B1)', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'env -u ls cat deploy/.env',
+    'env -C ls cat deploy/.env',
+    "env -S 'cat deploy/.env'",
+    'sudo -u ls cat deploy/.env',
+    'sudo -g rm cat deploy/.env',
+    'xargs -I rm cat deploy/.env',
+    'xargs -n 1 cat deploy/.env',
+    'xargs -L stat cat deploy/.env',
+    'time -o ls cat deploy/.env',
+    'nice -n 5 ls deploy/.env',
+    'timeout 5 ls deploy/.env',
+    'command ls deploy/.env',
+    'X=1 ls deploy/.env',
+    'sudo rm deploy/.env',
+    'cd deploy && env -u X cat .env',
+    'cd deploy && timeout -s KILL 5 cat .env',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+test('round 3: cd options, pushd and builtin cd are followed; unresolved targets fail closed (B2)', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'cd -P deploy && wc .env',
+    'cd -L deploy && wc .env',
+    'cd -- deploy && wc .env',
+    'cd -e -@ deploy && wc .env',
+    'pushd deploy && wc .env',
+    'builtin cd deploy && wc .env',
+    'cd "$D" && wc .env',
+    'cd - && wc .env',
+    'popd && wc .env',
+    'cd ~other && wc .env',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  assert.equal(guard(ctx, bash('cd "$D" && wc README.md')), null);
+});
+
+test('round 3: git exempts only add/rm pathspecs without global options or pagers (B4)', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    'git -c alias.x=!cat add deploy/.env',
+    'git -p add deploy/.env',
+    'git --paginate rm deploy/.env',
+    'git --exec-path=/tmp add deploy/.env',
+    'git --config-env=core.pager=P add deploy/.env',
+    'GIT_PAGER=cat git add deploy/.env',
+    'PAGER=cat git add deploy/.env',
+    'git -C . add deploy/.env',
+    'git add -p deploy/.env',
+    'git add --interactive deploy/.env',
+    'git status deploy/.env',
+    'git ls-files deploy/.env',
+    'git check-ignore -v deploy/.env',
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+});
+
+test('round 3: claudeflare is recognised by realpath, and only --env-path is exempt (B5)', (t) => {
+  const ctx = secretSetup(t);
+  const fake = join(ctx.cwd, 'evil');
+  mkdirSync(fake);
+  writeFileSync(join(fake, 'claudeflare'), '#!/bin/sh\ncat "$@"\n', { mode: 0o755 });
+  writeFileSync(join(fake, 'cf.mjs'), '');
+  for (const cmd of [
+    `${join(fake, 'claudeflare')} tunnel-token --env-path deploy/.env`,
+    `node ${join(fake, 'cf.mjs')} tunnel-token --env-path deploy/.env`,
+    'node evil/cf.mjs tunnel-token --env-path deploy/.env',
+    'claudeflare tunnel-token --env-path deploy/.env',
+    `${OWN_BIN} tunnel-token --env-path other.env --tunnel deploy/.env`,
+    `${OWN_BIN} get --env-path deploy/.env`,
+  ]) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  // A bare claudeflare that resolves on PATH to another program.
+  assertDeny(guard({ ...ctx, path: `${fake}:${process.env.PATH}` }, bash('claudeflare tunnel-token --env-path deploy/.env')), SECRET_REASON);
+  assert.equal(guard({ ...ctx, path: `${join(REPO, 'bin')}:${process.env.PATH}` }, bash(`claudeflare tunnel-token --account ${AID} --tunnel ${TID} --env-path deploy/.env`)), null);
+});
+
+test('round 3: each ruling 14 shape is allowed', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of [
+    `${OWN_BIN} tunnel-token --account ${AID} --tunnel ${TID} --env-path deploy/.env`,
+    `node ${OWN_CF} tunnel-token --account ${AID} --tunnel ${TID} --env-path ${ctx.envFile}`,
+    'docker compose --env-file deploy/.env up -d',
+    'docker compose -f a.yml -f b.yml -p app --env-file deploy/.env up --detach web worker',
+    'podman compose --env-file=deploy/.env down',
+    'docker compose --env-file deploy/.env restart web',
+    'docker compose --env-file deploy/.env stop',
+    'docker compose --env-file deploy/.env pull',
+    'docker run -d --env-file deploy/.env --name tunnel --restart unless-stopped cloudflare/cloudflared:latest',
+    'podman run --detach --rm --env-file=deploy/.env img',
+    'git add deploy/.env',
+    'git rm --cached -q -- deploy/.env',
+    'chmod 600 deploy/.env', 'chown me:staff deploy/.env', 'ls -la deploy/.env', 'stat deploy/.env', 'test -f deploy/.env', '[ -f deploy/.env ]', 'rm -f deploy/.env',
+  ]) {
+    assert.equal(guard(ctx, bash(cmd)), null, cmd);
+  }
+});
+
+test('round 3: nl is a read verb, also under find -exec', (t) => {
+  const ctx = secretSetup(t);
+  assertDeny(guard(ctx, bash('cd x; nl .env')), SECRET_REASON);
+  assertDeny(guard(ctx, bash("find . -name '.env' -exec nl {} \\;")), SECRET_REASON);
+  assert.equal(guard(ctx, bash("find . -name '*.js' -exec nl {} \\;")), null);
 });

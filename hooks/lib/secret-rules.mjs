@@ -5,9 +5,10 @@
 // from putting a literal tunnel token on a cloudflared command line. Same
 // threat model as the rest of the guard: string checks catch model mistakes,
 // not deliberate evasion.
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { keyDir } from '../../scripts/lib/approval-key.mjs';
 import { STATE_DIR, claudeflareRoot } from '../../scripts/lib/project-root.mjs';
 import { parseShell } from './wrangler-rules.mjs';
@@ -24,15 +25,34 @@ const SECRETS_TEXT = '.claudeflare/secrets';
 const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 // Commands that print a file: with one of these as the head, a secret file's
 // bare name is enough to deny (the guard cannot follow every cd).
-const READ_VERBS = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'rg', 'sed', 'awk', 'cp', 'mv', 'base64', 'xxd', 'od', 'strings', 'source', '.']);
+const READ_VERBS = new Set(['cat', 'head', 'tail', 'less', 'more', 'nl', 'grep', 'rg', 'sed', 'awk', 'cp', 'mv', 'base64', 'xxd', 'od', 'strings', 'source', '.']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
-// Programs that consume a secret file without printing it. Everything else
-// that names a secret path is denied.
-const CONSUMERS = new Set(['cloudflared', 'systemctl', 'chmod', 'chown', 'ls', 'stat', 'test', '[', 'rm']);
-const GIT_CONSUMERS = new Set(['add', 'rm', 'status', 'check-ignore', 'ls-files']);
-const CONTAINER_TOOLS = new Set(['docker', 'docker-compose', 'podman']);
-// Words that run the next word as the command.
-const PREFIX_HEADS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'xargs']);
+// Words that run the next word as the command, with their options that take
+// a value. With any of them in front, a command is never a consumer.
+const PREFIX_VALUE_OPTIONS = {
+  env: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'],
+  sudo: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role', '-t', '--type', '-U', '--other-user', '-T', '--command-timeout'],
+  doas: ['-u', '-C'],
+  xargs: ['-I', '-n', '--max-args', '-L', '--max-lines', '-P', '--max-procs', '-s', '--max-chars', '-d', '--delimiter', '-E', '-a', '--arg-file'],
+  time: ['-o', '--output', '-f', '--format'],
+  nice: ['-n', '--adjustment'],
+  nohup: [],
+  timeout: ['-s', '--signal', '-k', '--kill-after'],
+  command: [],
+  exec: ['-a'],
+  builtin: [],
+  stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
+  ionice: ['-c', '--class', '-n', '--classdata', '-p', '--pid', '-P', '--pgid', '-u', '--uid'],
+};
+const PREFIX_HEADS = new Set(Object.keys(PREFIX_VALUE_OPTIONS));
+// Ruling 14: exact consumer shapes. Each exempts single arguments only.
+const PLAIN_CONSUMERS = new Set(['chmod', 'chown', 'ls', 'stat', 'test', '[', 'rm']);
+const GIT_PATH_COMMANDS = new Set(['add', 'rm']);
+const GIT_SAFE_FLAGS = new Set(['-f', '--force', '-q', '--quiet', '-r', '--cached', '-n', '--dry-run', '-v', '--verbose', '-A', '--all', '-u', '--update', '--ignore-errors']);
+const COMPOSE_SUBCOMMANDS = new Set(['down', 'restart', 'stop', 'pull']);
+const RUN_VALUE_OPTIONS = new Set(['--name', '--restart', '-p', '--publish', '--network', '-v', '--volume', '-e', '--env']);
+const RUN_VALUE_INLINE = /^--(?:name|restart|publish|network|volume|env)=/;
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const REDIRECT_PREFIX = /^\d*[<>]+&?/;
 const TOKEN_ASSIGNMENT = /^TUNNEL_TOKEN=(.*)$/;
@@ -40,6 +60,7 @@ const TOKEN_FLAG = /^--?token$/;
 const TOKEN_FLAG_VALUE = /^--?token=(.*)$/;
 const CLOUDFLARED = /(?:^|\/)cloudflared(?::[^/\s]*)?$/;
 const MAX_NESTING = 3;
+const NONE = new Set();
 
 // Secret files
 
@@ -143,10 +164,23 @@ function topLevelParts(command) {
   return parts;
 }
 
-function cdTarget(tokens, dir) {
-  const arg = tokens[1];
+// cd, pushd, builtin cd and popd: the argument words, or null for other commands.
+function cdArgs(tokens) {
+  if (tokens[0] === 'builtin' && tokens[1] === 'cd') return tokens.slice(2);
+  if (tokens[0] === 'cd' || tokens[0] === 'pushd') return tokens.slice(1);
+  if (tokens[0] === 'popd') return ['-'];
+  return null;
+}
+
+// The directory a cd goes to, or null when it cannot be resolved ($VAR,
+// `cd -`, a stack entry, ~user).
+function cdTarget(args, dir) {
+  let i = 0;
+  while (['-P', '-L', '-e', '-@'].includes(args[i])) i++;
+  if (args[i] === '--') i++;
+  const arg = args[i];
   if (arg === undefined) return homedir();
-  if (arg.startsWith('-') || arg.includes('$') || arg.includes('`')) return null;
+  if (arg.startsWith('-') || arg.startsWith('+') || arg.includes('$') || arg.includes('`') || /^~[^/]/.test(arg)) return null;
   return resolve(dir, expandHome(arg));
 }
 
@@ -157,11 +191,12 @@ const FOLLOW_BEFORE = new Set([null, ';', '\n', '&', '&&']);
 // it is an unconditional top-level command joined by && or ; (not in a
 // subshell, a pipeline, after ||, or backgrounded). Any other cd makes the
 // directory uncertain: then every command is checked against the original
-// cwd and every cd target.
+// cwd and every cd target. unresolved: some cd target is unknown.
 function commandsWithDirs(command, cwd) {
   const start = resolve(cwd);
   let dir = start;
   let uncertain = false;
+  let unresolved = false;
   let afterOr = false;
   const targets = [];
   const out = [];
@@ -173,28 +208,50 @@ function commandsWithDirs(command, cwd) {
     const followable = !afterOr && FOLLOW_BEFORE.has(part.before) && !['|', '&'].includes(part.after) &&
       commands.length === 1 && !trimmed.startsWith('(') && !trimmed.startsWith('{');
     for (const tokens of commands) {
-      if (tokens[0] !== 'cd') {
+      const args = cdArgs(tokens);
+      if (args === null) {
         out.push({ tokens, dir });
         continue;
       }
-      const target = cdTarget(tokens, dir);
-      if (followable && target) {
+      const target = cdTarget(args, dir);
+      if (!target) {
+        uncertain = true;
+        unresolved = true;
+      } else if (followable) {
         dir = target;
         targets.push(target);
       } else {
         uncertain = true;
-        if (target) targets.push(target);
+        targets.push(target);
       }
     }
   }
   const union = [...new Set([start, ...targets, ...out.map((o) => o.dir)])];
-  return out.map(({ tokens, dir: at }) => ({ tokens, dirs: uncertain ? [...new Set([at, ...union])] : [at] }));
+  return {
+    unresolved,
+    commands: out.map(({ tokens, dir: at }) => ({ tokens, dirs: uncertain ? [...new Set([at, ...union])] : [at] })),
+  };
 }
 
+// Index of the command word after assignments and prefix commands (with
+// their options and values).
 function headIndex(tokens) {
   let i = 0;
-  while (i < tokens.length && (ASSIGNMENT.test(tokens[i]) || PREFIX_HEADS.has(tokens[i]) || tokens[i].startsWith('-'))) i++;
-  return i;
+  for (;;) {
+    while (i < tokens.length && ASSIGNMENT.test(tokens[i])) i++;
+    const name = tokens[i] === undefined ? '' : basename(tokens[i]);
+    if (!PREFIX_HEADS.has(name)) return i;
+    const valued = new Set(PREFIX_VALUE_OPTIONS[name]);
+    i++;
+    while (i < tokens.length && tokens[i].startsWith('-')) {
+      if (tokens[i] === '--') {
+        i++;
+        break;
+      }
+      i += valued.has(tokens[i]) ? 2 : 1;
+    }
+    if (name === 'timeout') i++;
+  }
 }
 
 // Path candidates in a word: redirections (<file, 2>file) and --opt=file.
@@ -207,41 +264,111 @@ function wordPaths(word) {
 // Every path a command mentions, resolved in each directory it may run in:
 // the guard reads the index of the project that owns each one.
 export function bashPaths(command, cwd) {
-  return commandsWithDirs(command, cwd).flatMap(({ tokens, dirs }) => tokens
+  return commandsWithDirs(command, cwd).commands.flatMap(({ tokens, dirs }) => tokens
     .flatMap(wordPaths)
     .filter((word) => !word.startsWith('-'))
     .flatMap((word) => dirs.map((dir) => resolve(dir, expandHome(word)))));
 }
 
-function isClaudeflare(word) {
-  return word !== undefined && (basename(word) === 'claudeflare' || word.endsWith('cf.mjs'));
+const realOrNull = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+const OWN_CLI = new Set([join(PLUGIN_ROOT, 'bin', 'claudeflare'), join(PLUGIN_ROOT, 'scripts', 'cf.mjs')].map(realOrNull).filter(Boolean));
+
+// This plugin's own bin/claudeflare or scripts/cf.mjs, by realpath. A bare
+// `claudeflare` counts only when it resolves on PATH to one of them.
+function isOwnCli(word, dir) {
+  if (!word) return false;
+  if (word.includes('/')) return OWN_CLI.has(realOrNull(resolve(dir, expandHome(word))));
+  if (word !== 'claudeflare') return false;
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    if (entry && existsSync(join(entry, word))) return OWN_CLI.has(realOrNull(join(entry, word)));
+  }
+  return false;
 }
 
-// Which tokens of a command a consumer program takes without printing:
-// 'all', a set of token indexes (docker --env-file values) or none.
-function consumedTokens(tokens) {
-  const at = headIndex(tokens);
-  const head = tokens[at];
-  if (head === undefined) return new Set();
-  const name = basename(head);
-  if (CONSUMERS.has(name) || CLOUDFLARED.test(head)) return 'all';
-  const args = tokens.slice(at + 1);
-  if (name === 'git') {
-    let i = 0;
-    while (i < args.length && args[i].startsWith('-')) i += ['-C', '-c'].includes(args[i]) ? 2 : 1;
-    return GIT_CONSUMERS.has(args[i]) ? 'all' : new Set();
+// claudeflare tunnel-token: only the --env-path value.
+function cliExempt(tokens, dirs) {
+  const own = (word) => dirs.every((dir) => isOwnCli(word, dir));
+  const at = own(tokens[0]) ? 0 : tokens[0] === 'node' && own(tokens[1]) ? 1 : -1;
+  if (at < 0 || tokens[at + 1] !== 'tunnel-token') return NONE;
+  const exempt = new Set();
+  tokens.forEach((token, i) => {
+    if (i > at + 1 && token === '--env-path') exempt.add(i + 1);
+  });
+  return exempt;
+}
+
+// git add|rm [safe flags] [--] PATHS: only the pathspecs. No global options
+// (the subcommand must come right after git), no -p or other flags.
+function gitExempt(tokens) {
+  if (!GIT_PATH_COMMANDS.has(tokens[1])) return NONE;
+  const exempt = new Set();
+  let paths = false;
+  for (let i = 2; i < tokens.length; i++) {
+    if (!paths && tokens[i] === '--') paths = true;
+    else if (!paths && tokens[i].startsWith('-')) {
+      if (!GIT_SAFE_FLAGS.has(tokens[i])) return NONE;
+    } else exempt.add(i);
   }
-  const cli = isClaudeflare(head) ? 0 : name === 'node' && isClaudeflare(args[0]) ? 1 : -1;
-  if (cli >= 0) return args[cli] === 'tunnel-token' ? 'all' : new Set();
-  if (CONTAINER_TOOLS.has(name)) {
-    const allowed = new Set();
-    tokens.forEach((token, i) => {
-      if (token === '--env-file') allowed.add(i + 1);
-      if (token.startsWith('--env-file=')) allowed.add(i);
-    });
-    return allowed;
+  return exempt;
+}
+
+// docker|podman compose [-f F]... [-p P] --env-file P (up -d|up --detach|down|
+// restart|stop|pull) [SERVICE]...: only the --env-file values.
+function composeExempt(tokens) {
+  const exempt = new Set();
+  let i = 2;
+  for (; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (['-f', '--file', '-p', '--project-name'].includes(token)) i++;
+    else if (token === '--env-file') exempt.add(++i);
+    else if (token.startsWith('--env-file=')) exempt.add(i);
+    else break;
   }
-  return new Set();
+  let rest = tokens.slice(i + 1);
+  if (tokens[i] === 'up') {
+    if (!['-d', '--detach'].includes(rest[0])) return NONE;
+    rest = rest.slice(1);
+  } else if (!COMPOSE_SUBCOMMANDS.has(tokens[i])) return NONE;
+  return rest.every((word) => !word.startsWith('-')) ? exempt : NONE;
+}
+
+// docker|podman run -d|--detach [simple options] --env-file P IMAGE, nothing
+// after IMAGE: only the --env-file values.
+function runExempt(tokens) {
+  const exempt = new Set();
+  let detached = false;
+  let i = 2;
+  for (; i < tokens.length && tokens[i].startsWith('-'); i++) {
+    const token = tokens[i];
+    if (token === '-d' || token === '--detach') detached = true;
+    else if (token === '--env-file') exempt.add(++i);
+    else if (token.startsWith('--env-file=')) exempt.add(i);
+    else if (RUN_VALUE_OPTIONS.has(token)) i++;
+    else if (token !== '--rm' && !RUN_VALUE_INLINE.test(token)) return NONE;
+  }
+  return detached && i === tokens.length - 1 ? exempt : NONE;
+}
+
+// Ruling 14: the token indexes a command may name without being denied.
+// Exact shapes only; a prefix head or env assignment means none.
+function exemptTokens(tokens, dirs) {
+  const head = tokens[0];
+  if (head === undefined || ASSIGNMENT.test(head) || PREFIX_HEADS.has(basename(head))) return NONE;
+  if (PLAIN_CONSUMERS.has(head)) return new Set([...tokens.keys()].filter((i) => i > 0 && !tokens[i].startsWith('-')));
+  if (head === 'git') return gitExempt(tokens);
+  if (head === 'docker' || head === 'podman') {
+    if (tokens[1] === 'compose') return composeExempt(tokens);
+    if (tokens[1] === 'run') return runExempt(tokens);
+    return NONE;
+  }
+  return cliExempt(tokens, dirs);
 }
 
 // Recursive search commands
@@ -364,32 +491,34 @@ function inSecretsDir(canonicalPath) {
   return parts.some((part, i) => part === '.claudeflare' && parts[i + 1] === 'secrets');
 }
 
+const namesSecret = (word, names) => wordPaths(word).some((path) => names.has(basename(path).toLowerCase()));
+
 // Deny by default: a command that names a secret file or the secrets folder
 // (as an argument, a redirection, inside $(...), backticks or sh -c) is
-// denied unless its program only consumes the file (CONSUMERS, git add/rm/
-// status/check-ignore/ls-files, docker/podman --env-file, claudeflare
-// tunnel-token). files: canonical absolute paths; rawFiles: as indexed.
+// denied unless the argument is exempt under one of the exact consumer shapes
+// (exemptTokens). files: canonical absolute paths; rawFiles: as indexed.
 // canonical and isInside: the guard's path helpers.
 export function bashReadsSecret(command, cwd, { files, rawFiles = [] }, { canonical, isInside }) {
   const fold = (text) => (CASE_INSENSITIVE_FS ? text.toLowerCase() : text);
   const absolutes = [...new Set([...files, ...rawFiles.map(fold)])];
   // Names compare case-insensitively: when unsure, match (deny).
   const names = new Set(files.map((file) => basename(file).toLowerCase()));
-  for (const { tokens, dirs } of commandsWithDirs(command, cwd)) {
-    const consumed = consumedTokens(tokens);
-    if (consumed !== 'all') {
-      const text = fold(tokens.filter((_, i) => !consumed.has(i)).join(' '));
-      if (text.includes(SECRETS_TEXT) || absolutes.some((file) => text.includes(file))) return true;
-      const head = tokens[headIndex(tokens)];
-      const verb = head !== undefined && READ_VERBS.has(basename(head));
-      for (const [i, word] of tokens.entries()) {
-        if (consumed.has(i)) continue;
-        for (const candidate of wordPaths(word)) {
-          if (verb && names.has(basename(candidate).toLowerCase())) return true;
-          for (const dir of dirs) {
-            const path = canonical(resolve(dir, expandHome(candidate)));
-            if (files.includes(path) || inSecretsDir(path)) return true;
-          }
+  const { commands, unresolved } = commandsWithDirs(command, cwd);
+  // An unknown cd target: any word naming a secret file by its name is denied.
+  if (unresolved && names.size && commands.some(({ tokens }) => tokens.some((word) => namesSecret(word, names)))) return true;
+  for (const { tokens, dirs } of commands) {
+    const exempt = exemptTokens(tokens, dirs);
+    const text = fold(tokens.filter((_, i) => !exempt.has(i)).join(' '));
+    if (text.includes(SECRETS_TEXT) || absolutes.some((file) => text.includes(file))) return true;
+    const head = tokens[headIndex(tokens)];
+    const verb = head !== undefined && READ_VERBS.has(basename(head));
+    for (const [i, word] of tokens.entries()) {
+      if (exempt.has(i)) continue;
+      if (verb && namesSecret(word, names)) return true;
+      for (const candidate of wordPaths(word)) {
+        for (const dir of dirs) {
+          const path = canonical(resolve(dir, expandHome(candidate)));
+          if (files.includes(path) || inSecretsDir(path)) return true;
         }
       }
     }
