@@ -100,7 +100,7 @@ Write (account plans), the read rows plus:
 
 | Scope | Permission | Used for |
 |---|---|---|
-| Account | Workers Scripts Edit (API: Workers Scripts Write) | `deploy`, `versions deploy`, `rollback`, `delete`, `secret put`, `secret delete` |
+| Account | Workers Scripts Edit (API: Workers Scripts Write) | `deploy`, `versions deploy`, `rollback`, `delete`, `secret put`, `secret delete`. `delete` also needs Workers KV Storage Read (wrangler then looks for Workers Sites namespaces) |
 | Account | Cloudflare Pages Edit (API: Pages Write) | `pages deploy`, Pages rollback |
 | Account | D1 Edit (API: D1 Write) | `d1 create`, `d1 delete`, `d1 migrations apply --remote`, `d1 time-travel restore` |
 | Account | Workers KV Storage Edit (API: Workers KV Storage Write) | `kv namespace create`, `kv namespace delete` |

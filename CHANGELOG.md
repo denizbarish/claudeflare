@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Skills: `cf-workers`, `cf-pages`, `cf-storage`, `cf-dev-troubleshoot` (1101, 1102, 1042, missing binding, deploy failures, Pages build failures, D1 migration errors); account domains in `cf-audit`; account plans in `cf-core`.
 - Evals: 1102 diagnosis, deploy through the protocol, and no secret leak (seven cases in total).
 - Docs: developer platform token sets.
+- Verified end to end against the live Cloudflare API with wrangler 4.152.0: preflight, first deploy, second deploy with health check, `claudeflare tail` with redaction, rollback to the snapshot version, and Worker delete.
 
 ## [0.1.0] - 2026-10-25
 

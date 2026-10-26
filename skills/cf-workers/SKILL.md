@@ -121,6 +121,7 @@ After apply, verify with `wrangler deployments status --name <w>`: the expected 
 
 - A Worker rollback restores code only. Bindings, secrets, D1 rows, KV entries and R2 objects stay as they are; a version that expects a newer schema can break after rollback.
 - Rollback targets are limited to the 100 most recent versions.
+- `wrangler delete` removes the Worker first, then lists KV namespaces to clean up Workers Sites assets. Without Workers KV Storage Read on the token that second step fails with code 10000 and the plan ends `failed` although the Worker is gone; read the Worker list before planning again.
 - During a split, the health check URL hits either version at random, so a 200 does not prove the new version is healthy. Judge each step on tail and GraphQL error rates as well.
 - Disabling `workers.dev` in the dashboard is undone by the next wrangler deploy unless the config has `"workers_dev": false`.
 - Without a `compatibility_date` on API upload, the Worker runs with the 2021-11-02 behavior.
