@@ -27,11 +27,11 @@ export function redactText(value) {
     .replace(/(https?:\/\/[^\s?#"']+)\?[^\s#"']*/g, '$1?[REDACTED]')
     .replace(/(\/\/)[^\/@\s"']+@/g, '$1[REDACTED]@')
     .replace(/((?:Bearer|Basic)\s+)\S+/gi, '$1[REDACTED]')
-    .replace(/((?:password|passwd|pass|secret|token|api[_-]?key|authorization|auth|cookie|session)["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, '$1[REDACTED]')
+    .replace(/((?:password|passwd|pass|secret|token|api[_-]?key|key|authorization|auth|cookie|session)["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, '$1[REDACTED]')
     .replace(/\b(?:sk|pk|rk|whsec)_(?:live_|test_)?[A-Za-z0-9]{8,}/g, '[REDACTED]')
     .replace(/\b[0-9a-f]{32,}\b/gi, '[REDACTED]')
     // Long runs with letters and digits mixed (keys, JWT parts), not long hostnames or slugs.
-    .replace(/[A-Za-z0-9+_-]{40,}={0,2}/g, (run) => (/\d/.test(run) && /[A-Za-z]/.test(run) ? '[REDACTED]' : run))
+    .replace(/[A-Za-z0-9+/_-]{40,}={0,2}/g, (run) => (/\d/.test(run) && /[A-Za-z]/.test(run) ? '[REDACTED]' : run))
     .slice(0, MAX_TEXT);
 }
 

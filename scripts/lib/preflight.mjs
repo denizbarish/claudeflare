@@ -161,7 +161,9 @@ async function pendingMigrations(runner, target, config, op, created) {
   const parsed = parseWranglerOp(op);
   const dir = join(target.project_dir, d1Entry(config, parsed.name)?.migrations_dir ?? 'migrations');
   let names;
-  if (created.has(`d1:${parsed.name}`)) {
+  // The op may name the binding; creates name the database.
+  const database = d1Entry(config, parsed.name)?.name ?? parsed.name;
+  if (created.has(`d1:${database}`)) {
     try {
       names = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
     } catch {

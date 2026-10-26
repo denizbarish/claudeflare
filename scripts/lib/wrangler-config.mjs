@@ -16,30 +16,42 @@ export function findConfigFile(projectDir) {
   return CONFIG_FILES.find((name) => existsSync(join(projectDir, name))) ?? null;
 }
 
-// Drops // and /* */ comments and trailing commas outside strings.
-function stripJsonc(text) {
+// Walks text outside JSON strings: onChar(i) returns what to emit for a
+// non-string character and may advance past it via the returned index.
+function walkOutsideStrings(text, onChar) {
   let out = '';
   for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === '"') {
+    if (text[i] === '"') {
       let j = i + 1;
       while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
       out += text.slice(i, j + 1);
       i = j;
-    } else if (c === '/' && text[i + 1] === '/') {
-      while (i < text.length && text[i] !== '\n') i++;
-      out += '\n';
-    } else if (c === '/' && text[i + 1] === '*') {
-      i = text.indexOf('*/', i + 2);
-      if (i === -1) break;
-      i++;
-    } else if (c === ',' && /^\s*[}\]]/.test(text.slice(i + 1))) {
-      // trailing comma: dropped
     } else {
-      out += c;
+      const [emit, next] = onChar(i);
+      out += emit;
+      i = next;
     }
   }
   return out;
+}
+
+// Drops // and /* */ comments, then trailing commas, outside strings.
+function stripJsonc(text) {
+  const noComments = walkOutsideStrings(text, (i) => {
+    if (text[i] === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i);
+      return ['\n', end === -1 ? text.length : end];
+    }
+    if (text[i] === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      return ['', end === -1 ? text.length : end + 1];
+    }
+    return [text[i], i];
+  });
+  return walkOutsideStrings(noComments, (i) => [
+    noComments[i] === ',' && /^\s*[}\]]/.test(noComments.slice(i + 1)) ? '' : noComments[i],
+    i,
+  ]);
 }
 
 // Splits on `sep` outside quotes and brackets.
@@ -177,7 +189,9 @@ export function parseToml(text) {
     if (eq <= 0) continue;
     const key = tomlKey(line.slice(0, eq));
     let raw = line.slice(eq + 1).trim();
-    const relied = [...tablePath, ...key].some((k) => RELIED_KEYS.has(k));
+    const path = [...tablePath, ...key];
+    // env.<name>.main is relied on like main; env.<name>.vars is not.
+    const relied = (path[0] === 'env' ? path.slice(2) : path).some((k) => RELIED_KEYS.has(k));
     const delim = raw.startsWith('"""') ? '"""' : raw.startsWith("'''") ? "'''" : null;
     if (delim) {
       // Multi-line string: skipped (never under a relied key).

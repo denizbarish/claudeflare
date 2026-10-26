@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceHash } from '../scripts/lib/source-hash.mjs';
-import { configBindings, parseToml } from '../scripts/lib/wrangler-config.mjs';
+import { configBindings, parseToml, readWranglerConfig } from '../scripts/lib/wrangler-config.mjs';
 import { clampSeconds, redactText, runTail, splitJsonObjects } from '../scripts/lib/tail.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
@@ -419,4 +419,27 @@ test('d1 create plus migrations apply in one draft treats every local migration 
     { name: '0002_more.sql', sql: 'CREATE TABLE b (id INTEGER);\n' },
   ]);
   assert.equal(plan.ops[0].pending_migrations, undefined);
+});
+
+test('config reader keeps valid configs: comment after a trailing comma, env vars text, unquoted env dates', () => {
+  writeFileSync(join(cwd, 'wrangler.jsonc'), '{\n  "main": "src/index.ts", // entry\n  "x": "a,]", /* c */\n}\n');
+  assert.deepEqual(readWranglerConfig(cwd).config, { main: 'src/index.ts', x: 'a,]' });
+  const toml = parseToml('[env.production]\ncompatibility_date = 2024-09-01\nmain = "a.js"\n[env.production.vars]\nNOTE = """\nmulti\n"""\n');
+  assert.deepEqual(toml, { env: { production: { main: 'a.js', vars: {} } } });
+  assert.throws(() => parseToml('[env.p]\nmain = 2024-09-01\n'), /unsupported value for env.p.main/);
+  assert.equal(redactText(`key=${'QWERTY12'.repeat(3)}ab/cd${'EFGH5678'.repeat(3)}`), 'key=[REDACTED]');
+});
+
+test('migrations apply by binding name counts a database created in the same draft', async (t) => {
+  mkdirSync(join(cwd, 'migrations'));
+  writeFileSync(join(cwd, 'migrations', '0001_init.sql'), 'CREATE TABLE a (id INTEGER);\n');
+  script({});
+  const base = await stubServer(t, GOOD_ROUTES);
+  const ops = [
+    { kind: 'wrangler', args: ['d1', 'create', 'app-db'] },
+    { kind: 'wrangler', args: ['d1', 'migrations', 'apply', 'DB', '--remote'] },
+  ];
+  const res = await run(['preflight', '--file', draft(ops)], { CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 0, res.stdout);
+  assert.deepEqual(JSON.parse(res.stdout).pending_migrations[0].files.map((f) => f.name), ['0001_init.sql']);
 });
