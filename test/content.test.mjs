@@ -219,6 +219,10 @@ const ZT_FINDINGS = {
     'tunnel.status.down', 'tunnel.connectors.single', 'tunnel.config.no_catch_all',
     'tunnel.dns.stale_cname', 'tunnel.config.local_managed',
   ],
+  'cf-access': [
+    'access.policy.everyone_allow', 'access.app.no_mfa', 'access.session.long',
+    'access.service_token.expiring', 'access.group.unused', 'access.idp.single_login_method',
+  ],
 };
 
 for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
@@ -244,4 +248,22 @@ test('cf-audit lists the tunnel domain', () => {
   const audit = read('skills/cf-audit/SKILL.md');
   assert.ok(audit.includes('`cf-tunnel`'), 'cf-audit does not name cf-tunnel');
   assert.ok(audit.includes('`tunnel`'), 'cf-audit is missing domain tunnel');
+});
+
+test('cf-access documents secret_fields_from_env, the service token secret file and the lockout lines', () => {
+  const file = 'skills/cf-access/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'secret_fields_from_env', '"config.client_secret"', '.claudeflare/secrets/', 'shown only once', '[redacted]',
+    'confirm_name', 'Lockout risk:', 'resource_in_use', 'not_entitled', 'new AUD', 'cloudflareaccess.com', '"expect": "access_login"',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  assert.ok(!/"client_secret":\s*"[^<]/.test(text), `${file} shows a literal client_secret`);
+});
+
+test('cf-audit lists the access domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-access`'), 'cf-audit does not name cf-access');
+  assert.ok(audit.includes('`access`'), 'cf-audit is missing domain access');
 });

@@ -45,6 +45,9 @@ export async function captureProductEntry(client, op, classified) {
     invertible: entry.inverse !== 'none',
     op_body_keys: isPlainObject(op.body) ? Object.keys(op.body) : [],
   };
+  // Field paths only, never values: a function inverse can tell that the op
+  // sent a secret it cannot restore (an IdP client secret).
+  if (isPlainObject(op.secret_fields_from_env)) out.secret_fields = Object.keys(op.secret_fields_from_env);
   if (entry.group) out.group = entry.group(match);
   if (entry.inverse === 'recreate') out.collection = entry.collection ? entry.collection(match, base) : parentPath(path.split('?')[0]);
   return out;

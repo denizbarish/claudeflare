@@ -4,6 +4,7 @@
 // resources.mjs.
 
 import { matchKind } from './match.mjs';
+import { ACCESS } from './access.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
 /**
@@ -148,3 +149,4 @@ export function classifyProductOp(op, plan) {
 
 // Product modules shipped with claudeflare.
 registerProduct(TUNNEL);
+registerProduct(ACCESS);

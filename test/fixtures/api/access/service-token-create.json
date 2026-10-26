@@ -1,0 +1,10 @@
+{
+  "id": "99999999-0000-4000-8000-000000000001",
+  "name": "deploy-bot",
+  "client_id": "fakeclientid000000000000000000099.access",
+  "client_secret": "fake-service-token-secret-0000000000000000000000000000000000000001",
+  "duration": "8760h",
+  "expires_at": "2027-10-26T10:00:00Z",
+  "created_at": "2026-10-26T10:00:00Z",
+  "updated_at": "2026-10-26T10:00:00Z"
+}

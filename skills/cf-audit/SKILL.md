@@ -15,6 +15,8 @@ For the developer platform domains (`workers`, `pages`, `storage`) the target is
 
 The `tunnel` domain audits an account too: its tunnels, connectors, ingress configs, routes and the CNAMEs to `<uuid>.cfargotunnel.com` in the account's zones. A full account audit includes it. Its `fix` ops use `/accounts/{account_id}/...` for tunnel writes (an account plan) and `/zones/{zone_id}/...` for DNS fixes (a separate zone plan).
 
+The `access` domain audits an account as well: its Zero Trust organization, Access applications, reusable and app-scoped policies, groups, identity providers and service tokens. A full account audit includes it when a Zero Trust organization exists (GET `/accounts/{account_id}/access/organizations` succeeds). Its `fix` ops use `/accounts/{account_id}/access/...` (an account plan), never the zone form.
+
 ## 2. Domains
 
 The full audit covers these domains, each checked against the skill with the same name:
@@ -32,6 +34,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | pages (account) | `cf-pages` |
 | storage (account) | `cf-storage` |
 | tunnel (account) | `cf-tunnel` |
+| access (account) | `cf-access` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 

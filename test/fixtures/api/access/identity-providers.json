@@ -1,0 +1,26 @@
+[
+  {
+    "id": "eeeeeeee-0000-4000-8000-000000000001",
+    "name": "Okta",
+    "type": "okta",
+    "config": {
+      "client_id": "0oa000000000000000000",
+      "okta_account": "https://example-org.okta.com",
+      "claims": []
+    },
+    "scim_config": { "enabled": false }
+  },
+  {
+    "id": "eeeeeeee-0000-4000-8000-000000000002",
+    "name": "Corporate SSO",
+    "type": "oidc",
+    "config": {
+      "client_id": "claudeflare-test-client",
+      "auth_url": "https://sso.example.com/oauth2/authorize",
+      "token_url": "https://sso.example.com/oauth2/token",
+      "certs_url": "https://sso.example.com/oauth2/keys",
+      "scopes": ["openid", "email"]
+    },
+    "scim_config": { "enabled": false }
+  }
+]

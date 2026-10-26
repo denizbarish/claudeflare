@@ -223,7 +223,7 @@ export function tcpOpenCheck(host, port, { connect = netConnect } = {}) {
 
 // Team domain of the Access org from a product's preflight ctx; null when the
 // ctx does not hold it (rollback plans, products without an org read).
-function teamDomainOf(ctx) {
+export function teamDomainOf(ctx) {
   const value = ctx?.auth_domain ?? ctx?.org?.auth_domain ?? ctx?.organization?.auth_domain;
   return typeof value === 'string' && value !== '' ? value : null;
 }
