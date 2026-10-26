@@ -24,7 +24,8 @@ const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 // quoted, counts as an apply. The one exception is the folder right after
 // `git -C` (git -C ~/claudeflare apply x.patch); anything else fails closed.
 const APPLY_PATTERN = /(^|[\s;&|('"])((?:\S*\/)?claudeflare|\S*cf\.mjs)['"]?\s+apply\s+['"]?([a-z0-9-]+)/g;
-const DIR_OPTION_BEFORE = /(?:^|[\s;&|(])git\s+-C\s+['"]?$/;
+// Horizontal whitespace only: a newline starts a new command.
+const DIR_OPTION_BEFORE = /(?:^|[ \t;&|(])git[ \t]+-C[ \t]+['"]?$/;
 const PROTECTED_COMMAND_PARTS = [
   '.claudeflare/approvals',
   '.claudeflare/plans',
