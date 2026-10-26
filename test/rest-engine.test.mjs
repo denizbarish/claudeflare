@@ -272,7 +272,9 @@ test('REST-only account plan without project_dir: apply, then rollback builds th
   assert.equal(rollback.scope, 'account');
   assert.equal(rollback.project_dir, null);
   assert.equal(rollback.rollback_of, plan.id);
-  assert.deepEqual(rollback.ops, [
+  // Every product inverse carries a drift precheck (test/drift.test.mjs covers its content).
+  assert.ok(rollback.ops.every((op) => op.precheck?.kind === 'drift'));
+  assert.deepEqual(rollback.ops.map(({ precheck: _p, ...op }) => op), [
     { method: 'POST', path: `${BASE}/rt/things`, body: { name: 'gamma', mode: 'g' } },
     { method: 'PATCH', path: `${BASE}/rt/widgets/${ID2}`, body: { size: 1 } },
     { method: 'PUT', path: `${BASE}/rt/things/${ID}`, body: { name: 'alpha', mode: 'a', tags: ['x'] } },

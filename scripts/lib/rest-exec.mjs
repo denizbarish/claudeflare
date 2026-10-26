@@ -8,11 +8,12 @@
 import { CfError } from './errors.mjs';
 import { redact } from './api.mjs';
 import { classifyProductOp } from './products/index.mjs';
+import { productReadPath } from './rest-engine.mjs';
 import { getPath, omitPaths, redactPaths, setPath } from './products/fields.mjs';
 import { recordSecretFile, writeSecretFile } from './secret-files.mjs';
 import { isReservedEnvName, RESERVED_ENV_PREFIXES } from './wrangler-ops.mjs';
 
-// Ids from apply results become a path segment of the post read.
+// Ids kept when a result cannot be redacted become a rollback path segment.
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
 function isPlainObject(value) {
@@ -118,14 +119,8 @@ function scrubKeepingId(value, secrets) {
 // resource key, id from the result), otherwise the kind's read path or the op
 // path. Null when there is nothing left to read.
 function postReadPath(op, classified, result) {
-  const { entry, match, base } = classified;
   if (String(op.method).toUpperCase() === 'DELETE') return null;
-  const path = String(op.path).split('?')[0];
-  if (entry.resource(match) === null) {
-    const id = result?.id;
-    return (typeof id === 'string' || typeof id === 'number') && SAFE_ID.test(String(id)) ? `${path}/${id}` : undefined;
-  }
-  return entry.read ? entry.read(match, base) : path;
+  return productReadPath(op, classified, result);
 }
 
 function writeSink(cwd, plan, index, raw, entry) {
@@ -158,7 +153,9 @@ function safeResult(raw, entry, secrets) {
 // Returns { status, results, error?, post }. Op failures are recorded, not
 // thrown; anything that still escapes is redacted first. Zone and other
 // non-product ops behave as the v1 executor did, with post[i] = null.
-export async function executeRestOps({ client, plan, cwd, env = process.env }) {
+// beforeOp(op, i), when given, runs before each op; a non-null return is
+// stored as the op's result and the op is not sent (rollback drift skips).
+export async function executeRestOps({ client, plan, cwd, env = process.env, beforeOp }) {
   const ops = plan.ops ?? [];
   const results = ops.map(() => null);
   const post = ops.map(() => null);
@@ -192,6 +189,11 @@ export async function executeRestOps({ client, plan, cwd, env = process.env }) {
       let raw;
       let sent = false;
       try {
+        const skip = beforeOp ? await beforeOp(op, i) : null;
+        if (skip) {
+          results[i] = skip;
+          continue;
+        }
         classified = classifyProductOp(op, plan);
         // Copies only: plan.ops stays exactly as hashed and stored.
         let body = op.body;

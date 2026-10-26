@@ -271,7 +271,9 @@ test('429 on op 2 of 3 ends partially_applied with results for op 1 and rollback
   assertNoSecret(applied, 'apply result');
   assertTreeClean(cwd);
   const rollback = createRollbackPlan(cwd, plan.id, T0);
-  assert.deepEqual(rollback.ops, [{ method: 'DELETE', path: `${BASE}/sx/tunnels/${NEW}` }]);
+  assert.deepEqual(rollback.ops.map(({ precheck: _p, ...op }) => op), [{ method: 'DELETE', path: `${BASE}/sx/tunnels/${NEW}` }]);
+  assert.equal(rollback.ops[0].precheck.read, `${BASE}/sx/tunnels/${NEW}`);
+  assertNoSecret(rollback, 'rollback plan');
 });
 
 test('a failing post read is recorded as post_error and does not fail the apply', async () => {

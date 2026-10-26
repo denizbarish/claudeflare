@@ -331,6 +331,9 @@ export function validateOpTargets(ops, plan) {
       reject('still contains a placeholder; put the real id into the path');
     }
     if (!isNormalPath(path)) reject('must be a normalized path (no . or .. segments, backslashes or encoded dots)');
+    // Drift prechecks are built by rollback from recorded post-apply states;
+    // a draft cannot supply one.
+    if ('precheck' in op) reject('carries precheck, which only rollback plans build');
     if (path.split('?')[0].includes('//')) reject('must not contain an empty segment (//)');
     const product = classifyProductOp(op, plan);
     if (account) {

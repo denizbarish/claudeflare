@@ -9,7 +9,8 @@ import { createPlan, planStateName, readPlan, slugify, updatePlan } from './plan
 import { checkApproval, consumeApproval } from './approvals.mjs';
 import { classify, validateOpTargets, validatePlanOps } from './resources.mjs';
 import { buildRollbackOps, captureSnapshot } from './snapshot.mjs';
-import { classifyProductOp } from './products/index.mjs';
+import { baseFor, classifyProductOp } from './products/index.mjs';
+import { driftDetail, productReadPath } from './rest-engine.mjs';
 import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KINDS } from './wrangler-ops.mjs';
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
@@ -23,6 +24,13 @@ const ROLLBACK_SOURCE_STATUSES = new Set(['applied', 'partially_applied', 'appli
 
 export function snapshotFile(cwd, plan) {
   return join(paths(cwd).snapshots(planStateName(plan)), `${plan.id}.json`);
+}
+
+// Post-apply states of a product plan's ops, the baseline of its rollback's
+// drift prechecks (spec 4.4). Kept apart from the snapshot, which is written
+// before any op runs.
+export function postFile(cwd, plan) {
+  return join(paths(cwd).snapshots(planStateName(plan)), `${plan.id}.post.json`);
 }
 
 export function previewSnapshotFile(cwd, plan) {
@@ -44,6 +52,55 @@ function writeApplySnapshot(cwd, plan, snapshot) {
     throw err;
   }
   return file;
+}
+
+// One record per product op that ran: { op_index, read, state }. state is the
+// redacted read after the op, { absent: true } after a DELETE, or null when
+// the read failed (the rollback then fails closed). Written once (wx); a
+// failed write only loses the baseline, so it never fails the apply.
+function writePostFile(cwd, plan, outcome) {
+  const ops = plan.ops ?? [];
+  const records = ops.map((op, i) => {
+    const classified = classifyProductOp(op, plan);
+    const result = outcome.results?.[i];
+    if (!classified || result === null || result === undefined || result?.skipped) return null;
+    const deleted = String(op.method).toUpperCase() === 'DELETE';
+    const read = productReadPath(op, classified, result) ?? null;
+    return { op_index: i, read, state: deleted ? { absent: true } : (outcome.post?.[i] ?? null) };
+  });
+  if (!ops.some((op) => classifyProductOp(op, plan))) return;
+  try {
+    writeJson(postFile(cwd, plan), { plan_id: plan.id, ops: records }, 'wx');
+  } catch {
+    // createRollbackPlan treats a missing post file as an unknown baseline.
+  }
+}
+
+function readPostOps(cwd, plan) {
+  try {
+    const ops = JSON.parse(readFileSync(postFile(cwd, plan), 'utf8'))?.ops;
+    return Array.isArray(ops) ? ops : null;
+  } catch {
+    return null;
+  }
+}
+
+// Rollback ops with a drift precheck re-read their resource first. A mismatch
+// skips the op and every later op of the same group (spec 4.4).
+function driftGuard(client, plan) {
+  const base = baseFor(plan);
+  const drifted = new Map();
+  return async (op) => {
+    const precheck = op?.precheck;
+    if (precheck?.kind !== 'drift') return null;
+    const group = typeof precheck.group === 'string' ? precheck.group : null;
+    const detail = group !== null && drifted.has(group)
+      ? `group ${group} skipped: ${drifted.get(group)}`
+      : await driftDetail(client, precheck, { base });
+    if (detail === null) return null;
+    if (group !== null && !drifted.has(group)) drifted.set(group, detail);
+    return { skipped: true, reason: 'rollback_drift', detail };
+  };
 }
 
 // Preview snapshots (claudeflare snapshot) are for draft plans and never touch
@@ -253,9 +310,13 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
 
   // Consumed before the first write so the approval cannot be reused mid-run.
   // executeRestOps records op failures instead of throwing. Its `post` states
-  // are not part of the plan record.
+  // go to the post file, not the plan record.
   consumeQuietly(cwd, id);
-  const outcome = await executeRestOps({ client, plan, cwd, env });
+  const beforeOp = plan.rollback_of ? driftGuard(client, plan) : undefined;
+  const outcome = await executeRestOps({ client, plan, cwd, env, beforeOp });
+  writePostFile(cwd, plan, outcome);
+  // A drift skip leaves part of the rollback undone.
+  if (outcome.status === 'applied' && outcome.results.some((r) => r?.skipped)) outcome.status = 'partially_applied';
   return recordOutcome(cwd, plan, outcome, file, now);
 }
 
@@ -278,7 +339,10 @@ export function createRollbackPlan(cwd, id, now = new Date()) {
   // Ops that were rolled back automatically or skipped are not applied.
   const results = (plan.results ?? []).map((r) => (r?.auto_rolled_back || r?.skipped ? null : r));
   const unresolved = [];
-  const ops = buildRollbackOps(readSnapshot(cwd, plan), results, { unresolved });
+  const snapshot = readSnapshot(cwd, plan);
+  // Only product (v3) entries get a drift baseline; v1 and v2 rollbacks are unchanged.
+  const post = snapshot.entries.some((e) => e?.op_kind === 'product') ? { post: readPostOps(cwd, plan) } : {};
+  const ops = buildRollbackOps(snapshot, results, { unresolved, ...post });
   if (!ops.length) {
     const why = unresolved.length ? ` (${unresolved.join('; ')})` : '';
     throw new CfError('nothing_to_rollback', `Plan ${id} has no applied ops that can be reversed${why}`);

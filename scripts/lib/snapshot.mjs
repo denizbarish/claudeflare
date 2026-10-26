@@ -7,7 +7,7 @@ import { CfError } from './errors.mjs';
 import { runWrangler } from './wrangler.mjs';
 import { captureWranglerEntry, inverseForWrangler, noteCreated } from './wrangler-snapshot.mjs';
 import { classifyProductOp } from './products/index.mjs';
-import { captureProductEntry, inverseForProduct } from './rest-engine.mjs';
+import { captureProductEntry, inverseForProduct, withDriftPrecheck } from './rest-engine.mjs';
 
 const DNS_FIELDS = [
   'type', 'name', 'content', 'data', 'ttl', 'proxied', 'priority', 'comment', 'tags', 'settings',
@@ -170,7 +170,10 @@ const PARTIAL_KINDS = new Set(['wrangler', 'product']);
 // (no version, namespace or created id in its result, an unknown kind) is left
 // out and its reason pushed to options.unresolved, so the plan's other ops can
 // still be rolled back.
-export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
+// options.post: the source plan's post file ops (record per op index), or null
+// when the file is missing. When given, product inverses carry a drift
+// precheck (withDriftPrecheck); v1 and wrangler inverses never do.
+export function buildRollbackOps(snapshot, results, { unresolved = [], post } = {}) {
   const createdRuleIds = new Map();
   const perEntry = [];
   for (const entry of snapshot.entries) {
@@ -184,6 +187,9 @@ export function buildRollbackOps(snapshot, results, { unresolved = [] } = {}) {
       if (!PARTIAL_KINDS.has(entry.op_kind) || !(err instanceof CfError) || err.code !== 'rollback_ambiguous') throw err;
       unresolved.push(err.message);
       continue;
+    }
+    if (entry.op_kind === 'product' && post !== undefined) {
+      inverse = withDriftPrecheck(entry, inverse, post?.[entry.op_index] ?? null);
     }
     if (entry.op_kind !== 'product' && entry.kind === 'rule_create' && inverse.length) {
       createdRuleIds.set(entry.path, [...knownRuleIds, lastSegment(inverse[0].path)]);
