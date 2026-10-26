@@ -29,12 +29,15 @@ function removeDotSegments(path) {
 
 // The path an API request would reach: query and fragment dropped, percent
 // escapes decoded (bounded rounds), backslashes as slashes, repeated and
-// trailing slashes collapsed, dot segments resolved, lowercased, without the
+// trailing slashes collapsed, tabs and line breaks dropped, dot segments resolved, lowercased, without the
 // /client/v4 prefix.
+// Tabs and line breaks are dropped after each round: URL parsers strip them.
+const URL_IGNORED = /[\t\n\r]/g;
+
 export function normalizeApiPath(path) {
-  let text = String(path);
+  let text = String(path).replace(URL_IGNORED, '');
   for (let round = 0; round < DECODE_ROUNDS; round++) {
-    const next = decodeEscapes(text);
+    const next = decodeEscapes(text).replace(URL_IGNORED, '');
     if (next === text) break;
     text = next;
   }

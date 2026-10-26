@@ -498,10 +498,14 @@ const namesSecret = (word, names) => wordPaths(word).some((path) => names.has(ba
 // guard tests the pattern itself against the indexed files (never the disk).
 // `*` and `?` stay inside one path segment (dot files included: fail
 // closed), `**` crosses segments, a class is any one character and a brace
-// list ({a,b}, {1..3}) anything.
-const GLOB_WORD = /[*?[]|\{[^}]*(?:,|\.\.)[^}]*\}/;
+// list ({a,b}, {1..3}) anything. A segment with an extglob or alternation
+// character (`(`, `|`, `^`, `~`) is not modeled: it matches any name.
+const GLOB_WORD = /[*?[(|^~]|\{[^}]*(?:,|\.\.)[^}]*\}/;
+const UNMODELED_SEGMENT = /[(|^~]/;
 
 function globSource(pattern) {
+  if (pattern.includes('/')) return pattern.split('/').map(globSource).join('/');
+  if (UNMODELED_SEGMENT.test(pattern)) return '[^/]*';
   let out = '';
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i];
@@ -549,6 +553,23 @@ function gitObjectPaths(tokens) {
   return tokens.slice(i + 1).filter((w) => !w.startsWith('-') && w.includes(':')).map((w) => w.slice(w.indexOf(':') + 1)).filter(Boolean);
 }
 
+// Words glued to a parenthesis (extglob `@(x)`, `!(x)`, alternation
+// `dir/(a|b)`), not `$(`, `<(` or `>(`.
+function parenWords(command) {
+  return [...command.matchAll(/([^\s;&|()<>$'"`]+)\(([^()]*)\)([^\s;&|()]*)/g)].map((m) => `${m[1]}(${m[2]})${m[3]}`);
+}
+
+// git cat-file --batch* reads object names from stdin, git archive packs a
+// whole tree: either can print a committed secret file.
+function gitDumpsObjects(tokens) {
+  const at = headIndex(tokens);
+  if (basename(tokens[at] ?? '') !== 'git') return false;
+  let i = at + 1;
+  while (i < tokens.length && tokens[i].startsWith('-')) i += GIT_VALUE_OPTIONS.has(tokens[i]) ? 2 : 1;
+  if (tokens[i] === 'archive') return true;
+  return tokens[i] === 'cat-file' && tokens.slice(i + 1).some((w) => w.startsWith('--batch'));
+}
+
 // docker|podman compose config prints the interpolated .env compose reads
 // implicitly; docker|podman inspect prints a container's environment.
 function dumpsContainerEnv(tokens) {
@@ -579,6 +600,10 @@ export function bashReadsSecret(command, cwd, { files, rawFiles = [] }, { canoni
   // Names compare case-insensitively: when unsure, match (deny).
   const names = new Set(files.map((file) => basename(file).toLowerCase()));
   const { commands, unresolved } = commandsWithDirs(command, cwd);
+  // The shell parser reads `dir/@(...)` and `dir/(a|b)` as a word plus a
+  // subshell; rebuild those words from the text and test them as globs.
+  const allDirs = [...new Set([resolve(cwd), ...commands.flatMap((c) => c.dirs)])];
+  if (parenWords(command).some((word) => allDirs.some((dir) => globReaches(word, dir, absolutes, canonical)))) return true;
   // An unknown cd target: any word naming a secret file by its name is denied.
   if (unresolved && names.size && commands.some(({ tokens }) => tokens.some((word) => namesSecret(word, names)))) return true;
   for (const { tokens, dirs } of commands) {
@@ -600,7 +625,7 @@ export function bashReadsSecret(command, cwd, { files, rawFiles = [] }, { canoni
     }
     // A <rev>:<path> word counts by its name, like a read verb's argument.
     if (gitObjectPaths(tokens).some((path) => namesSecret(path, names) || dirs.some((dir) => files.includes(canonical(resolve(dir, path)))))) return true;
-    if (dumpsContainerEnv(tokens) && projectHasSecrets(dirs, files, isInside)) return true;
+    if ((dumpsContainerEnv(tokens) || gitDumpsObjects(tokens)) && projectHasSecrets(dirs, files, isInside)) return true;
     for (const dir of dirs) {
       const search = searchOf(tokens, dir);
       if (search && searchReaches(search, files, isInside)) return true;
@@ -633,16 +658,16 @@ function cloudflaredLiteral(tokens) {
   return false;
 }
 
-// cloudflared tunnel [options] token <name> prints the token, unless
-// --cred-file sends it to a file.
+// cloudflared tunnel [options] token <name> prints the token; --cred-file
+// can name /dev/stdout or a file the model reads next, so it is denied too.
+// `claudeflare tunnel-token` is the way to get a token.
 function cloudflaredPrintsToken(tokens) {
   const at = tokens.findIndex((t) => CLOUDFLARED.test(t));
   if (at < 0) return false;
   const args = tokens.slice(at + 1);
   const tunnel = args.indexOf('tunnel');
   if (tunnel < 0) return false;
-  const rest = args.slice(tunnel + 1);
-  return rest.includes('token') && !rest.some((a) => /^--?cred-file(?:=|$)/.test(a));
+  return args.slice(tunnel + 1).includes('token');
 }
 
 // Token endpoint reads in a shell command, after the shell would have removed
@@ -653,12 +678,13 @@ const TOKEN_RESOURCE_TEXT = new RegExp(TOKEN_RESOURCES.map((r) => (r === 'tunnel
 const TOKEN_SEGMENT_TEXT = /\/token(?![\w-])/;
 const CF_API_READ_TEXT = /api\.cloudflare\.com|(?:^|[\s/;&|(])(?:claudeflare|cf\.mjs)\s+get\b/;
 const VARIABLE_TOKEN_TEXT = /[$`)}][^\s;&|]*\/token(?![\w-])/;
+const RUNTIME_BUILT_TEXT = /\$\(|`|\{[^}\s]*,[^}\s]*\}/;
 const DECODE_ROUNDS = 3;
 
 function shellText(command) {
   let text = command.replace(/['"\\]/g, '');
   for (let round = 0; round < DECODE_ROUNDS; round++) {
-    const next = text.replace(/%[0-9a-f]{2}/gi, (hex) => String.fromCharCode(parseInt(hex.slice(1), 16)));
+    const next = text.replace(/%[0-9a-f]{2}/gi, (hex) => String.fromCharCode(parseInt(hex.slice(1), 16))).replace(/[\t\n\r]/g, '');
     if (next === text) break;
     text = next;
   }
@@ -669,6 +695,8 @@ export function readsTunnelToken(command) {
   const text = shellText(command);
   if (TOKEN_RESOURCE_TEXT.test(text) && TOKEN_SEGMENT_TEXT.test(text)) return true;
   if (CF_API_READ_TEXT.test(text) && VARIABLE_TOKEN_TEXT.test(text)) return true;
+  // A token resource read whose path is built at run time ($(...), backticks, {a,b}).
+  if (CF_API_READ_TEXT.test(text) && TOKEN_RESOURCE_TEXT.test(text) && RUNTIME_BUILT_TEXT.test(text)) return true;
   if (!text.includes('cloudflared')) return false;
   return allCommands(command).some(cloudflaredPrintsToken);
 }

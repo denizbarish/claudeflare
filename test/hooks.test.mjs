@@ -899,7 +899,7 @@ test('Bash token endpoint reads are denied whatever the quoting or variable use'
   }
 });
 
-test('Bash "cloudflared tunnel token <name>" is denied unless it writes to --cred-file', (t) => {
+test('Bash "cloudflared tunnel token <name>" is denied, also with --cred-file (Ruling 36)', (t) => {
   const ctx = setup(t, { plan: false });
   for (const cmd of [
     'cloudflared tunnel token my-tunnel',
@@ -908,12 +908,15 @@ test('Bash "cloudflared tunnel token <name>" is denied unless it writes to --cre
     "sh -c 'cloudflared tunnel token my-tunnel'",
     'docker run --rm cloudflare/cloudflared:latest tunnel token my-tunnel',
     'echo $(cloudflared tunnel token my-tunnel)',
+    'cloudflared tunnel token --cred-file /dev/stdout my-tunnel',
+    'cloudflared tunnel token --cred-file ./creds.json my-tunnel',
+    'cloudflared tunnel token --cred-file=/etc/cloudflared/creds.json my-tunnel',
   ]) {
-    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+    const decision = guard(ctx, bash(cmd));
+    assertDeny(decision, TUNNEL_TOKEN_REASON);
+    assert.ok(decision.permissionDecisionReason.includes('claudeflare tunnel-token'), cmd);
   }
   for (const cmd of [
-    'cloudflared tunnel token --cred-file /etc/cloudflared/creds.json my-tunnel',
-    'cloudflared tunnel token --cred-file=/etc/cloudflared/creds.json my-tunnel',
     'cloudflared tunnel list',
     'cloudflared tunnel run --token-file /etc/cloudflared/token my-tunnel',
   ]) {
@@ -1312,4 +1315,36 @@ test('round 3: nl is a read verb, also under find -exec', (t) => {
   assertDeny(guard(ctx, bash('cd x; nl .env')), SECRET_REASON);
   assertDeny(guard(ctx, bash("find . -name '.env' -exec nl {} \\;")), SECRET_REASON);
   assert.equal(guard(ctx, bash("find . -name '*.js' -exec nl {} \\;")), null);
+});
+
+// Ruling 36: residual fixes from the scoped re-review.
+
+test('Ruling 36: a tab or newline inside a token endpoint path is still the token endpoint', (t) => {
+  const ctx = setup(t, { plan: false });
+  const base = `/accounts/${AID}/cfd_tunnel/${TID}`;
+  for (const path of [`${base}/tok\ten`, `${base}/tok%09en`, `${base}/tok%0aen`, `${base}/to%0dken`, `${base}/tok%2509en`]) {
+    assert.equal(isAllowedCall({ method: 'GET', path }), false, JSON.stringify(path));
+  }
+  assertDeny(guard(ctx, execute(`async () => { const r = await cloudflare.request({ method: 'GET', path: '${base}/tok%09en' }); return r.result; }`)), TUNNEL_TOKEN_REASON);
+  for (const cmd of [`claudeflare get ${base}/tok%09en`, `claudeflare get ${base}/tok\ten`, `curl https://api.cloudflare.com/client/v4${base}/tok%0Aen`]) {
+    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+  }
+});
+
+test('Ruling 36: command substitution or brace lists building a token path are denied', (t) => {
+  const ctx = setup(t, { plan: false });
+  const url = `https://api.cloudflare.com/client/v4/accounts/${AID}/cfd_tunnel/${TID}`;
+  for (const cmd of [`curl -s ${url}/$(echo token)`, `curl -s ${url}/tok\`echo en\``, `curl -s ${url}/tok{en,}`]) {
+    assertDeny(guard(ctx, bash(cmd)), TUNNEL_TOKEN_REASON);
+  }
+  assert.equal(guard(ctx, bash(`curl -s ${url}/connections`)), null);
+});
+
+test('Ruling 36: extglob and alternation words, git cat-file --batch and git archive are denied in a project with secrets', (t) => {
+  const ctx = secretSetup(t);
+  for (const cmd of ['cat deploy/@(.env)', 'cat deploy/(.env|x)', 'cat deploy/.e^v', 'cat deploy/~', 'git cat-file --batch', 'git cat-file --batch-all-objects --batch', 'git archive HEAD', 'git archive -o /tmp/x.tar HEAD']) {
+    assertDeny(guard(ctx, bash(cmd)), SECRET_REASON);
+  }
+  const plain = setup(t, { plan: false });
+  for (const cmd of ['git cat-file --batch', 'git archive HEAD']) assert.equal(guard(plain, bash(cmd)), null, cmd);
 });

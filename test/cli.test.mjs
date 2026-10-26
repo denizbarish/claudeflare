@@ -143,6 +143,12 @@ test('cli get refuses every token endpoint shape before any request', async (t) 
     assert.equal(error.code, 'invalid_input', path);
     assert.match(error.message, /claudeflare tunnel-token/);
   }
+  // Ruling 36: control characters are refused outright; an encoded tab still names the token endpoint.
+  for (const [path, code] of [[`/accounts/${A}/cfd_tunnel/${T}/tok\ten`, 'invalid_op'], [`/zones/x y`, 'invalid_op'], [`/accounts/${A}/cfd_tunnel/${T}/tok%09en`, 'invalid_input']]) {
+    const res = await run(cwd, ['get', path], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
+    assert.equal(res.code, 1, path);
+    assert.equal(JSON.parse(res.stderr).error.code, code, JSON.stringify(path));
+  }
   assert.deepEqual(seen, []);
   const ok = await run(cwd, ['get', `/accounts/${A}/cfd_tunnel/${T}`], { CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE: base });
   assert.equal(ok.code, 0, ok.stderr);

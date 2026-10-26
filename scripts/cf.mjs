@@ -110,6 +110,7 @@ function parseQuery(pairs = []) {
 async function get(positional, flags) {
   const path = arg(positional, 1, 'path');
   if (!path.startsWith('/')) throw usage('Path must start with /');
+  if (/[\u0000- \u007f]/.test(path)) throw new CfError('invalid_op', 'Path must not contain spaces or control characters');
   // Enforced here, not only in the guard: shell quoting or a path built from
   // variables never reaches a token endpoint through get.
   if (isTokenEndpoint(path)) throw new CfError('invalid_input', `${TUNNEL_TOKEN_REASON} claudeflare get refuses ${path}.`);
