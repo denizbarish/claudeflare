@@ -227,6 +227,9 @@ const ZT_FINDINGS = {
     'gateway.dns.no_security_baseline', 'gateway.rule.shadowed', 'gateway.tls.decrypt_off_with_http_rules',
     'gateway.list.unused', 'gateway.location.none',
   ],
+  'cf-devices': [
+    'devices.switch.unlocked_with_posture', 'devices.exclude.no_local_networks', 'devices.profile.unused', 'devices.posture.unused',
+  ],
 };
 
 for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
@@ -288,4 +291,27 @@ test('cf-audit lists the gateway domain', () => {
   const audit = read('skills/cf-audit/SKILL.md');
   assert.ok(audit.includes('`cf-gateway`'), 'cf-audit does not name cf-gateway');
   assert.ok(audit.includes('`gateway`'), 'cf-audit is missing domain gateway');
+});
+
+test('cf-devices documents the mode switch, the lockout lines, the MDM templates and the secret placeholder rule', () => {
+  const file = 'skills/cf-devices/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    'plan_conflict', 'resource_in_use', 'not_entitled', 'invalid_op', 'confirm_name', 'Lockout risk:', 'switch_locked', 'disable_for_time',
+    'cloudflareaccess.com', '{created_id}', 'device behavior is only verified on a device', 'mdm.xml', 'com.cloudflare.warp.plist',
+    'auth_client_secret', 'REPLACE_WITH_SERVICE_TOKEN_CLIENT_SECRET', 'Explain the steps by default',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+  // Every secret field in a template is the placeholder, never a value.
+  for (const m of text.matchAll(/auth_client_secret(?:<\/key>\s*<string>|"\s*:\s*")([^<"]*)/g)) {
+    assert.equal(m[1], 'REPLACE_WITH_SERVICE_TOKEN_CLIENT_SECRET', `${file} shows a literal auth_client_secret`);
+  }
+  assert.ok([...text.matchAll(/auth_client_secret(?:<\/key>\s*<string>|"\s*:\s*")/g)].length >= 3, `${file} lacks an MDM template per OS`);
+});
+
+test('cf-audit lists the devices domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-devices`'), 'cf-audit does not name cf-devices');
+  assert.ok(audit.includes('`devices`'), 'cf-audit is missing domain devices');
 });

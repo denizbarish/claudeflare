@@ -19,6 +19,8 @@ The `access` domain audits an account as well: its Zero Trust organization, Acce
 
 The `gateway` domain audits an account as well: its Gateway rules and their order, lists, DNS locations and the account configuration. A full account audit includes it when a Zero Trust organization exists. Its `fix` ops use `/accounts/{account_id}/gateway/...` (an account plan).
 
+The `devices` domain audits an account as well: its WARP device profiles, split tunnel and fallback lists, posture rules and device settings. A full account audit includes it when a Zero Trust organization exists. Its `fix` ops use `/accounts/{account_id}/devices/...` (an account plan).
+
 ## 2. Domains
 
 The full audit covers these domains, each checked against the skill with the same name:
@@ -38,6 +40,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | tunnel (account) | `cf-tunnel` |
 | access (account) | `cf-access` |
 | gateway (account) | `cf-gateway` |
+| devices (account) | `cf-devices` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 

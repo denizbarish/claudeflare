@@ -1,0 +1,20 @@
+[
+  {
+    "id": "dddddddd-2222-4000-8000-000000000001",
+    "name": "Disk encrypted",
+    "type": "disk_encryption",
+    "description": "",
+    "schedule": "1h",
+    "match": [{ "platform": "mac" }],
+    "input": { "requireAll": true }
+  },
+  {
+    "id": "dddddddd-2222-4000-8000-000000000002",
+    "name": "Firewall on",
+    "type": "firewall",
+    "description": "",
+    "schedule": "1h",
+    "match": [{ "platform": "windows" }],
+    "input": { "enabled": true }
+  }
+]

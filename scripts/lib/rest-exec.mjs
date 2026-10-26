@@ -8,7 +8,7 @@
 import { CfError } from './errors.mjs';
 import { redact } from './api.mjs';
 import { classifyProductOp } from './products/index.mjs';
-import { productReadPath } from './rest-engine.mjs';
+import { productReadPath, resultId } from './rest-engine.mjs';
 import { getPath, omitPaths, redactPaths, setPath } from './products/fields.mjs';
 import { recordSecretFile, writeSecretFile } from './secret-files.mjs';
 import { isReservedEnvName, RESERVED_ENV_PREFIXES } from './wrangler-ops.mjs';
@@ -153,6 +153,32 @@ function safeResult(raw, entry, secrets) {
   }
 }
 
+// A rollback op may target a resource an earlier op of the same plan creates
+// (a device profile re-created with a new id, then its lists PUT to it). Its
+// path holds one CREATED_ID segment and `created_id_from: n` names the op n
+// places earlier whose apply result id fills it. Returns the op to send
+// (unchanged when it has no created_id_from); throws rollback_ambiguous when
+// that op returned no usable id.
+export const CREATED_ID = '{created_id}';
+
+export function resolveCreatedId(ops, i, results, plan) {
+  const op = ops[i];
+  if (!isPlainObject(op) || !('created_id_from' in op)) return op;
+  const back = op.created_id_from;
+  const fail = (why) => {
+    throw new CfError('rollback_ambiguous', `Op ${i} needs the id created by an earlier op: ${why}`);
+  };
+  if (!Number.isInteger(back) || back < 1 || back > i) fail(`created_id_from ${JSON.stringify(back)} names no earlier op`);
+  const segments = String(op.path).split('/');
+  if (segments.filter((s) => s === CREATED_ID).length !== 1) fail(`its path needs exactly one ${CREATED_ID} segment`);
+  const j = i - back;
+  const source = classifyProductOp(ops[j], plan);
+  const id = source ? resultId(source.entry, results[j]) : undefined;
+  if (id === undefined) fail(`op ${j} returned no usable id`);
+  const { created_id_from: _from, ...rest } = op;
+  return { ...rest, path: segments.map((s) => (s === CREATED_ID ? id : s)).join('/') };
+}
+
 // Returns { status, results, error?, post }. Op failures are recorded, not
 // thrown; anything that still escapes is redacted first. Zone and other
 // non-product ops behave as the v1 executor did, with post[i] = null.
@@ -197,11 +223,12 @@ export async function executeRestOps({ client, plan, cwd, env = process.env, bef
           results[i] = skip;
           continue;
         }
-        classified = classifyProductOp(op, plan);
+        const send = resolveCreatedId(ops, i, results, plan);
+        classified = classifyProductOp(send, plan);
         // Copies only: plan.ops stays exactly as hashed and stored.
         let body = op.body;
         for (const [field, name] of envMap(op)) body = setPath(body, field, env[name]);
-        raw = (await client.request(op.method, op.path, { body })) ?? true;
+        raw = (await client.request(send.method, send.path, { body })) ?? true;
         sent = true;
         if (!classified) {
           results[i] = raw;
@@ -224,12 +251,12 @@ export async function executeRestOps({ client, plan, cwd, env = process.env, bef
           }
           if (file && isPlainObject(result)) results[i] = result = { ...result, secret_file: file };
         }
-        const readPath = postReadPath(op, classified, raw);
+        const readPath = postReadPath(send, classified, raw);
         if (readPath === null) continue;
         try {
           if (readPath === undefined) throw new Error('no usable id in the apply result');
           // A kind may read more than the resource (Gateway: the rules of its phase).
-          const read = entry.capturePost ? await entry.capturePost(client, readPath, op) : await client.request('GET', readPath);
+          const read = entry.capturePost ? await entry.capturePost(client, readPath, send) : await client.request('GET', readPath);
           collect(secrets, read, entry, plan);
           const stored = redactPaths(omitPaths(read, entry.secretFields ?? []), [...(entry.redact ?? []), ...(entry.secretSink ?? [])]);
           post[i] = scrubKeepingId(stored, [...secrets]);

@@ -20,6 +20,8 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const isState = (value) => isPlainObject(value) || Array.isArray(value);
+
 function parentPath(path) {
   return path.slice(0, path.lastIndexOf('/'));
 }
@@ -63,10 +65,8 @@ function putBefore(entry, kind) {
 
 const INVERSES = {
   delete_created: (entry, kind, applyResult) => {
-    const id = applyResult?.id;
-    if ((typeof id !== 'string' && typeof id !== 'number') || !SAFE_ID.test(String(id))) {
-      throw ambiguous(`No usable id in apply result for ${entry.path}`);
-    }
+    const id = resultId(kind, applyResult);
+    if (id === undefined) throw ambiguous(`No usable id in apply result for ${entry.path}`);
     return [{ method: 'DELETE', path: `${entry.path}/${id}` }];
   },
   put_before: (entry, kind) => putBefore(entry, kind),
@@ -92,6 +92,16 @@ const INVERSES = {
   none: () => [],
 };
 
+// Id of the resource an op created: the kind's `idField` (a device profile
+// answers `policy_id`), else `id`. Undefined unless it is a safe path segment.
+export function resultId(kind, result) {
+  for (const field of [kind?.idField, 'id']) {
+    const id = typeof field === 'string' ? result?.[field] : undefined;
+    if ((typeof id === 'string' || typeof id === 'number') && SAFE_ID.test(String(id))) return String(id);
+  }
+  return undefined;
+}
+
 // Path the drift baseline of a product op is read from: the created resource
 // for a create (id from the apply result; undefined without a usable id),
 // otherwise the kind's read path or the op path. A DELETE gets the path of the
@@ -100,8 +110,8 @@ export function productReadPath(op, classified, result) {
   const { entry, match, base } = classified;
   const path = String(op.path).split('?')[0];
   if (String(op.method).toUpperCase() !== 'DELETE' && entry.resource(match) === null) {
-    const id = result?.id;
-    return (typeof id === 'string' || typeof id === 'number') && SAFE_ID.test(String(id)) ? `${path}/${id}` : undefined;
+    const id = resultId(entry, result);
+    return id === undefined ? undefined : `${path}/${id}`;
   }
   return entry.read ? entry.read(match, base) : path;
 }
@@ -140,7 +150,8 @@ export function withDriftPrecheck(entry, ops, record) {
   // Read-only and secret fields never take part in the comparison.
   const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
   let first;
-  if (!kind || !isPlainObject(state) || typeof record.read !== 'string' || record.op_index !== entry.op_index) {
+  // A whole-list resource (device split tunnel entries) has an array state.
+  if (!kind || !isState(state) || typeof record.read !== 'string' || record.op_index !== entry.op_index) {
     first = { kind: 'drift', unknown: true, ...grouped };
   } else {
     const expect = state.absent === true ? { absent: true } : omitPaths(state, ignore);
@@ -149,7 +160,7 @@ export function withDriftPrecheck(entry, ops, record) {
   // A later op on another resource may name its own baseline in `drift`
   // ({ read, expect }: a Gateway rule the API moved during apply).
   const own = (drift) => {
-    if (!kind || !isPlainObject(drift) || typeof drift.read !== 'string' || !isPlainObject(drift.expect)) return { kind: 'drift', ...grouped };
+    if (!kind || !isPlainObject(drift) || typeof drift.read !== 'string' || !isState(drift.expect)) return { kind: 'drift', ...grouped };
     return { kind: 'drift', read: drift.read, expect: omitPaths(drift.expect, ignore), ignore, ...grouped };
   };
   return ops.map(({ group: _tag, drift, ...op }, i) => ({ ...op, precheck: i === 0 ? first : own(drift) }));

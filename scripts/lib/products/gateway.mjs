@@ -543,8 +543,8 @@ const IDP_TYPE_HOSTS = {
 const HOSTNAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
 
 // Hosts from an IdP config: every http(s) URL value, plus bare host names in
-// *_account and *domain keys. Never other config values.
-function idpHosts(idp) {
+// *_account and *domain keys. Never other config values. Devices reuses it.
+export function idpHosts(idp) {
   const hosts = new Set(IDP_TYPE_HOSTS[idp?.type] ?? []);
   for (const [field, value] of Object.entries(isPlainObject(idp?.config) ? idp.config : {})) {
     if (/secret/i.test(field)) continue;

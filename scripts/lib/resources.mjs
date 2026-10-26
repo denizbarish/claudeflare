@@ -340,6 +340,7 @@ export function validateOpTargets(ops, plan) {
     // Drift prechecks are built by rollback from recorded post-apply states;
     // a draft cannot supply one.
     if ('precheck' in op) reject('carries precheck, which only rollback plans build');
+    if ('created_id_from' in op) reject('carries created_id_from, which only rollback plans build');
     if (path.split('?')[0].includes('//')) reject('must not contain an empty segment (//)');
     const product = classifyProductOp(op, plan);
     if (account) {

@@ -1,0 +1,12 @@
+[
+  {
+    "id": "eeeeeeee-2222-4000-8000-000000000001",
+    "name": "Okta",
+    "type": "okta",
+    "config": {
+      "client_id": "0oa000000000000000000",
+      "okta_account": "https://example-org.okta.com",
+      "claims": []
+    }
+  }
+]

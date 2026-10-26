@@ -16,7 +16,7 @@ import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KIND
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { executeAccountOps } from './wrangler-exec.mjs';
-import { assertSecretFieldsEnv, executeRestOps, readSecretEnv } from './rest-exec.mjs';
+import { assertSecretFieldsEnv, executeRestOps, readSecretEnv, resolveCreatedId } from './rest-exec.mjs';
 import { runHealthCheck } from './health-check.mjs';
 import { hasProductOps, LOCKOUT_PREFIX, runProductPreflight } from './product-preflight.mjs';
 import { opVerifyChecks, runVerify } from './verify.mjs';
@@ -363,10 +363,18 @@ async function verifyOps(client, plan, outcome, ctxByProduct, { fetchImpl, sleep
   if (!VERIFY_STATUSES.has(outcome.status)) return false;
   const clean = (text) => redact(String(text), undefined, envSecrets(plan, env));
   let failed = false;
-  for (const [i, op] of (plan.ops ?? []).entries()) {
-    const classified = classifyProductOp(op, plan);
+  for (const i of (plan.ops ?? []).keys()) {
     const result = outcome.results?.[i];
-    if (!classified || result === null || result === undefined || result?.skipped) continue;
+    if (result === null || result === undefined || result?.skipped) continue;
+    // A rollback op aimed at a re-created resource is checked at the path it was sent to.
+    let op;
+    try {
+      op = resolveCreatedId(plan.ops, i, outcome.results, plan);
+    } catch {
+      continue;
+    }
+    const classified = classifyProductOp(op, plan);
+    if (!classified) continue;
     let verify;
     try {
       const { entry, module } = classified;

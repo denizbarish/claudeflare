@@ -1,0 +1,20 @@
+[
+  {
+    "id": "bbbbbbbb-2222-4000-8000-000000000001",
+    "name": "Employees on managed laptops",
+    "decision": "allow",
+    "include": [{ "email_domain": { "domain": "example.com" } }],
+    "exclude": [],
+    "require": [{ "device_posture": { "integration_uid": "dddddddd-2222-4000-8000-000000000001" } }],
+    "reusable": true
+  },
+  {
+    "id": "bbbbbbbb-2222-4000-8000-000000000002",
+    "name": "Contractors",
+    "decision": "allow",
+    "include": [{ "email_domain": { "domain": "partner.example.net" } }],
+    "exclude": [],
+    "require": [],
+    "reusable": true
+  }
+]

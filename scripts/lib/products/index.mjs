@@ -5,6 +5,7 @@
 
 import { matchKind } from './match.mjs';
 import { ACCESS } from './access.mjs';
+import { DEVICES } from './devices.mjs';
 import { GATEWAY } from './gateway.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
@@ -29,13 +30,19 @@ import { TUNNEL } from './tunnel.mjs';
  *   Builds the post-apply state instead of a plain GET of readPath (a Gateway rule plus the
  *   other rules of its phase). Drift prechecks still re-read with a plain GET, so the extra
  *   fields must be in readOnlyFields.
+ * @property {string} [idField]       Apply result field holding a created resource's id when
+ *   it is not `id` (a device profile answers `policy_id`); used by `delete_created` and the
+ *   post read of a create.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
  *   A function is called as inverse(snapshotEntry, applyResult, postRecord) and returns ops
  *   (postRecord is { read, state } or null). An op may carry `group` when its drift group
  *   depends on the apply result (a created id), and an op after the first may carry
  *   `drift: { read, expect }` to be checked against its own resource; the engine moves both
- *   into the drift precheck.
+ *   into the drift precheck. An op may also target a resource an earlier inverse op re-creates:
+ *   its path holds one `{created_id}` segment and `created_id_from: n` names the op n places
+ *   earlier whose result id fills it at apply (rest-exec.mjs resolveCreatedId). A drift state
+ *   may be an array (a whole list resource).
  * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
  *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.
@@ -162,3 +169,4 @@ export function classifyProductOp(op, plan) {
 registerProduct(TUNNEL);
 registerProduct(ACCESS);
 registerProduct(GATEWAY);
+registerProduct(DEVICES);
