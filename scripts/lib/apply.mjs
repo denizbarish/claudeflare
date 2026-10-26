@@ -200,10 +200,10 @@ function assertRollbackSourceCurrent(cwd, plan) {
 // Product preflight again on fresh reads (spec 6). A failed check stops with
 // its own code; a lockout line the plan did not show stops with risk_changed,
 // because approval binds only to the ops hash and the user never saw that
-// line. Lines that disappeared do not stop apply. Plans without lockout_risks
-// (0.2.x, hand-made) and rollback plans skip this.
+// line. Lines that disappeared do not stop apply. Rollback plans and plans
+// without product ops (0.2.x) skip this.
 async function assertProductPreflight(client, plan) {
-  if (plan.rollback_of || !Array.isArray(plan.lockout_risks) || !hasProductOps(plan)) return;
+  if (plan.rollback_of || !hasProductOps(plan)) return;
   const report = await runProductPreflight(client, plan, plan.ops);
   const failedCheck = report.checks.find((c) => !c.ok);
   if (failedCheck) {
@@ -211,7 +211,8 @@ async function assertProductPreflight(client, plan) {
       hint: 'Nothing was written and the approval is unused; fix the cause or create a new plan',
     });
   }
-  const shown = new Set(plan.lockout_risks);
+  // A product plan without lockout_risks (hand-made) showed no lines.
+  const shown = new Set(Array.isArray(plan.lockout_risks) ? plan.lockout_risks : []);
   const added = report.lockout_risks.filter((line) => !shown.has(line));
   if (added.length) {
     throw new CfError('risk_changed', `Plan ${plan.id}: new lockout risk found since the plan was made:\n${added.join('\n')}`, {
@@ -227,11 +228,11 @@ export async function addRollbackLockout(cwd, plan, client) {
   if (!hasProductOps(plan)) return plan;
   let lines;
   try {
-    const report = await runProductPreflight(client, plan, plan.ops);
-    const blocked = report.checks.filter((c) => !c.ok && ['entitlement', 'permission', 'gather'].includes(c.name));
+    // Failed confirm_name or dependencies checks do not block a rollback or its analysis.
+    const report = await runProductPreflight(client, plan, plan.ops, { alwaysLockout: true });
     lines = [
       ...report.lockout_risks,
-      ...blocked.map((c) => `${LOCKOUT_PREFIX} lockout analysis could not run (${c.detail}); review the ops before approving.`),
+      ...report.unanalyzed.map((u) => `${LOCKOUT_PREFIX} lockout analysis could not run (${u.detail}); review the ops before approving.`),
     ];
   } catch (err) {
     lines = [`${LOCKOUT_PREFIX} lockout analysis could not run (${err?.message ?? err}); review the ops before approving.`];

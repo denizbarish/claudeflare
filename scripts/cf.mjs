@@ -199,9 +199,12 @@ async function planNew(cwd, flags) {
 }
 
 // Rollback plans get their lockout lines now; apply does not re-run them.
+// The client is created first, so a missing token writes no rollback plan.
 async function rollback(cwd, positional) {
-  const created = createRollbackPlan(cwd, arg(positional, 1, 'id'));
-  return hasProductOps(created) ? addRollbackLockout(cwd, created, createClient()) : created;
+  const id = arg(positional, 1, 'id');
+  const client = hasProductOps(readPlan(cwd, id)) ? createClient() : null;
+  const created = createRollbackPlan(cwd, id);
+  return client && hasProductOps(created) ? addRollbackLockout(cwd, created, client) : created;
 }
 
 function tail(cwd, flags) {

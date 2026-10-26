@@ -59,9 +59,12 @@ test('listAll throws too_large beyond the page cap', async () => {
   assert.equal(client.calls.length, MAX_PAGES);
 });
 
-test('listAll treats a missing result as an empty page', async () => {
-  const client = pagedClient(() => ({ result: null }));
-  assert.deepEqual(await listAll(client, '/x'), []);
+test('listAll refuses a response that is not an envelope with an array result', async () => {
+  for (const reply of [{ result: null }, [], undefined, { result_info: {} }]) {
+    const client = pagedClient(() => reply);
+    await assert.rejects(listAll(client, '/x'), (err) => err.code === 'api' && /\/x/.test(err.message));
+  }
+  assert.deepEqual(await listAll(pagedClient(() => ({ result: [] })), '/x'), []);
 });
 
 test('client request returns the whole envelope when asked', async () => {

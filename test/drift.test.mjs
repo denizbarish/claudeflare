@@ -14,6 +14,7 @@ import { CfError } from '../scripts/lib/errors.mjs';
 
 const A = '0123456789abcdef0123456789abcdef';
 const BASE = `/accounts/${A}`;
+const PROBE = `${BASE}/dx/things`;
 const R1 = '0a1b2c3d-4e5f-6789-abcd-ef0123456781';
 const R2 = '0a1b2c3d-4e5f-6789-abcd-ef0123456782';
 const TH = '0a1b2c3d-4e5f-6789-abcd-ef0123456783';
@@ -81,6 +82,8 @@ function fakeApi(initial = {}) {
     writes: () => calls.filter((c) => c.method !== 'GET'),
     async request(method, path, opts = {}) {
       calls.push({ method, path, body: structuredClone(opts?.body) });
+      // Product preflight at apply probes the collection; no state change.
+      if (method === 'GET' && path === PROBE) return [];
       tick += 1;
       if (method === 'GET') {
         if (!store.has(path)) throw missing(path);
@@ -276,7 +279,7 @@ test('a failed post read makes the inverse fail closed with post-apply state unk
   const request = api.request.bind(api);
   let failed = false;
   api.request = async (method, path, opts) => {
-    if (method === 'GET' && !failed) {
+    if (method === 'GET' && path !== PROBE && !failed) {
       failed = true;
       throw new CfError('api', 'read failed', { status: 500 });
     }

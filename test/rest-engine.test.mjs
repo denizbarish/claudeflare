@@ -56,7 +56,8 @@ function fakeClient(routes) {
     calls,
     async request(method, path, opts) {
       calls.push({ method, path, opts });
-      const handler = routes[`${method} ${path}`];
+      // Product preflight at apply probes the collection.
+      const handler = `${method} ${path}` in routes ? routes[`${method} ${path}`] : (`${method} ${path}` === `GET ${BASE}/rt/things` ? [] : undefined);
       if (handler === undefined) throw new Error(`unexpected request ${method} ${path}`);
       return typeof handler === 'function' ? handler() : handler;
     },

@@ -7,8 +7,9 @@
 import { CfError } from './errors.mjs';
 import { classifyProductOp } from './products/index.mjs';
 import { getPath } from './products/fields.mjs';
+import { LOCKOUT_PREFIX } from './lockout-text.mjs';
 
-export const LOCKOUT_PREFIX = 'Lockout risk:';
+export { LOCKOUT_PREFIX };
 
 export function hasProductOps(plan, ops = plan?.ops) {
   return (ops ?? []).some((op) => classifyProductOp(op, plan));
@@ -70,10 +71,17 @@ async function confirmNames(client, items, add) {
   return true;
 }
 
-async function productChecks(client, module, items, out, add) {
+// Returns null when lockoutRisks ran, else the detail of the failed check
+// that kept it from running. With alwaysLockout (rollback plans), failed
+// confirm_name and dependencies checks do not stop the lockout analysis.
+async function productChecks(client, module, items, out, add, { alwaysLockout = false } = {}) {
   const { product } = module;
   const base = items[0].classified.base;
-  const fail = (name, code, text) => add(name, false, `${code}: ${product}: ${text}`, code);
+  const fail = (name, code, text) => {
+    const detail = `${code}: ${product}: ${text}`;
+    add(name, false, detail, code);
+    return detail;
+  };
 
   if (module.entitlement) {
     let ent;
@@ -106,7 +114,7 @@ async function productChecks(client, module, items, out, add) {
   out.ctx[product] = ctx;
   add('gather', true, `${product}: account state read`);
 
-  if (!(await confirmNames(client, items, add))) return undefined;
+  if (!(await confirmNames(client, items, add)) && !alwaysLockout) return out.checks.at(-1).detail;
 
   if (module.dependencies) {
     const inUse = [];
@@ -117,25 +125,32 @@ async function productChecks(client, module, items, out, add) {
       out.dependencies[key] = users;
       inUse.push(`${key} is used by ${users.join(', ')}`);
     }
-    if (inUse.length) return fail('dependencies', 'resource_in_use', inUse.join('; '));
-    add('dependencies', true, `${product}: nothing in use`);
+    if (inUse.length) {
+      const detail = fail('dependencies', 'resource_in_use', inUse.join('; '));
+      if (!alwaysLockout) return detail;
+    } else {
+      add('dependencies', true, `${product}: nothing in use`);
+    }
   }
 
   const lines = module.lockoutRisks(ctx, ops) ?? [];
   for (const line of lines) {
     if (typeof line === 'string' && line.trim()) out.lockout_risks.push(asLockoutLine(line));
   }
-  return undefined;
+  return null;
 }
 
 // plan: the plan or its target ({ scope, account_id } / { scope, zone_id }).
 // Failed checks carry `code` (not_entitled, missing_permission,
 // resource_in_use, invalid_op, ...) so apply can throw it unchanged.
-export async function runProductPreflight(client, plan, ops) {
-  const out = { checks: [], lockout_risks: [], dependencies: {}, ctx: {} };
+// `unanalyzed` lists { product, detail } for products whose lockout analysis
+// did not run. options.alwaysLockout: see productChecks.
+export async function runProductPreflight(client, plan, ops, options = {}) {
+  const out = { checks: [], lockout_risks: [], dependencies: {}, ctx: {}, unanalyzed: [] };
   const add = (name, ok, detail, code) => out.checks.push(ok ? { name, ok, detail } : { name, ok, detail, code });
   for (const [module, items] of groupByProduct(plan, ops ?? [])) {
-    await productChecks(client, module, items, out, add);
+    const detail = await productChecks(client, module, items, out, add, options);
+    if (detail !== null) out.unanalyzed.push({ product: module.product, detail });
   }
   out.lockout_risks = [...new Set(out.lockout_risks)];
   return out;

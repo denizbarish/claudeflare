@@ -1,4 +1,4 @@
-import { LOCKOUT_PREFIX } from '../../scripts/lib/product-preflight.mjs';
+import { LOCKOUT_PREFIX } from '../../scripts/lib/lockout-text.mjs';
 
 // Plan summaries and risks are free text that often already end with a period.
 export const trimPeriod = (text) => String(text ?? '').replace(/[.\s]+$/, '');

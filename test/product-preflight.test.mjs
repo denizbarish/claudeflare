@@ -2,13 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PF } from './fixtures/products/pf.mjs';
 import { mapError } from '../scripts/lib/errors.mjs';
-import { createPlan, readPlan, updatePlan } from '../scripts/lib/plans.mjs';
+import { createPlan, listPlans, readPlan, updatePlan } from '../scripts/lib/plans.mjs';
 import { checkApproval, writeApproval } from '../scripts/lib/approvals.mjs';
 import { addRollbackLockout, applyPlan, snapshotFile } from '../scripts/lib/apply.mjs';
 import { runPreflight } from '../scripts/lib/preflight.mjs';
@@ -265,13 +265,17 @@ test('apply stops before any write when product preflight fails, approval kept',
 });
 
 test('0.2.x plan without lockout_risks applies as before', async (t) => {
-  // A product plan without lockout_risks runs no product preflight.
+  // A product plan without lockout_risks still runs product preflight; it
+  // showed no lockout line, so any line found now is risk_changed.
   const legacy = setup(t, [putOp]);
   approve(legacy.cwd, legacy.plan);
-  const { client } = world({ entitled: false, lockout: ['Lockout risk: new.'] });
-  const result = await applyPlan(legacy.cwd, client, legacy.plan.id, T0);
+  const { client } = world({ lockout: ['Lockout risk: new.'] });
+  await assert.rejects(applyPlan(legacy.cwd, client, legacy.plan.id, T0), (err) => err.code === 'risk_changed' && /Lockout risk: new\./.test(err.message));
+  assert.ok(!client.calls.some((c) => c.method !== 'GET'));
+  const clean = world();
+  const result = await applyPlan(legacy.cwd, clean.client, legacy.plan.id, T0);
   assert.equal(result.status, 'applied', JSON.stringify(result.error));
-  assert.ok(!client.calls.some((c) => c.path.endsWith('/pf/org') || c.path.endsWith('/pf/state')));
+  assert.ok(clean.client.calls.some((c) => c.path.endsWith('/pf/org')), 'preflight ran');
 
   // A v1 zone plan from 0.2.x reads and writes only its own paths.
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-ppf02-')));
@@ -328,4 +332,48 @@ test('approval and guard ask text list Lockout risk lines first', (t) => {
   const reason = runHook(GUARD, cwd, keyDir, { tool_name: 'Bash', tool_input: { command: `claudeflare apply ${plan.id}` } })
     .hookSpecificOutput.permissionDecisionReason;
   assert.ok(reason.startsWith(`${lines[0]}\n${lines[1]}\nApply plan ${plan.id}: Zero Trust. Risk: Low.\nNot reversible: x. Ops:`), reason);
+});
+
+test('rollback lockout analysis still runs when confirm_name or dependencies fail', async (t) => {
+  const rules = [{ name: 'r1', app: ID }];
+  const { cwd, plan } = setup(t, [deleteOp('extranet')]);
+  const { client } = world({ rules, lockout: ['Lockout risk: R.'] });
+  const updated = await addRollbackLockout(cwd, plan, client);
+  assert.deepEqual(updated.lockout_risks, ['Lockout risk: R.']);
+
+  const blocked = await addRollbackLockout(cwd, plan, world({ entitled: false, lockout: ['Lockout risk: R.'] }).client);
+  assert.equal(blocked.lockout_risks.length, 1);
+  assert.match(blocked.lockout_risks[0], /^Lockout risk: lockout analysis could not run \(not_entitled/);
+});
+
+test('cli rollback of a product plan needs the token before it writes the rollback plan', async (t) => {
+  const { cwd, plan } = setup(t, [putOp], { lockout_risks: [] });
+  approve(cwd, plan);
+  assert.equal((await applyPlan(cwd, world().client, plan.id, T0)).status, 'applied');
+  const before = listPlans(cwd).length;
+  const res = await runCli(cwd, ['rollback', plan.id], { CLOUDFLARE_API_TOKEN: '' });
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'missing_token');
+  assert.equal(listPlans(cwd).length, before, 'no rollback plan written');
+});
+
+// Hooks must not load the product registry: a broken product module would
+// crash the PreToolUse guard at import, and a crashed hook does not block.
+function localImports(file, seen = new Set()) {
+  if (seen.has(file)) return seen;
+  seen.add(file);
+  const source = readFileSync(file, 'utf8');
+  for (const m of source.matchAll(/^\s*import\s+(?:[^'"]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/gm)) {
+    localImports(resolve(dirname(file), m[1]), seen);
+  }
+  return seen;
+}
+
+test('hooks/guard.mjs and hooks/approve.mjs do not import scripts/lib/products', () => {
+  for (const hook of [GUARD, APPROVE]) {
+    const graph = [...localImports(hook)];
+    assert.ok(graph.some((f) => f.endsWith('plan-text.mjs')), 'graph walk reaches plan-text.mjs');
+    const bad = graph.filter((f) => /scripts[\\/]lib[\\/](products[\\/]|product-preflight\.mjs)/.test(f));
+    assert.deepEqual(bad, [], `${hook} imports ${bad.join(', ')}`);
+  }
 });

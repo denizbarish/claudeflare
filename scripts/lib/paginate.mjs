@@ -6,7 +6,14 @@ import { CfError } from './errors.mjs';
 
 export const MAX_PAGES = 200;
 
-const pageItems = (envelope) => (Array.isArray(envelope?.result) ? envelope.result : []);
+// A reply without an array `result` would make a scan look empty, so an
+// in-use resource would pass as unused: refuse it.
+function pageItems(envelope, path) {
+  if (!Array.isArray(envelope?.result)) {
+    throw new CfError('api', `${path} did not return a list envelope ({ result: [...] }); refusing to scan`);
+  }
+  return envelope.result;
+}
 
 function tooLarge(path) {
   return new CfError('too_large', `${path} has more than ${MAX_PAGES} pages; refusing to scan a partial list`);
@@ -23,7 +30,7 @@ export async function listAll(client, path, { query = {}, perPage = 50, cursor =
       ? { ...query, per_page: perPage, ...(next ? { cursor: next } : {}) }
       : { ...query, page, per_page: perPage };
     const envelope = await client.request('GET', path, { query: pageQuery, envelope: true });
-    const items = pageItems(envelope);
+    const items = pageItems(envelope, path);
     all.push(...items);
     const info = envelope?.result_info ?? {};
     if (cursor) {

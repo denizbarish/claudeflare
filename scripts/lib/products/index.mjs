@@ -37,6 +37,8 @@
  * @property {string} product
  * @property {ProductKind[]} kinds
  * @property {(client: object, base: string) => Promise<{ ok: boolean, detail: string }>} [entitlement]
+ * @property {{ read: string, edit: string }} [permission]  Token template permission names;
+ *   a 403 on the probe names `edit` (then `read`, then the product) in missing_permission.
  * @property {(base: string) => string} probePath   Cheap GET proving token access.
  * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.

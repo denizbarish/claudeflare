@@ -71,7 +71,8 @@ function fakeClient(routes) {
     calls,
     async request(method, path, opts) {
       calls.push({ method, path, opts: structuredClone(opts) });
-      const handler = routes[`${method} ${path}`];
+      // Product preflight at apply probes the collection.
+      const handler = `${method} ${path}` in routes ? routes[`${method} ${path}`] : (`${method} ${path}` === `GET ${BASE}/sx/idps` ? [] : undefined);
       if (handler === undefined) throw new Error(`unexpected request ${method} ${path}`);
       return typeof handler === 'function' ? handler(opts) : structuredClone(handler);
     },
@@ -399,10 +400,10 @@ test('cli apply failure echoing the secret keeps stderr and the plan clean', asy
   const now = new Date();
   const { cwd, plan } = setup(t, [idpCreate()], { now });
   approve(cwd, plan, now);
-  const base = await stubServer(t, (method, path, raw) => ({
-    status: 400,
-    body: { success: false, errors: [{ code: 1001, message: `bad request ${raw}` }] },
-  }));
+  // Reads (the preflight probe) succeed; every write fails and echoes the body.
+  const base = await stubServer(t, (method, path, raw) => (method === 'GET'
+    ? { body: { success: true, result: [] } }
+    : { status: 400, body: { success: false, errors: [{ code: 1001, message: `bad request ${raw}` }] } }));
   const res = await runCli(cwd, ['apply', plan.id], { CLOUDFLARE_API_BASE: base, OKTA_SECRET: SECRET });
   assert.equal(res.code, 1);
   assert.equal(JSON.parse(res.stderr).error.code, 'apply_failed');
