@@ -467,9 +467,11 @@ function r2DeleteDraft(name, extraArgs = []) {
 }
 
 test('cli plan new refuses an R2 delete of a non-empty bucket and writes nothing', async (t) => {
+  script({});
   const { base, seen } = await stubServer(t, {
     [`GET /accounts/${AID}/r2/buckets/full/objects`]: [{ key: 'a.txt' }],
     [`GET /accounts/${AID}/r2/buckets/empty/objects`]: [],
+    [`GET /accounts/${AID}`]: { id: AID, name: 'Acme' },
   });
   writeFileSync(join(cwd, 'draft.json'), JSON.stringify(r2DeleteDraft('full')));
   const res = await run(['plan', 'new', '--file', 'draft.json'], { CLOUDFLARE_API_BASE: base });

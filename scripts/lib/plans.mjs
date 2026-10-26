@@ -85,7 +85,7 @@ function isDirectory(path) {
   }
 }
 
-function accountTarget({ account_id, account_name, project_dir }) {
+export function accountTarget({ account_id, account_name, project_dir }) {
   const invalid = (what, value) => new CfError('invalid_account', `Invalid ${what}: ${JSON.stringify(value)}`);
   if (typeof account_id !== 'string' || !CF_ID_PATTERN.test(account_id)) throw invalid('account id', account_id);
   const account_slug = typeof account_name === 'string' ? slugify(account_name) : '';

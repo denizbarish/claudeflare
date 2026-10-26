@@ -227,8 +227,8 @@ export function failureMessage(result) {
   return lines.slice(-FAILURE_TAIL_LINES).join('\n');
 }
 
-export async function assertWranglerVersion(cwd, opts = {}) {
-  const result = await runWrangler(['--version'], { ...opts, cwd });
+export async function assertWranglerVersion(cwd, { runner = runWrangler, ...opts } = {}) {
+  const result = await runner(['--version'], { ...opts, cwd });
   const match = result.code === 0 ? /(\d+)\.\d+\.\d+/.exec(result.stdout) : null;
   if (!match) throw missing('wrangler is not installed or did not report a version');
   if (Number(match[1]) !== REQUIRED_MAJOR) {

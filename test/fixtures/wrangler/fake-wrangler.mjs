@@ -4,6 +4,7 @@
 // - FAKE_WRANGLER_LOG: file that receives one JSON line per invocation (never stdin content or the token)
 // - FAKE_WRANGLER_DELAY_MS: wait this long before responding (timeout tests)
 // - WRANGLER_OUTPUT_FILE_PATH: receives the entry's events as ND-JSON
+// Keys ending in " *" are prefix matches (for args with temp paths).
 // Entry flags: echoStdin (write stdin to stdout), ignoreSigterm, grandchild (spawn a
 // long-lived child that inherits stdio and ignores SIGTERM; its pid is logged), hang.
 import { spawn } from 'node:child_process';
@@ -44,7 +45,9 @@ const delay = Number(process.env.FAKE_WRANGLER_DELAY_MS || 0);
 if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 
 const key = argv.join(' ');
-const entry = loadScript()[key];
+const script = loadScript();
+// A key ending in " *" matches any argv that starts with the rest of the key.
+const entry = script[key] ?? Object.entries(script).find(([k]) => k.endsWith(' *') && key.startsWith(k.slice(0, -1)))?.[1];
 if (!entry) {
   process.stderr.write(`fake-wrangler: no script entry for "${key}"\n`);
   process.exit(99);

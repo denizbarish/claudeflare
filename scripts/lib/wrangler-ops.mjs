@@ -331,7 +331,7 @@ export function parseWranglerOp(op) {
   const entry = matchEntry(args);
   if (!entry) return null;
   const parsed = parseArgs(entry, args.slice(entry.words.length));
-  return { kind: entry.kind, type: entry.type, name: resourceName(entry, parsed, op), flags: parsed.flags };
+  return { kind: entry.kind, type: entry.type, name: resourceName(entry, parsed, op), flags: parsed.flags, positionals: parsed.positionals };
 }
 
 function isInside(dir, target) {

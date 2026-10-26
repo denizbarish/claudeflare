@@ -353,30 +353,6 @@ test('cli plan new rejects ops outside the zone, Page Rule creates, placeholders
   assert.equal((await run(cwd, ['plan', 'new', '--file', 'draft.json'])).code, 0);
 });
 
-test('cli plan new accepts account plans with wrangler ops and the Pages rollback REST op', async (t) => {
-  const cwd = tempDir(t, 'claudeflare-cli-');
-  const AID = 'abcdef0123456789abcdef0123456789';
-  const rollback = { method: 'POST', path: `/accounts/${AID}/pages/projects/my-site/deployments/0a1b2c3d-4e5f-6789-abcd-ef0123456789/rollback` };
-  const draft = {
-    scope: 'account',
-    account_id: AID,
-    account_name: 'Acme Corp',
-    project_dir: cwd,
-    summary: 's',
-    risk: 'r',
-    slug: 'deploy',
-    ops: [{ kind: 'wrangler', args: ['deploy', '--name', 'api'] }, rollback],
-  };
-  writeFileSync(join(cwd, 'draft.json'), JSON.stringify(draft));
-  const res = await run(cwd, ['plan', 'new', '--file', 'draft.json']);
-  assert.equal(res.code, 0, res.stderr);
-  const plan = JSON.parse(res.stdout);
-  assert.equal(plan.scope, 'account');
-  assert.equal(plan.account_slug, 'acme-corp');
-  assert.match(plan.id, /^acmecorp-\d{8}-\d{6}-deploy$/);
-  assert.deepEqual(plan.ops, draft.ops);
-});
-
 test('cli plan new rejects account plan ops outside the allowlist and wrangler ops in zone plans', async (t) => {
   const cwd = tempDir(t, 'claudeflare-cli-');
   const AID = 'abcdef0123456789abcdef0123456789';

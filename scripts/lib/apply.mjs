@@ -158,7 +158,7 @@ function recordOutcome(cwd, plan, outcome, file, now, extra = {}) {
 }
 
 // The token must be able to read the plan's account: GET /accounts/{account_id}.
-async function assertAccountAccess(client, plan) {
+export async function assertAccountAccess(client, plan) {
   let account;
   try {
     account = await client.request('GET', `/accounts/${plan.account_id}`);
@@ -216,7 +216,7 @@ async function applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchI
   validateOpTargets(plan.ops, plan);
   if (!plan.rollback_of) validatePlanOps(plan.ops);
   assertApproved(cwd, plan, now);
-  await assertWranglerVersion(plan.project_dir);
+  await assertWranglerVersion(plan.project_dir, { runner });
   await assertAccountAccess(client, plan);
   assertSourceUnchanged(plan);
   assertSecretEnv(plan);
