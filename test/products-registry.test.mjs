@@ -92,6 +92,30 @@ test('zone access refusal survives encoding, case and empty segments', () => {
   assert.throws(() => validateOpTargets([{ method: 'POST', path: `/zones/${Z}//access/apps`, body: {} }], zonePlan), code('invalid_op'));
 });
 
+test('zone access refusal follows the ownership model: double encoding, ;, ., comma and space are Access', () => {
+  for (const path of [
+    `/zones/${Z}/%2561ccess/apps`,
+    `/zones/${Z}/%25%36%31ccess/apps`,
+    `/zones/${Z}/access;x/apps`,
+    `/zones/${Z}/access.json`,
+    `/zones/${Z}/access%20/apps`,
+    `/zones/${Z}/access,x`,
+    `/zones/${Z}/%2561ccess/apps/%25ZZ`,
+  ]) {
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      assert.throws(() => validateOpTargets([{ method, path, body: {} }], zonePlan), (e) => e.code === 'invalid_op' && /\/accounts\/<account_id>\/access/.test(e.message), `${method} ${path}`);
+    }
+  }
+  // Legitimate zone paths that only start with the letters stay open.
+  validateOpTargets([
+    { method: 'POST', path: `/zones/${Z}/firewall/access_rules/rules`, body: {} },
+    { method: 'PATCH', path: `/zones/${Z}/access_rules_custom/x`, body: {} },
+    { method: 'POST', path: `/zones/${Z}/accessibility/x`, body: {} },
+    { method: 'POST', path: `/zones/${Z}/dns_records`, body: { name: 'access.example.com' } },
+    { method: 'PATCH', path: `/zones/${Z}/settings/access`, body: {} },
+  ], zonePlan);
+});
+
 test('empty path segments are invalid_op on every plan', () => {
   assert.throws(() => validateOpTargets([{ method: 'POST', path: `/zones/${Z}//dns_records`, body: {} }], zonePlan), (e) => e.code === 'invalid_op' && /empty segment/.test(e.message));
   assert.throws(() => validateOpTargets([{ method: 'PUT', path: `/accounts/${A}/fake//things/${UUID}`, body: {} }], acctPlan), code('invalid_op'));

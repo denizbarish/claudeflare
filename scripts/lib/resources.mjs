@@ -3,7 +3,7 @@
 
 import { CfError } from './errors.mjs';
 import { classifyWranglerOp, DELETE_KINDS, DEPLOY_KINDS, isReservedEnvName, RESERVED_ENV_PREFIXES, validateWranglerOp } from './wrangler-ops.mjs';
-import { classifyProductOp, zoneProductPathOwner } from './products/index.mjs';
+import { canonicalRest, classifyProductOp, segmentOwned, zoneProductPathOwner } from './products/index.mjs';
 import { getPath } from './products/fields.mjs';
 
 const ID = '[A-Za-z0-9]+';
@@ -202,19 +202,20 @@ function isPagesRollback(method, path, accountId) {
 }
 
 // Zero Trust lives on the account; the zone form of Access is refused. The
-// test runs on the decoded, lowercased path part with empty segments
-// collapsed, so %61ccess, Access and //access cannot slip past it. A path
-// that does not decode counts as Access (refused).
-const ZONE_ACCESS = /^\/zones\/[^/]+\/access(?:\/|$)/;
-
+// test uses the ownership model of zone product collections (canonicalRest,
+// segmentOwned): the path is decoded up to three rounds, lowercased, with
+// empty segments collapsed, and the segment after /zones/<id> is Access when
+// it is `access` or `access` followed by a character outside [a-z0-9_]. So
+// %61ccess, %2561ccess, Access, //access, access;x and access.json cannot slip
+// past it. A path that does not decode strictly still counts as Access.
 function isZoneAccess(path) {
-  let decoded;
   try {
-    decoded = decodeURIComponent(path.split('?')[0]);
+    decodeURIComponent(String(path).split('?')[0]);
   } catch {
     return true;
   }
-  return ZONE_ACCESS.test(decoded.toLowerCase().replace(/\/{2,}/g, '/'));
+  const segments = canonicalRest(path).split('/');
+  return segments[1] === 'zones' && segmentOwned(segments[3], 'access');
 }
 
 const PRODUCT_FIELDS = ['confirm_name', 'verify', 'secret_fields_from_env'];

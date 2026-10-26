@@ -71,15 +71,15 @@ import { TUNNEL } from './tunnel.mjs';
  * @typedef {object} ProductModule
  * @property {string} product
  * @property {ProductKind[]} kinds
- * @property {(client: object, base: string, ops: object[]) => Promise<{ ok: boolean, detail: string }>} [entitlement]
+ * @property {(client: object, base: string, ops: object[], opts: { rollback: boolean }) => Promise<{ ok: boolean, detail: string }>} [entitlement]
  *   ops are the plan's ops of this product, in plan order (Spectrum checks each app's protocol
- *   against the zone plan).
+ *   against the zone plan); the fourth argument is { rollback } (true for a rollback plan).
  * @property {{ read: string, edit: string }|((base: string) => { read: string, edit: string })} [permission]
  *   Token template permission names, or a function of the plan base for a product with kinds
  *   in both scopes (Load Balancing); a 403 on the probe names `edit` (then `read`, then the
  *   product) in missing_permission.
  * @property {(base: string) => string} probePath   Cheap GET proving token access.
- * @property {(client: object, base: string, ops: object[]) => Promise<object>} gather
+ * @property {(client: object, base: string, ops: object[], opts: { rollback: boolean }) => Promise<object>} gather
  *   Account reads lockout and dependency checks need.
  * @property {(ctx: object, ops: object[]) => (string|{ line: string, advisory: true })[]} lockoutRisks
  *   Lines start with `Lockout risk:`. A line that rests on an asynchronous read (the Load
@@ -192,28 +192,29 @@ export function ownedCollection(entry) {
 // A path segment belongs to a collection when it is the collection, or the
 // collection followed by a character outside [a-z0-9_] (`load_balancers;x`,
 // `load_balancers.json`, `load_balancers,`), so `load_balancers_custom` stays
-// open.
-function segmentOwned(segment, collection) {
+// open. resources.mjs uses it for the zone Access refusal too.
+export function segmentOwned(segment, collection) {
+  if (typeof segment !== 'string' || segment === '') return false;
   if (segment === collection) return true;
   return segment.startsWith(collection) && !/[a-z0-9_]/.test(segment[collection.length]);
 }
 
+// Deliberately three rounds: enough for double and triple encoding
+// (%25256c is l), bounded so a crafted path cannot loop.
 const DECODE_ROUNDS = 3;
 
+// Tolerant percent-decoding: each valid %XX becomes its byte as a character
+// and an invalid escape (%ZZ, a lone %) stays as it is, so one bad escape
+// elsewhere in the path cannot stop the decoding of the segment that matters.
+const decodeEscapes = (text) => text.replace(/%[0-9a-f]{2}/gi, (hex) => String.fromCharCode(parseInt(hex.slice(1), 16)));
+
 // Path canonical for ownership checks: decoded until it stops changing (at
-// most three rounds, so `%256c` is `l`), lowercased, no repeated or trailing
-// slashes. Null when the first decode fails; a later round that fails keeps
-// the last decoded form.
-function canonicalRest(path, base) {
-  let decoded = path.split('?')[0].slice(base.length);
+// most DECODE_ROUNDS rounds), lowercased, no repeated or trailing slashes.
+// base is the plan base to strip ('' keeps the whole path).
+export function canonicalRest(path, base = '') {
+  let decoded = String(path).split('?')[0].slice(base.length);
   for (let round = 0; round < DECODE_ROUNDS; round++) {
-    let next;
-    try {
-      next = decodeURIComponent(decoded);
-    } catch {
-      if (round === 0) return null;
-      break;
-    }
+    const next = decodeEscapes(decoded);
     if (next === decoded) break;
     decoded = next;
   }
@@ -232,9 +233,7 @@ export function zoneProductPathOwner(op, plan) {
   const path = String(op.path ?? '');
   const base = baseFor(plan);
   if (!path.startsWith(`${base}/`)) return null;
-  // An undecodable path is refused earlier by the zone Access check.
   const rest = canonicalRest(path, base);
-  if (rest === null) return null;
   const first = rest.split('/')[1];
   if (!first) return null;
   for (const module of PRODUCTS) {

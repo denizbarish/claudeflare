@@ -78,7 +78,8 @@ async function confirmNames(client, items, add) {
 // Returns null when lockoutRisks ran, else the detail of the failed check
 // that kept it from running. With alwaysLockout (rollback plans), failed
 // confirm_name and dependencies checks do not stop the lockout analysis.
-async function productChecks(client, module, items, out, add, { alwaysLockout = false } = {}) {
+async function productChecks(client, module, items, out, add, options = {}) {
+  const { alwaysLockout = false } = options;
   const { product } = module;
   const base = items[0].classified.base;
   const fail = (name, code, text) => {
@@ -91,7 +92,7 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
   if (module.entitlement) {
     let ent;
     try {
-      ent = await module.entitlement(client, base, ops);
+      ent = await module.entitlement(client, base, ops, { rollback: options.rollback === true });
     } catch (err) {
       return fail('entitlement', failureCode(err), err.message);
     }
@@ -163,7 +164,7 @@ export async function runProductPreflight(client, plan, ops, options = {}) {
   const out = { checks: [], lockout_risks: [], advisory_lockout: [], binding_lockout: [], dependencies: {}, ctx: {}, unanalyzed: [] };
   const add = (name, ok, detail, code) => out.checks.push(ok ? { name, ok, detail } : { name, ok, detail, code });
   for (const [module, items] of groupByProduct(plan, ops ?? [])) {
-    const detail = await productChecks(client, module, items, out, add, options);
+    const detail = await productChecks(client, module, items, out, add, { ...options, rollback: Boolean(plan?.rollback_of) });
     if (detail !== null) out.unanalyzed.push({ product: module.product, detail });
   }
   out.lockout_risks = [...new Set(out.lockout_risks)];

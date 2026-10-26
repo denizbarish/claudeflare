@@ -9,9 +9,11 @@
 // protocol name: a named app is a single-port TCP app on the port of that
 // protocol (ssh tcp/22, minecraft tcp/25565, rdp tcp/3389) whose body sets
 // only the pay-as-you-go fields (dns, protocol, origin_direct) and otherwise
-// default values, so an app body read back from the API (which may list the
-// defaults) still counts as named. Any other body is a generic TCP/UDP app and
-// needs Enterprise (unverified, spike skipped).
+// default values. Any other body is a generic TCP/UDP app and needs
+// Enterprise (unverified, spike skipped). That shape rule binds creates only
+// (Ruling 30): an update (PUT of a whole app read back from the API) and every
+// op of a rollback plan (put_before and recreate bodies are snapshots) are
+// named by the single TCP port alone, so a restore is never refused.
 
 import { CfError } from '../errors.mjs';
 import { listAll } from '../paginate.mjs';
@@ -75,9 +77,10 @@ async function withPermission(permission, path, fn) {
 }
 
 // { transport, from, to } of a protocol string, or null when it is not
-// tcp/<port>, udp/<port> or a <from>-<to> range of valid ports.
+// tcp/<port>, udp/<port> or a <from>-<to> range of valid ports. The raw string
+// is matched: the API writes lowercase, so TCP/22 or " tcp/22" is refused.
 export function parseProtocol(protocol) {
-  const m = PROTOCOL.exec(typeof protocol === 'string' ? protocol.trim().toLowerCase() : '');
+  const m = PROTOCOL.exec(typeof protocol === 'string' ? protocol : '');
   if (!m) return null;
   const from = Number(m[2]);
   const to = m[3] === undefined ? from : Number(m[3]);
@@ -86,11 +89,12 @@ export function parseProtocol(protocol) {
 }
 
 // The protocol name a body asks for: ssh, minecraft or rdp for a named app,
-// generic for anything else, null when the protocol cannot be read.
-export function appProtocol(body) {
+// generic for anything else, null when the protocol cannot be read. With
+// byPortOnly (updates and rollback ops, Ruling 30) the body shape is ignored.
+export function appProtocol(body, { byPortOnly = false } = {}) {
   const p = parseProtocol(body?.protocol);
   if (!p) return null;
-  const paygo = isPlainObject(body) && Object.entries(body).every(([key, value]) => PAYGO_KEYS.has(key) || NAMED_DEFAULTS[key]?.(value) === true);
+  const paygo = byPortOnly || (isPlainObject(body) && Object.entries(body).every(([key, value]) => PAYGO_KEYS.has(key) || NAMED_DEFAULTS[key]?.(value) === true));
   if (paygo && p.transport === 'tcp' && p.from === p.to) {
     const named = Object.entries(NAMED_APPS).find(([, port]) => port === p.from);
     if (named) return named[0];
@@ -178,8 +182,9 @@ function summarizeApp(app) {
 // ---------- entitlement (spec 9) ----------
 
 // Every create or update must ask for a protocol the zone plan allows. A
-// delete needs Spectrum on the plan (not Free) and nothing more.
-async function entitlement(client, base, ops = []) {
+// delete needs Spectrum on the plan (not Free) and nothing more. Creates of a
+// normal plan use the shape rule; updates and rollback ops the port alone.
+async function entitlement(client, base, ops = [], { rollback = false } = {}) {
   const zoneRead = await withPermission(PERM.zone, base, () => client.request('GET', base));
   const plan = zonePlan(zoneRead);
   const label = zoneRead?.plan?.name ?? zoneRead?.plan?.legacy_id ?? 'unknown';
@@ -190,7 +195,7 @@ async function entitlement(client, base, ops = []) {
   for (const op of ops) {
     const kind = parse(op)?.kind;
     if (kind !== 'spectrum_app_create' && kind !== 'spectrum_app_update') continue;
-    const protocol = appProtocol(op.body);
+    const protocol = appProtocol(op.body, { byPortOnly: rollback || kind === 'spectrum_app_update' });
     if (protocol && !allowed.includes(protocol)) {
       const what = protocol === 'generic' ? `a generic ${String(op.body.protocol)} app` : `a ${protocol} app`;
       refused.push(`${op.method} ${op.path} asks for ${what}`);

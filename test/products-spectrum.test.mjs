@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyPlan, createRollbackPlan, withIrreversibleRisk } from '../scripts/lib/apply.mjs';
+import { addRollbackLockout, applyPlan, createRollbackPlan, withIrreversibleRisk } from '../scripts/lib/apply.mjs';
 import { createPlan, readPlan, updatePlan } from '../scripts/lib/plans.mjs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
 import { baseFor, classifyProductOp, zoneProductPathOwner } from '../scripts/lib/products/index.mjs';
@@ -162,6 +162,8 @@ test('Spectrum app bodies are validated (invalid_op), messages name fields only'
     createApp('nope'),
     createApp({ ...namedBody(22), protocol: 'ssh' }),
     createApp({ ...namedBody(22), protocol: 'tcp/70000' }),
+    createApp({ ...namedBody(22), protocol: 'TCP/22' }),
+    createApp({ ...namedBody(22), protocol: ' tcp/22' }),
     createApp({ ...namedBody(22), protocol: 'tcp/2000-1000' }),
     createApp({ ...namedBody(22), dns: { type: 'CNAME' } }),
     createApp({ ...namedBody(22), dns: { type: 'A', name: 'ssh.example.com' } }),
@@ -217,7 +219,9 @@ test('protocol per plan follows the spec 2 table (not_entitled on a mismatch)', 
   assert.match(ent.detail, /generic tcp\/22 app/);
   assert.match(ent.detail, /Enterprise/);
   // An update is checked the same way; a delete needs only a plan with Spectrum.
-  assert.equal(failed(await preflight(fakeApi({ plan: 'business' }), [updateApp(SSH, appBody(SSH, { ip_firewall: true }))]))[0].code, 'not_entitled');
+  // Updates are named by the port alone (Ruling 30): a non-named port is generic.
+  assert.equal(failed(await preflight(fakeApi({ plan: 'business' }), [updateApp(RANGE, appBody(RANGE))]))[0].code, 'not_entitled');
+  assert.deepEqual(failed(await preflight(fakeApi({ plan: 'business' }), [updateApp(SSH, appBody(SSH, { ip_firewall: true }))])), []);
   // A body read back from the API lists default values; it is still a named
   // app, so restoring it (put_before, recreate) passes on Pro.
   assert.deepEqual(failed(await preflight(fakeApi({ plan: 'pro' }), [updateApp(SSH, appBody(SSH))])), []);
@@ -397,4 +401,53 @@ test('Task 13 carry: load_balancers variants with ;, ., comma, space and double 
   for (const path of [`${ZB}/load_balancers_custom/x`, `${ZB}/load_balancersx/y`]) {
     assert.equal(zoneProductPathOwner({ method: 'PATCH', path }, ZONE), null, path);
   }
+});
+
+// Fix round 1
+
+test('fix 1: an invalid escape elsewhere in the path does not stop the decoding of the owned segment', () => {
+  for (const [path, module] of [
+    [`${ZB}/%256coad_balancers/%25ZZ`, 'load_balancing'],
+    [`${ZB}/%2573pectrum/apps/${SSH}/%25ZZ`, 'spectrum'],
+  ]) {
+    assert.throws(() => validateOpTargets([{ method: 'PATCH', path, body: {} }], ZONE), (e) => e.code === 'invalid_op' && new RegExp(`${module} module`).test(e.message), path);
+  }
+  // A path that does not decode strictly is refused earlier (zone Access check).
+  for (const path of [`${ZB}/%2573pectrum/apps/%ZZ`, `${ZB}/spectrum/apps/${SSH}%`]) {
+    assert.throws(() => validateOpTargets([{ method: 'PATCH', path, body: {} }], ZONE), { code: 'invalid_op' }, path);
+  }
+});
+
+test('Ruling 30: on Pro, an update or a rollback of a named app with extra keys passes; a create with a non-default field does not', async (t) => {
+  const extra = { ...app(SSH), ip_firewall: true, origin_port: 22, edge_ips: { type: 'dynamic', connectivity: 'ipv4' }, future_field: 'x' };
+  const api = fakeApi({ plan: 'pro' });
+  api.store.set(`${APPS}/${SSH}`, structuredClone(extra));
+
+  // Update: the whole app read back, one field changed.
+  const { id: _i, created_on: _c, modified_on: _m, ...readBack } = extra;
+  const update = updateApp(SSH, { ...readBack, tls: 'off' });
+  assert.deepEqual(failed(await preflight(api, [update])), []);
+
+  // Rollback of a delete re-creates the snapshot body with every extra key.
+  const del = deleteApp(SSH, 'ssh.example.com');
+  const { cwd, plan } = setup(t, [del]);
+  approve(cwd, plan);
+  assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+  const rollback = createRollbackPlan(cwd, plan.id, T1);
+  assert.equal(rollback.ops[0].method, 'POST');
+  assert.equal(rollback.ops[0].body.future_field, 'x');
+  const report = await runProductPreflight(api, rollback, rollback.ops);
+  assert.equal(report.checks.find((c) => c.name === 'entitlement').ok, true, JSON.stringify(report.checks));
+  const withLines = await addRollbackLockout(cwd, rollback, api);
+  assert.deepEqual(withLines.lockout_risks, []);
+  approve(cwd, withLines, T1);
+  const ran = await applyPlan(cwd, api, rollback.id, T1, fastVerify({ connect: fakeConnect().connect }));
+  assert.equal(ran.status, 'applied', JSON.stringify(ran.results));
+
+  // The same body as a create on a normal plan is still a generic app.
+  const create = await preflight(fakeApi({ plan: 'pro' }), [createApp({ ...namedBody(22), ip_firewall: true })]);
+  assert.equal(failed(create)[0].code, 'not_entitled');
+  // A port that is not a named app stays generic for updates too.
+  const other = await preflight(fakeApi({ plan: 'pro' }), [updateApp(SSH, { ...readBack, protocol: 'tcp/2222', origin_direct: ['tcp://192.0.2.10:2222'] })]);
+  assert.equal(failed(other)[0].code, 'not_entitled');
 });
