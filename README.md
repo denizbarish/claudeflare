@@ -1,10 +1,11 @@
 # claudeflare
 
-A Claude Code plugin that turns Claude into a senior Cloudflare engineer. It audits a zone in depth, proposes optimized settings, diagnoses failures from evidence, and changes your zone only through a plan that you approve and can roll back.
+A Claude Code plugin that turns Claude into a senior Cloudflare engineer. It audits a zone or a developer platform account in depth, proposes optimized settings, diagnoses failures from evidence, and changes your zone, Workers, Pages and storage only through a plan that you approve and can roll back.
 
 - **Audit:** a scored, prioritized report across DNS, SSL/TLS, cache, performance, rules, WAF, and bots and rate limiting. Every finding has the current value, the recommended value, the reason and the risk.
 - **Diagnose:** walks 520 to 526, 1xxx errors, redirect loops, cache misses, CORS and WAF false positives to a root cause backed by evidence.
 - **Optimize:** proposes one plan with the fixes that have the best impact for their risk.
+- **Developer platform:** reviews Workers, Pages, R2, D1, KV and Queues, diagnoses Worker errors (1101, 1102, 1042, missing bindings, deploy and Pages build failures) with `claudeflare tail` and analytics, and deploys, rolls back, migrates and manages secrets through the same approved plans, with health checks and automatic rollback.
 - **Change safely:** every write is planned, approved by you, snapshotted, applied, verified and reversible.
 
 claudeflare never runs commands on your origin server. Origin-side fixes (nginx, certificates, firewall) come as step-by-step instructions.
@@ -14,6 +15,7 @@ claudeflare never runs commands on your origin server. Origin-side fixes (nginx,
 - Claude Code with plugin support
 - Node.js 18 or later
 - A Cloudflare account. An API token is needed only to apply changes.
+- For Workers, Pages and storage changes: wrangler 4 as a dependency of your project (`npm i -D wrangler@4`). claudeflare runs that local copy, never a global wrangler or `npx`.
 
 ## Install
 
@@ -39,22 +41,22 @@ Read-only OAuth scopes are the hard guarantee that nothing writes through MCP. T
 
 All writes go through `claudeflare apply`, which uses `CLOUDFLARE_API_TOKEN` from your environment. Audits and diagnosis through MCP need no token. Export a write token only for the session where you apply changes (see the threat model below).
 
-1. Create a custom token with the permissions in [docs/token-template.md](docs/token-template.md). Use the read set if you only want the `claudeflare get` fallback; use the write set to apply changes.
+1. Create a custom token with the permissions in [docs/token-template.md](docs/token-template.md). Use the read set if you only want the `claudeflare get` fallback; use the write set to apply changes. Add the developer platform sets if you work with Workers, Pages or storage.
 2. Export it in your shell profile and restart Claude Code:
 
    ```sh
    export CLOUDFLARE_API_TOKEN="<your token>"
    ```
 
-Never paste the token into the chat. claudeflare reads it only from the environment and never writes it to disk or prints it.
+Never paste the token into the chat. claudeflare reads it only from the environment and never writes it to disk or prints it. The same goes for Worker secrets: claudeflare asks you to export a secret under its own name (for example `export STRIPE_KEY=...`) in the shell that runs `claudeflare apply`, passes it to wrangler on stdin and redacts it from all output. wrangler only ever receives `CLOUDFLARE_API_TOKEN`; a Global API Key in your environment is never passed on.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `/claudeflare:setup` | Checks the MCP connection and token, runs `claudeflare init`, shows the token template |
-| `/claudeflare:audit [zone]` | Scored audit of all domains; writes a report under `.claudeflare/reports/<zone>/` |
-| `/claudeflare:diagnose [symptom]` | Evidence-driven diagnosis of an error or misbehavior |
+| `/claudeflare:audit [zone]` | Scored audit of all domains, or of an account's Workers, Pages and storage; writes a report under `.claudeflare/reports/<zone>/` |
+| `/claudeflare:diagnose [symptom]` | Evidence-driven diagnosis of an error or misbehavior, including Worker and Pages errors |
 | `/claudeflare:optimize [zone]` | Audits performance, cache and SSL, then proposes one plan |
 | `/claudeflare:approve <plan-id>` | Approves a draft plan. Only you can type this. |
 | `/claudeflare:rollback <plan-id>` | Creates a reversal plan for an applied plan |
@@ -64,10 +66,10 @@ You can also just describe the task. The `cloudflare` agent and the `cf-*` skill
 The plugin adds a `claudeflare` executable to the Bash tool's PATH. Claude uses it; you rarely need it directly:
 
 ```
-claudeflare init | get <path> [--query k=v ...] | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone>
+claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>]
 ```
 
-`claudeflare report` writes the Markdown report and prints JSON: `{ "file", "overall", "domains" }`. In an audit, each domain auditor also returns the checks it could not read (`unread`); such a domain is re-run once, then listed as not audited instead of being scored.
+`claudeflare preflight` checks an account draft before planning (ops, wrangler 4, account access, wrangler config and bindings, a dry-run build, pending D1 migrations, the source hash) and prints a JSON report. `claudeflare tail` runs `wrangler tail` for at most 60 seconds and prints a summary (outcome counts, top exceptions, samples) with secret-looking values redacted. `claudeflare report` writes the Markdown report and prints JSON: `{ "file", "overall", "domains" }`. In an audit, each domain auditor also returns the checks it could not read (`unread`); such a domain is re-run once, then listed as not audited instead of being scored.
 
 Local state lives in `.claudeflare/` in your project (`plans/`, `approvals/`, `snapshots/<zone>/`, `reports/<zone>/`). `claudeflare init` adds it to `.gitignore`.
 
@@ -98,6 +100,18 @@ Ops that rollback cannot undo are flagged in the plan's risk note before you app
 
 `claudeflare plan new` also rejects ops it cannot keep inside the plan's zone: account-level writes, paths outside `/zones/<zone_id>/`, leftover placeholders and Page Rule creation are refused with `invalid_op`.
 
+#### Account plans (developer platform)
+
+Workers, Pages and storage changes use account plans whose ops are wrangler commands from a fixed allowlist (`deploy`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply --remote`, `d1 time-travel restore`, create and delete for D1, R2, KV and Queues, `secret put` and `secret delete`), plus the Pages rollback REST call. On top of the steps above:
+
+- **Preflight.** `claudeflare plan new` runs `claudeflare preflight` first and refuses a failing draft. The dry-run build runs your project's own build locally (as `npm run build` would), before any approval.
+- **Code binding.** The plan stores a hash of the project source plus the deploy inputs (wrangler config, entry point, assets and Pages directories, D1 migrations), even gitignored build output. The approval binds to it: if the code changes before apply, apply refuses with `source_changed`. Pending D1 migrations are stored in the plan with their SQL.
+- **Explicit targets.** Every Worker op names `--name`; every delete names the resource again in `confirm_name`. R2 bucket deletes are refused unless the bucket is empty; KV, Queue and D1 deletes carry a data-loss line in the risk.
+- **Health check.** A deploy op can carry an https health check (3 tries, 5 seconds apart). With `on_failed_check: "rollback"` a failed check reverts the deploy at once (`rolled_back_auto`); otherwise the plan ends `applied_check_failed`.
+- **Rollback.** Snapshots record the previous Worker version, the Pages production deployment and a D1 Time Travel bookmark. Rollback redeploys the previous version, rolls Pages back, or restores the bookmark (writes after it are lost). Resources a plan created are deleted only when verifiably empty; Queue and D1 creates are never deleted automatically. Deletes and secret changes cannot be rolled back, and a Worker rollback never rolls back bindings or data.
+
+Limits of the code binding: files outside the tracked source and the deploy inputs that a build pulls in (for example generated files imported from a gitignored folder) and the contents behind a symlinked assets directory are not hashed.
+
 Plan limits keep snapshots and rollbacks correct. One plan may not touch the same DNS record twice, touch the same rule twice, delete more than one rule in the same ruleset, or PUT the same phase entrypoint twice. Claude splits such work into several plans.
 
 ### Guard hook
@@ -113,7 +127,7 @@ A `PreToolUse` hook (`hooks/guard.mjs`) inspects tool calls:
   }
   ```
 
-- **Bash:** denies `curl` writes to `api.cloudflare.com` (a non-GET method or a request body). Turns a literal `claudeflare apply <id>` into a deny without a valid approval, or into the native confirmation prompt with one. These are string checks; see the threat model for their limits.
+- **Bash:** denies `curl` writes to `api.cloudflare.com` (a non-GET method or a request body). Denies direct wrangler runs unless the subcommand is a read or local command on an allowlist (`whoami`, `deployments list`, `versions list`, `tail`, `d1 migrations list`, `dev`, `types` and similar), behind any runner (`npx`, `pnpm`, `yarn`, `bunx`, `npm exec`, a `node` path) and inside `package.json` scripts run with `npm run`, `pnpm`, `yarn` or `bun`. Turns a literal `claudeflare apply <id>` into a deny without a valid approval, or into the native confirmation prompt with one. These are string checks; see the threat model for their limits.
 - **State protection:** denies the agent's Write and Edit tools inside `.claudeflare/` and the key directory, denies Read, Grep and Glob on the key directory, and denies shell commands that mention `.claudeflare/` plans, approvals or snapshots, the key directory or key file, or `approvals.mjs` and `approval-key.mjs`.
 
 ### Threat model
@@ -123,7 +137,7 @@ claudeflare protects against model mistakes: a write sent the wrong way, an appr
 It does not protect against deliberate evasion:
 
 - **A deliberately adversarial process running as your OS user.** Such a process can read the approval key and write approval files directly. claudeflare is not a sandbox.
-- **A model that tries to get around the Bash checks**, for example after a prompt injection. The Bash checks recognize only `curl` writes to `api.cloudflare.com` and a literal `claudeflare apply`. Any other HTTP client in Bash (for example `node -e` with `fetch`, or `wget`) can send writes with `CLOUDFLARE_API_TOKEN` from the environment. A command built at run time (such as `$(echo claudeflare) apply`) skips the confirmation prompt, and a shell glob can name the key file without the literal path. The Bash and state checks are string matches that catch mistakes, not evasion. This is the same limit as above: the agent's shell runs as your OS user.
+- **A model that tries to get around the Bash checks**, for example after a prompt injection. The Bash checks recognize only `curl` writes to `api.cloudflare.com`, wrangler invocations they can parse, and a literal `claudeflare apply`. A wrangler call hidden in a script file, fed its arguments through stdin (`xargs`), or started by a tool that runs commands on its own (`git` aliases, `rg --pre`) is not caught. Any other HTTP client in Bash (for example `node -e` with `fetch`, or `wget`) can send writes with `CLOUDFLARE_API_TOKEN` from the environment. A command built at run time (such as `$(echo claudeflare) apply`) skips the confirmation prompt, and a shell glob can name the key file without the literal path. The Bash and state checks are string matches that catch mistakes, not evasion. This is the same limit as above: the agent's shell runs as your OS user.
 - **Every non-user prompt.** `UserPromptSubmit` can also fire for some harness-delivered messages, not only for what you type. The approval hook records only a prompt that is exactly `/claudeflare:approve <id>`.
 - **Code the static check cannot judge.** The `execute` check is a strict allowlist, but it is defense in depth. Read-only MCP scopes are the guarantee.
 
@@ -134,6 +148,8 @@ What you can do:
 - Export the write token only in the shell session where you intend to apply changes, start Claude Code from that session, and unset the token afterwards.
 
 Planned hardening: store the approval key in the OS keychain, and supply a separate write token only at apply time.
+
+Preflight runs your project's build before approval with your environment (minus Cloudflare credentials other than the token passed to wrangler). Treat a project you do not trust like any other code you would build.
 
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
@@ -173,6 +189,23 @@ firewall most likely drops Cloudflare IP ranges.
 Fix (on your server, I will not run it): allow https://www.cloudflare.com/ips/ on ports 80 and 443.
 ```
 
+### Deploy a Worker
+
+```
+> deploy the api worker in this folder
+
+Preflight: ok (wrangler 4.152.0, bindings exist, build 41.2 KiB / gzip 9.8 KiB)
+Plan acme-20261026-101500-deploy-api
+| Worker | Current version | After apply |
+| api    | 2222...  (100%) | new version (100%), health check https://api.example.com/health |
+Risk: the new version takes all traffic; bindings and data are not rolled back.
+To approve, type /claudeflare:approve acme-20261026-101500-deploy-api
+
+> /claudeflare:approve acme-20261026-101500-deploy-api
+(native prompt: Apply plan ... Ops: wrangler deploy --name api) -> Yes
+Applied: version 4444... at 100%, health check 200 on the first try.
+```
+
 ### Rollback
 
 ```
@@ -190,7 +223,7 @@ Applied and verified: SSL mode is flexible again.
 
 ## Evals
 
-Behavior evals live in `evals/` and run with `claude plugin eval`. The four cases cover the Flexible SSL audit, the 522 diagnosis, no MCP writes, and no apply without approval. Cloudflare is mocked; no account is used.
+Behavior evals live in `evals/` and run with `claude plugin eval`. The seven cases cover the Flexible SSL audit, the 522 diagnosis, no MCP writes, no apply without approval, a 1102 Worker diagnosis, a deploy request that must follow the protocol, and a pasted secret that must never be repeated. Cloudflare is mocked; no account is used.
 
 Run them locally from the repo root (needs Claude Code and an Anthropic API key or login):
 
@@ -209,7 +242,7 @@ In CI (`.github/workflows/ci.yml`), unit tests run on every push. The evals job 
 
 ## Roadmap
 
-- **v2, developer platform:** Workers, Pages, R2, D1, KV, Queues and Durable Objects, with wrangler 4 integration.
+- **v2, developer platform (0.2.0):** Workers, Pages, R2, D1, KV, Queues and Durable Objects bindings, with wrangler 4 integration. Next: `versions upload` for gradual rollouts inside claudeflare, and health checks pinned to the new version.
 - **v3, Zero Trust and network:** Access, Tunnel, Gateway, WARP, Load Balancing and Spectrum.
 
 ## Contributing

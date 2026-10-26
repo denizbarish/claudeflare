@@ -294,3 +294,28 @@ test('applyPlan re-validates op targets: an out-of-zone op with a fresh approval
     assert.equal(readPlan(cwd, plan.id).status, 'draft');
   }
 });
+
+test('applyPlan refuses invalid wrangler ops before using the approval or the API', async (t) => {
+  const { cwd } = setup(t);
+  const AID = 'abcdef0123456789abcdef0123456789';
+  const plan = createPlan(
+    cwd,
+    {
+      scope: 'account',
+      account_id: AID,
+      account_name: 'Acme',
+      project_dir: cwd,
+      summary: 'Deploy',
+      risk: 'r',
+      ops: [{ kind: 'wrangler', args: ['deploy'] }],
+      slug: 'deploy',
+    },
+    T0,
+  );
+  approve(cwd, plan);
+  const client = fakeClient({});
+  await assert.rejects(applyPlan(cwd, client, plan.id, T0), (e) => e instanceof CfError && e.code === 'invalid_op');
+  assert.deepEqual(client.calls, []);
+  assert.deepEqual(checkApproval(cwd, plan.id, T0), { ok: true });
+  assert.equal(readPlan(cwd, plan.id).status, 'draft');
+});

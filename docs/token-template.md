@@ -4,6 +4,7 @@ claudeflare reads through the official Cloudflare MCP server and writes only thr
 
 - **Read set:** for `claudeflare get` (the read fallback when MCP is unavailable). Audits and diagnosis through MCP need no token at all.
 - **Write set:** for `claudeflare apply`. Create this token only when you want to apply changes.
+- **Developer platform sets:** for Workers, Pages and storage. wrangler uses the same token for preflight, `claudeflare tail` and account plans.
 
 Create the token in the Cloudflare dashboard under **My Profile > API Tokens > Create Token > Create Custom Token**. Scope zone permissions to the zones you want claudeflare to manage (**Zone Resources > Include > Specific zone**) and account permissions to the account that owns them.
 
@@ -77,10 +78,43 @@ If a call fails with a `permission` error, the hint includes Cloudflare's error 
 
 Check the token with `/claudeflare:setup`. It calls `GET /user/tokens/verify`, which works for user tokens. An account-owned token verifies with `GET /accounts/<account_id>/tokens/verify` instead.
 
+## Developer platform sets
+
+Account permissions, scoped to the account that owns the Workers, Pages projects and storage. Add only the products you use.
+
+Read (preflight, `claudeflare get`, `claudeflare tail`, audits through the CLI):
+
+| Scope | Permission | Used for |
+|---|---|---|
+| Account | Workers Scripts Read | Workers, deployments, versions, settings, `wrangler secret list` |
+| Account | Workers Tail Read | `claudeflare tail` |
+| Account | Cloudflare Pages Read (API: Pages Read) | Pages projects and deployments |
+| Account | D1 Read | D1 databases, `d1 migrations list --remote`, Time Travel bookmarks |
+| Account | Workers KV Storage Read | KV namespaces |
+| Account | Workers R2 Storage Read | R2 buckets, the empty check before a bucket delete |
+| Account | Queues Read | Queues |
+| Account | Account Analytics Read | Workers invocation analytics (GraphQL) |
+| Zone | Workers Routes Read | Worker routes on your zones |
+
+Write (account plans), the read rows plus:
+
+| Scope | Permission | Used for |
+|---|---|---|
+| Account | Workers Scripts Edit (API: Workers Scripts Write) | `deploy`, `versions deploy`, `rollback`, `delete`, `secret put`, `secret delete`. `delete` also needs Workers KV Storage Read (wrangler then looks for Workers Sites namespaces) |
+| Account | Cloudflare Pages Edit (API: Pages Write) | `pages deploy`, Pages rollback |
+| Account | D1 Edit (API: D1 Write) | `d1 create`, `d1 delete`, `d1 migrations apply --remote`, `d1 time-travel restore` |
+| Account | Workers KV Storage Edit (API: Workers KV Storage Write) | `kv namespace create`, `kv namespace delete` |
+| Account | Workers R2 Storage Edit (API: Workers R2 Storage Write) | `r2 bucket create`, `r2 bucket delete` |
+| Account | Queues Edit (API: Queues Write) | `queues create`, `queues delete` |
+| Zone | Workers Routes Edit (API: Workers Routes Write) | Deploys that change `routes` in the wrangler config |
+
+claudeflare passes the account id to wrangler (`CLOUDFLARE_ACCOUNT_ID`), so the token needs no Memberships permission.
+
 ## Sources
 
 - [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
 - [Audit logs](https://developers.cloudflare.com/fundamentals/account/account-security/audit-logs/) (Account Settings Read)
 - [Create Cache Rules via API](https://developers.cloudflare.com/cache/how-to/cache-rules/create-api/)
 - [Tiered Cache](https://developers.cloudflare.com/cache/how-to/tiered-cache/)
+- [Wrangler system environment variables](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/) (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`)
 - API reference "Accepted Permissions": [zone setting edit](https://developers.cloudflare.com/api/resources/zones/subresources/settings/methods/edit/), [DNS record create](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/), [DNSSEC edit](https://developers.cloudflare.com/api/resources/dns/subresources/dnssec/methods/edit/), [bot management update](https://developers.cloudflare.com/api/resources/bot_management/methods/update/), [cache purge](https://developers.cloudflare.com/api/resources/cache/methods/purge/)

@@ -5,10 +5,10 @@ import { readFileSync } from 'node:fs';
 const root = new URL('../', import.meta.url);
 const readJson = (path) => JSON.parse(readFileSync(new URL(path, root), 'utf8'));
 
-test('plugin.json has name claudeflare and semver version 0.1.0', () => {
+test('plugin.json has name claudeflare and semver version 0.2.0', () => {
   const p = readJson('.claude-plugin/plugin.json');
   assert.equal(p.name, 'claudeflare');
-  assert.equal(p.version, '0.1.0');
+  assert.equal(p.version, '0.2.0');
   assert.ok(p.description);
   assert.equal(p.license, 'MIT');
 });

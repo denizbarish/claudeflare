@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { CfError } from './errors.mjs';
 import { paths } from './paths.mjs';
-import { assertPlanId, hashOps, readPlan } from './plans.mjs';
+import { assertPlanId, hashPlan, readPlan } from './plans.mjs';
 import { getApprovalKey } from './approval-key.mjs';
 
 const DEFAULT_TTL_SECONDS = 1800;
@@ -60,7 +60,7 @@ export function writeApproval(cwd, { plan_id, session_id }, now = new Date()) {
   const plan = readPlan(cwd, plan_id);
   const approval = {
     plan_id,
-    ops_hash: hashOps(plan.ops),
+    ops_hash: hashPlan(plan),
     approved_at: now.toISOString(),
     session_id,
   };
@@ -83,7 +83,7 @@ export function checkApproval(cwd, plan_id, now = new Date(), { plan: givenPlan 
   }
   const plan = givenPlan ?? tryReadPlan(cwd, plan_id);
   if (!plan || plan.id !== plan_id) return { ok: false, reason: 'plan_missing' };
-  if (approval.ops_hash !== hashOps(plan.ops)) return { ok: false, reason: 'hash_mismatch' };
+  if (approval.ops_hash !== hashPlan(plan)) return { ok: false, reason: 'hash_mismatch' };
   return { ok: true };
 }
 

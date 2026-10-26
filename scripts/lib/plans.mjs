@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { CfError } from './errors.mjs';
 import { assertZoneName, paths } from './paths.mjs';
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
 const SLUG_MAX = 40;
-const ZONE_ID_PATTERN = /^[a-f0-9]{32}$/;
+const CF_ID_PATTERN = /^[a-f0-9]{32}$/;
+const SCOPES = new Set(['zone', 'account']);
 
 export function assertPlanId(id) {
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
@@ -43,32 +44,76 @@ export function makePlanId(zoneName, slug, now) {
   return [zoneShort, stamp, slugify(slug)].filter(Boolean).join('-');
 }
 
+function sha256(value) {
+  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
 export function hashOps(ops) {
-  return `sha256:${createHash('sha256').update(JSON.stringify(ops)).digest('hex')}`;
+  return sha256(ops);
+}
+
+// The approval hash. Zone plans keep the v1 value (ops only) so existing
+// approvals stay valid; account plans also bind the account and project dir.
+export function hashPlan(plan) {
+  if (plan.scope !== 'account') return hashOps(plan.ops);
+  const { scope, account_id, project_dir, ops } = plan;
+  return sha256({ scope, account_id, project_dir, ops });
+}
+
+// State directories (snapshots) are keyed by zone name or account slug.
+export function planStateName(plan) {
+  return plan.scope === 'account' ? plan.account_slug : plan.zone_name;
 }
 
 function resolveOps(ops, zoneId) {
   return ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(zoneId) }));
 }
 
-export function createPlan(cwd, { zone_id, zone_name, summary, risk, ops, slug }, now = new Date()) {
-  if (typeof zone_id !== 'string' || !ZONE_ID_PATTERN.test(zone_id)) {
+function zoneTarget({ zone_id, zone_name }) {
+  if (typeof zone_id !== 'string' || !CF_ID_PATTERN.test(zone_id)) {
     throw new CfError('invalid_zone', `Invalid zone id: ${JSON.stringify(zone_id)}`);
   }
   assertZoneName(zone_name);
-  const id = assertPlanId(makePlanId(zone_name, slug, now));
-  const resolved = resolveOps(ops, zone_id);
+  return { zone_id, zone_name };
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function accountTarget({ account_id, account_name, project_dir }) {
+  const invalid = (what, value) => new CfError('invalid_account', `Invalid ${what}: ${JSON.stringify(value)}`);
+  if (typeof account_id !== 'string' || !CF_ID_PATTERN.test(account_id)) throw invalid('account id', account_id);
+  const account_slug = typeof account_name === 'string' ? slugify(account_name) : '';
+  if (!account_slug) throw invalid('account name', account_name);
+  if (typeof project_dir !== 'string' || !isAbsolute(project_dir) || !isDirectory(project_dir)) {
+    throw invalid('project_dir (must be an absolute path to an existing directory)', project_dir);
+  }
+  return { account_id, account_name, account_slug, project_dir: realpathSync(project_dir) };
+}
+
+export function createPlan(cwd, fields, now = new Date()) {
+  const { scope = 'zone', summary, risk, ops, slug } = fields;
+  if (!SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
+  const account = scope === 'account';
+  const target = account ? accountTarget(fields) : zoneTarget(fields);
+  const id = assertPlanId(makePlanId(account ? target.account_slug : target.zone_name, slug, now));
+  const resolved = account ? ops : resolveOps(ops, target.zone_id);
   const plan = {
     id,
-    zone_id,
-    zone_name,
+    scope,
+    ...target,
     created_at: isoSeconds(now),
     summary,
     risk,
     ops: resolved,
-    ops_hash: hashOps(resolved),
     status: 'draft',
   };
+  plan.ops_hash = hashPlan(plan);
   mkdirSync(paths(cwd).plans, { recursive: true });
   try {
     writeFileSync(planFile(cwd, id), toJson(plan), { flag: 'wx' });

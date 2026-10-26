@@ -1,0 +1,14 @@
+{
+  "GET /accounts": [
+    { "id": "9a7806061c88ada191ed06f989cc3dac", "name": "Example Ltd", "type": "standard" }
+  ],
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac": { "id": "9a7806061c88ada191ed06f989cc3dac", "name": "Example Ltd" },
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac/workers/scripts": [
+    { "id": "api", "created_on": "2025-11-02T09:00:00Z", "modified_on": "2026-10-20T08:30:00Z", "compatibility_date": "2026-06-01", "handlers": ["fetch"] }
+  ],
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac/workers/scripts/api/deployments": {
+    "deployments": [
+      { "id": "dep-1", "created_on": "2026-10-20T08:30:00Z", "source": "wrangler", "versions": [{ "version_id": "22222222-2222-4222-8222-222222222222", "percentage": 100 }] }
+    ]
+  }
+}

@@ -6,15 +6,19 @@ import { join, resolve } from 'node:path';
 import { createClient, redact } from './lib/api.mjs';
 import { CfError } from './lib/errors.mjs';
 import { paths } from './lib/paths.mjs';
-import { createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
+import { accountTarget, createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
 import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
 import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
+import { assertR2DeletesEmpty } from './lib/wrangler-exec.mjs';
+import { classifyWranglerOp } from './lib/wrangler-ops.mjs';
+import { migrationRisk, runPreflight } from './lib/preflight.mjs';
+import { runTail } from './lib/tail.mjs';
 import { scoreDomains } from './lib/score.mjs';
 import { renderReport } from './lib/report.mjs';
 
 const GITIGNORE_ENTRY = '.claudeflare/';
-const USAGE = 'claudeflare init | get <path> [--query k=v ...] | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone>';
+const USAGE = 'claudeflare init | get <path> [--query k=v ...] | preflight --file <draft.json> | plan new --file <draft.json> | plan show <id> | plan list | snapshot <id> | apply <id> | rollback <id> | report --file <findings.json> --zone <zone> | tail --worker <name> --seconds <n> [--status error] [--account <id>]';
 
 function usage(message) {
   return new CfError('usage', message, { hint: `Usage: ${USAGE}` });
@@ -105,32 +109,100 @@ async function get(positional, flags) {
   return createClient().request('GET', path, { query: parseQuery(flags.query) });
 }
 
-function assertDraftOps(ops) {
-  const valid = Array.isArray(ops) && ops.length > 0 &&
-    ops.every((op) => typeof op?.method === 'string' && typeof op?.path === 'string');
-  if (!valid) throw new CfError('invalid_input', 'Draft ops must be a non-empty array of { method, path, body? }');
+const PLAN_SCOPES = new Set(['zone', 'account']);
+
+function isDraftOp(op) {
+  return op?.kind === 'wrangler' || (typeof op?.method === 'string' && typeof op?.path === 'string');
 }
 
-function planNew(cwd, flags) {
+function assertDraftOps(ops) {
+  const valid = Array.isArray(ops) && ops.length > 0 && ops.every(isDraftOp);
+  if (!valid) {
+    throw new CfError('invalid_input', 'Draft ops must be a non-empty array of { method, path, body? } or { kind: "wrangler", args }');
+  }
+}
+
+function hasR2Delete(ops) {
+  return ops.some((op) => {
+    if (op?.kind !== 'wrangler') return false;
+    const { kind, resource } = classifyWranglerOp(op);
+    return kind === 'resource_delete' && resource?.type === 'r2';
+  });
+}
+
+function readDraft(cwd, flags) {
   const draft = readJsonFile(cwd, flag(flags, 'file'));
   assertDraftOps(draft?.ops);
+  const scope = draft.scope ?? 'zone';
+  if (!PLAN_SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
+  if (scope === 'account') {
+    const { account_id, project_dir } = accountTarget(draft);
+    return { draft, target: { scope, account_id, project_dir }, resolved: draft.ops };
+  }
   const zoneId = String(draft.zone_id);
-  const resolved = draft.ops.map((op) => ({ ...op, path: op.path.split('{zone_id}').join(zoneId) }));
-  validateOpTargets(resolved, zoneId);
+  const resolved = draft.ops.map((op) => (typeof op.path === 'string' ? { ...op, path: op.path.split('{zone_id}').join(zoneId) } : op));
+  return { draft, target: { scope, zone_id: zoneId }, resolved };
+}
+
+async function preflight(cwd, flags) {
+  const { target, resolved } = readDraft(cwd, flags);
+  const { ops: _ops, ...report } = await runPreflight(target, resolved, { client: createClient() });
+  printJson(report);
+  if (!report.ok) process.exitCode = 1;
+}
+
+function failedChecks(report) {
+  return report.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ');
+}
+
+async function planNew(cwd, flags) {
+  const { draft, target, resolved: draftOps } = readDraft(cwd, flags);
+  let resolved = draftOps;
+  let risk = draft.risk;
+  validateOpTargets(resolved, target);
   validatePlanOps(resolved);
+  if (target.scope === 'account') {
+    const client = createClient();
+    // R2 bucket deletes are refused unless the bucket is verifiably empty.
+    if (hasR2Delete(resolved)) await assertR2DeletesEmpty(client, { account_id: draft.account_id, ops: resolved });
+    // Preflight embeds source_hash into source-uploading ops.
+    const report = await runPreflight(target, resolved, { client });
+    if (!report.ok) {
+      throw new CfError('preflight_failed', `Preflight failed: ${failedChecks(report)}`, {
+        hint: 'Run claudeflare preflight --file <draft.json> for the full report, fix the cause and try again',
+      });
+    }
+    resolved = report.ops;
+    const pending = migrationRisk(report.pending_migrations);
+    if (pending) risk = `${risk ?? ''}${risk ? ' ' : ''}${pending}`;
+  }
   const slug = slugify(draft.slug ?? '') || 'plan';
   const plan = createPlan(cwd, {
+    scope: target.scope,
     zone_id: draft.zone_id,
     zone_name: draft.zone_name,
+    account_id: draft.account_id,
+    account_name: draft.account_name,
+    project_dir: target.project_dir,
     summary: draft.summary,
-    risk: withIrreversibleRisk(draft.risk, resolved),
-    ops: draft.ops,
+    risk: withIrreversibleRisk(risk, resolved),
+    ops: target.scope === 'account' ? resolved : draft.ops,
     slug,
   });
   return updatePlan(cwd, plan.id, { slug });
 }
 
-function plan(cwd, positional, flags) {
+function tail(cwd, flags) {
+  return runTail({
+    cwd,
+    worker: flag(flags, 'worker'),
+    seconds: flag(flags, 'seconds'),
+    status: flags.status?.at(-1),
+    accountId: flags.account?.at(-1) ?? process.env.CLOUDFLARE_ACCOUNT_ID,
+  });
+}
+
+async function plan(cwd, positional, flags) {
   const sub = arg(positional, 1, 'new|show|list');
   if (sub === 'new') return planNew(cwd, flags);
   if (sub === 'show') return readPlan(cwd, arg(positional, 2, 'id'));
@@ -168,14 +240,20 @@ function report(cwd, flags) {
   return { file, overall: scores.overall, domains: scores.domains };
 }
 
+const APPLY_HINTS = {
+  partially_applied: (id) => `Run claudeflare rollback ${id} to revert the ops that succeeded`,
+  failed: () => 'The first op failed; a REST op wrote nothing, but a failed wrangler op (timed-out deploy, d1 migrations apply) may have partly applied, so check the resource, fix the cause and create a new plan',
+  applied_check_failed: (id) => `The health check failed and nothing was reverted; run claudeflare rollback ${id} to revert the applied ops`,
+  rolled_back_auto: (id) => `The health check failed and the op was reverted automatically; inspect the plan and run claudeflare rollback ${id} for any earlier ops`,
+};
+
 async function applyCommand(cwd, positional) {
-  const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'));
+  const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
   if (result.status !== 'applied') {
-    const hint = result.status === 'partially_applied'
-      ? `Run claudeflare rollback ${result.id} to revert the ops that succeeded`
-      : 'The first op failed, so no write was made; fix the cause and create a new plan';
-    throw new CfError('apply_failed', `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
+    const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';
+    const hint = (APPLY_HINTS[result.status] ?? APPLY_HINTS.failed)(result.id);
+    throw new CfError(code, `Plan ${result.id} ${result.status}: ${result.error?.message}`, { hint });
   }
 }
 
@@ -186,11 +264,13 @@ async function main(argv) {
   switch (command) {
     case 'init': return printJson(init(cwd));
     case 'get': return printJson(await get(positional, flags));
-    case 'plan': return printJson(plan(cwd, positional, flags));
+    case 'plan': return printJson(await plan(cwd, positional, flags));
     case 'snapshot': return printJson(await snapshot(cwd, positional));
     case 'apply': return applyCommand(cwd, positional);
     case 'rollback': return printJson(createRollbackPlan(cwd, arg(positional, 1, 'id')));
     case 'report': return printJson(report(cwd, flags));
+    case 'preflight': return preflight(cwd, flags);
+    case 'tail': return printJson(await tail(cwd, flags));
     default: throw usage(command ? `Unknown command: ${command}` : 'Missing command');
   }
 }
