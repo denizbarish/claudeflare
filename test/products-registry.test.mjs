@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateOpTargets, validatePlanOps, validateProductFields } from '../scripts/lib/resources.mjs';
-import { PRODUCTS, registerProduct, classifyProductOp, baseFor } from '../scripts/lib/products/index.mjs';
+import { PRODUCTS, registerProduct, classifyProductOp, baseFor, ownedCollection } from '../scripts/lib/products/index.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 
 const A = '0123456789abcdef0123456789abcdef';
@@ -141,6 +141,20 @@ test('other zone writes keep the v1 open policy', () => {
   validateOpTargets([{ method: 'POST', path: `/zones/${Z}/dns_records`, body: {} }], zonePlan);
   validateOpTargets([{ method: 'PATCH', path: `/zones/${Z}/access_rules_custom/x`, body: {} }], zonePlan);
   assert.throws(() => validateOpTargets([{ method: 'POST', path: `/zones/${Z}/pagerules`, body: {} }], zonePlan), code('invalid_op'));
+});
+
+// Task 13 carry: an unparsable zone pattern would leave its collection open
+// to every zone write, so it fails here instead of passing silently.
+test('every registered zone kind yields an owned collection, and an unparsable pattern is caught', () => {
+  const zoneKinds = PRODUCTS.flatMap((module) => module.kinds.filter((k) => k.scope === 'zone').map((k) => [module.product, k]));
+  assert.ok(zoneKinds.some(([product]) => product === 'load_balancing'));
+  assert.ok(zoneKinds.some(([product]) => product === 'spectrum'));
+  for (const [product, kind] of zoneKinds) {
+    const collection = ownedCollection(kind);
+    assert.ok(typeof collection === 'string' && /^[a-z0-9_-]+$/.test(collection), `${product} ${kind.kind} has no owned collection`);
+  }
+  assert.equal(ownedCollection({ pattern: /^\/spectrum\/apps\/([0-9a-f]{32})$/ }), 'spectrum');
+  assert.equal(ownedCollection({ pattern: /^\/([a-z_]+)\/apps$/ }), null);
 });
 
 test('zone product kinds get field validation too', () => {

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { applyPlan, createRollbackPlan, withIrreversibleRisk } from '../scripts/lib/apply.mjs';
 import { createPlan, readPlan, updatePlan } from '../scripts/lib/plans.mjs';
 import { writeApproval } from '../scripts/lib/approvals.mjs';
@@ -594,4 +597,78 @@ test('advisory marking is set by the module, not by text: a pool named after the
   const { cwd, plan } = setup(t, [updateLb(LB2, lbBody(LB2, { ttl: 60 }))], { zone: true, lockout_risks: [] });
   approve(cwd, plan);
   await assert.rejects(() => applyPlan(cwd, api, plan.id, T0, fastVerify()), { code: 'risk_changed' });
+});
+
+// Task 13 carry: advisory lines survive a failed verification and reach the
+// user from the CLI.
+
+const CLI = fileURLToPath(new URL('../scripts/cf.mjs', import.meta.url));
+
+// The one-pool load balancer create of the Ruling 27 test: at plan new the
+// preview has no result, at apply it finds the pool critical.
+const onePoolCreate = () => createLb(lbBody(LB1, { name: 'shop.example.com', default_pools: [P1], fallback_pool: P1 }));
+
+test('advisory_lockout stays on the printed result when verification fails and apply returns the rollback draft', async (t) => {
+  const op = onePoolCreate();
+  const { cwd, plan } = setup(t, [op], { zone: true, lockout_risks: [] });
+  approve(cwd, plan);
+  const api = fakeApi();
+  const request = api.request.bind(api);
+  // The read-back of the new load balancer differs from the sent body.
+  api.request = async (method, path, opts) => {
+    const out = await request(method, path, opts);
+    return method === 'GET' && path === `${ZB}/load_balancers/${NEW_LB}` ? { ...out, ttl: 999 } : out;
+  };
+  const fresh = await preflight(fakeApi(), ZONE, [op]);
+  assert.equal(fresh.advisory_lockout.length, 1);
+  const applied = await applyPlan(cwd, api, plan.id, T0, fastVerify());
+  assert.equal(applied.status, 'applied_verify_failed', JSON.stringify(applied.results));
+  assert.ok(applied.rollback_draft, 'a rollback draft was created');
+  assert.deepEqual(applied.advisory_lockout, fresh.advisory_lockout);
+  assert.deepEqual(readPlan(cwd, plan.id).advisory_lockout, fresh.advisory_lockout);
+});
+
+// Serves the fake account over HTTP for the CLI child process.
+async function httpStub(t, api) {
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://stub');
+    const query = Object.fromEntries(url.searchParams);
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const envelope = 'page' in query;
+      const out = await api.request(req.method, url.pathname, { query: envelope ? query : undefined, body: raw ? JSON.parse(raw) : undefined, envelope });
+      res.end(JSON.stringify(envelope ? { success: true, ...out } : { success: true, result: out }));
+    } catch (err) {
+      res.statusCode = err.status || 400;
+      res.end(JSON.stringify({ success: false, errors: [{ code: 1000, message: err.message }] }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+test('cli apply prints each advisory lockout line to stderr', async (t) => {
+  const { cwd, plan } = setup(t, [onePoolCreate()], { zone: true, lockout_risks: [] });
+  const keyDir = process.env.CLAUDEFLARE_KEY_DIR;
+  approve(cwd, plan, new Date());
+  const api = fakeApi();
+  const base = await httpStub(t, api);
+  const res = await new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [CLI, 'apply', plan.id],
+      { cwd, env: { PATH: process.env.PATH, CLAUDEFLARE_KEY_DIR: keyDir, CLOUDFLARE_API_TOKEN: 'tok-test', CLOUDFLARE_API_BASE: base } },
+      (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }),
+    );
+  });
+  assert.equal(res.code, 0, res.stderr);
+  const result = JSON.parse(res.stdout);
+  assert.equal(result.status, 'applied');
+  assert.equal(result.advisory_lockout.length, 1);
+  const lines = res.stderr.split('\n').filter(Boolean);
+  assert.deepEqual(lines, result.advisory_lockout);
+  assert.match(lines[0], /^Lockout risk: load balancer shop\.example\.com has one pool/);
 });

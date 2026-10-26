@@ -291,6 +291,10 @@ function failedVerifyChecks(result) {
 async function applyCommand(cwd, positional) {
   const result = await applyPlan(cwd, createClient(), arg(positional, 1, 'id'), new Date(), {});
   printJson(result);
+  // Advisory lockout lines first found at apply did not stop it (Ruling 27);
+  // one plain line each on stderr so the user sees them. An error, if any,
+  // stays the last stderr line.
+  for (const line of result.advisory_lockout ?? []) process.stderr.write(`${line}\n`);
   if (result.status !== 'applied') {
     const failed = failedVerifyChecks(result);
     const code = result.error?.code === 'check_failed' ? 'check_failed' : 'apply_failed';

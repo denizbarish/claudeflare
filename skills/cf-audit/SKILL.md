@@ -23,6 +23,8 @@ The `devices` domain audits an account as well: its WARP device profiles, split 
 
 The `load_balancing` domain audits both scopes: the account's monitors and pools, and the zone's load balancers. Its checklist skill is `cf-load-balancing`. A full zone audit includes it when the zone has load balancers (GET `/zones/{zone_id}/load_balancers` returns any); a full account audit includes it when the account has pools. Its `fix` ops use `/accounts/{account_id}/load_balancers/...` for monitors and pools (an account plan) and `/zones/{zone_id}/load_balancers/...` for load balancers (a separate zone plan).
 
+The `spectrum` domain audits a zone: its Spectrum apps (`/zones/{zone_id}/spectrum/apps`, read with `page=1` so the API returns paging info). Its checklist skill is `cf-spectrum`. A full zone audit includes it when the zone has Spectrum apps (the list returns any). Its `fix` ops use `/zones/{zone_id}/spectrum/apps/...` (a zone plan).
+
 ## 2. Domains
 
 The full audit covers these domains, each checked against the skill with the same name:
@@ -44,6 +46,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | gateway (account) | `cf-gateway` |
 | devices (account) | `cf-devices` |
 | load_balancing (account and zone) | `cf-load-balancing` |
+| spectrum | `cf-spectrum` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 

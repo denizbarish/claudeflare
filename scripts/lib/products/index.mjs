@@ -8,6 +8,7 @@ import { ACCESS } from './access.mjs';
 import { DEVICES } from './devices.mjs';
 import { GATEWAY } from './gateway.mjs';
 import { LOAD_BALANCING } from './load-balancing.mjs';
+import { SPECTRUM } from './spectrum.mjs';
 import { TUNNEL } from './tunnel.mjs';
 
 /**
@@ -70,7 +71,9 @@ import { TUNNEL } from './tunnel.mjs';
  * @typedef {object} ProductModule
  * @property {string} product
  * @property {ProductKind[]} kinds
- * @property {(client: object, base: string) => Promise<{ ok: boolean, detail: string }>} [entitlement]
+ * @property {(client: object, base: string, ops: object[]) => Promise<{ ok: boolean, detail: string }>} [entitlement]
+ *   ops are the plan's ops of this product, in plan order (Spectrum checks each app's protocol
+ *   against the zone plan).
  * @property {{ read: string, edit: string }|((base: string) => { read: string, edit: string })} [permission]
  *   Token template permission names, or a function of the plan base for a product with kinds
  *   in both scopes (Load Balancing); a 403 on the probe names `edit` (then `read`, then the
@@ -181,19 +184,38 @@ export function classifyProductOp(op, plan) {
 
 // First path segment a kind's pattern fixes (`load_balancers` for
 // /^\/load_balancers\/([0-9a-f]{32})$/); null when it starts with a group.
-function ownedCollection(entry) {
+export function ownedCollection(entry) {
   const m = /^\^\/([A-Za-z0-9_-]+)(?:\\?\/|\$|\(|\?)/.exec(entry.pattern.source.replace(/\\\//g, '/'));
   return m ? m[1].toLowerCase() : null;
 }
 
-// Path canonical for ownership checks: decoded, lowercased, no repeated or
-// trailing slashes. Null when it cannot be decoded.
+// A path segment belongs to a collection when it is the collection, or the
+// collection followed by a character outside [a-z0-9_] (`load_balancers;x`,
+// `load_balancers.json`, `load_balancers,`), so `load_balancers_custom` stays
+// open.
+function segmentOwned(segment, collection) {
+  if (segment === collection) return true;
+  return segment.startsWith(collection) && !/[a-z0-9_]/.test(segment[collection.length]);
+}
+
+const DECODE_ROUNDS = 3;
+
+// Path canonical for ownership checks: decoded until it stops changing (at
+// most three rounds, so `%256c` is `l`), lowercased, no repeated or trailing
+// slashes. Null when the first decode fails; a later round that fails keeps
+// the last decoded form.
 function canonicalRest(path, base) {
-  let decoded;
-  try {
-    decoded = decodeURIComponent(path.split('?')[0].slice(base.length));
-  } catch {
-    return null;
+  let decoded = path.split('?')[0].slice(base.length);
+  for (let round = 0; round < DECODE_ROUNDS; round++) {
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      if (round === 0) return null;
+      break;
+    }
+    if (next === decoded) break;
+    decoded = next;
   }
   return decoded.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '');
 }
@@ -214,9 +236,13 @@ export function zoneProductPathOwner(op, plan) {
   const rest = canonicalRest(path, base);
   if (rest === null) return null;
   const first = rest.split('/')[1];
+  if (!first) return null;
   for (const module of PRODUCTS) {
-    const owners = module.kinds.filter((k) => k.scope === 'zone' && ownedCollection(k) === first);
-    if (owners.length) return { product: module.product, collection: first, methods: [...new Set(owners.flatMap((k) => k.methods))] };
+    const owners = module.kinds.filter((k) => {
+      const collection = k.scope === 'zone' ? ownedCollection(k) : null;
+      return collection !== null && segmentOwned(first, collection);
+    });
+    if (owners.length) return { product: module.product, collection: ownedCollection(owners[0]), methods: [...new Set(owners.flatMap((k) => k.methods))] };
   }
   return null;
 }
@@ -227,3 +253,4 @@ registerProduct(ACCESS);
 registerProduct(GATEWAY);
 registerProduct(DEVICES);
 registerProduct(LOAD_BALANCING);
+registerProduct(SPECTRUM);

@@ -213,6 +213,8 @@ Run it with a Bash timeout of 600000 ms: a wrangler op may take up to 5 minutes 
 
 Wrangler op results carry `version_id` (deploys) or `resource_id` (KV namespace creates). A failed wrangler op is `wrangler_failed`; a timed-out deploy or a failed `d1 migrations apply` may have partly applied, so read the current state before anything else. Risk notes added during apply (`rollback_not_empty`, `rollback_ambiguous`, `kv_id_unknown`) appear in the plan's `risk_notes`; tell the user each one.
 
+After apply, show the user every `advisory_lockout` line of the printed result: a `Lockout risk:` line first found at apply that did not stop it (`claudeflare apply` also prints each one on stderr, before any error JSON).
+
 ### 5.6 Verify
 
 Re-read each changed resource through MCP (GET) and compare with the plan. Where useful, check live behavior with `curl -sI` (for example a redirect now returns 301 to the right target). Report the result with evidence.

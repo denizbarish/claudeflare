@@ -1,0 +1,7 @@
+{
+  "id": "fedcba9876543210fedcba9876543210",
+  "name": "example.com",
+  "status": "active",
+  "account": { "id": "0123456789abcdef0123456789abcdef", "name": "Acme" },
+  "plan": { "id": "94f3b7b768b0458b56d2cac4fe5ec0f9", "name": "Enterprise Website", "legacy_id": "enterprise", "is_subscribed": true }
+}

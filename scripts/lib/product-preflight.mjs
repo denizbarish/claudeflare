@@ -87,10 +87,11 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
     return detail;
   };
 
+  const ops = items.map((i) => i.op);
   if (module.entitlement) {
     let ent;
     try {
-      ent = await module.entitlement(client, base);
+      ent = await module.entitlement(client, base, ops);
     } catch (err) {
       return fail('entitlement', failureCode(err), err.message);
     }
@@ -108,7 +109,6 @@ async function productChecks(client, module, items, out, add, { alwaysLockout = 
     return fail('permission', code, err.message);
   }
 
-  const ops = items.map((i) => i.op);
   let ctx;
   try {
     ctx = (await module.gather(client, base, ops)) ?? {};

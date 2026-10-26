@@ -109,7 +109,7 @@ These never refuse a plan; they are shown at `plan new` and checked again at app
 1. A pool update that leaves no enabled origin, or sets `minimum_origins` above the enabled origins: the pool goes critical. The line names the load balancers that use it.
 2. A pool update that disables the last usable pool of a load balancer (every other pool of it is disabled or critical too): visitors get errors.
 3. A load balancer create or update whose pools are all disabled or without enough enabled origins.
-4. A load balancer with one pool that the preview found critical. The failure reasons are in the preview note, not in the line. Because the preview runs asynchronously, this line is advisory: if it first appears at apply, apply shows it but does not stop with `risk_changed`.
+4. A load balancer with one pool that the preview found critical. The failure reasons are in the preview note, not in the line. Because the preview runs asynchronously, this line is advisory: if it first appears at apply, apply shows it but does not stop with `risk_changed`. After apply, show the user every `advisory_lockout` line of the printed result (`claudeflare apply` also prints each one on stderr).
 
 ### Notes on deletes
 

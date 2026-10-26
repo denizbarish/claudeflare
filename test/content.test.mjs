@@ -231,6 +231,7 @@ const ZT_FINDINGS = {
     'devices.switch.unlocked_with_posture', 'devices.exclude.no_local_networks', 'devices.profile.unused', 'devices.posture.unused',
   ],
   'cf-load-balancing': ['lb.pool.no_monitor', 'lb.monitor.interval_short', 'lb.fallback.missing', 'lb.pool.single_origin'],
+  'cf-spectrum': ['spectrum.app.no_ip_access_rules', 'spectrum.app.proxy_protocol_off', 'spectrum.app.tls_off'],
 };
 
 for (const [folder, ids] of Object.entries(ZT_FINDINGS)) {
@@ -333,4 +334,28 @@ test('cf-audit lists the load_balancing domain', () => {
   const audit = read('skills/cf-audit/SKILL.md');
   assert.ok(audit.includes('`cf-load-balancing`'), 'cf-audit does not name cf-load-balancing');
   assert.ok(audit.includes('`load_balancing`'), 'cf-audit is missing domain load_balancing');
+});
+
+test('cf-load-balancing and cf-core tell the agent to show every advisory_lockout line after apply', () => {
+  for (const file of ['skills/cf-load-balancing/SKILL.md', 'skills/cf-core/SKILL.md']) {
+    assert.ok(/After apply, show the user every `advisory_lockout` line/.test(read(file)), `${file} does not say to show advisory_lockout lines`);
+  }
+});
+
+test('cf-spectrum documents the plan table, page=1, the delete note, the TCP check and the refusals', () => {
+  const file = 'skills/cf-spectrum/SKILL.md';
+  const text = read(file);
+  for (const needle of [
+    '/zones/{zone_id}/spectrum/apps', 'page=1', 'not_entitled', 'missing_permission', 'invalid_op', 'confirm_name', '`dns.name`',
+    'Free', 'Pro', 'Business', 'Enterprise', '`ssh`', '`minecraft`', '`rdp`', 'tcp/22', 'tcp/25565', 'tcp/3389',
+    'new id', 'new anycast IPs', '`edge_ips.type` is `static`', 'rollback_drift', 'skipped', 'UDP', '"expect": "tcp_open"', 'Zone Settings',
+  ]) {
+    assert.ok(text.includes(needle), `${file} is missing ${needle}`);
+  }
+});
+
+test('cf-audit lists the spectrum domain', () => {
+  const audit = read('skills/cf-audit/SKILL.md');
+  assert.ok(audit.includes('`cf-spectrum`'), 'cf-audit does not name cf-spectrum');
+  assert.ok(audit.includes('`spectrum`'), 'cf-audit is missing domain spectrum');
 });
