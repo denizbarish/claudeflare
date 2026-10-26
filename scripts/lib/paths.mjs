@@ -20,6 +20,8 @@ export function paths(cwd) {
     root,
     plans: join(root, 'plans'),
     approvals: join(root, 'approvals'),
+    secrets: join(root, 'secrets'),
+    secretFilesIndex: join(root, 'secret-files.json'),
     snapshots: (zoneName) => join(root, 'snapshots', assertZoneName(zoneName)),
     reports: (zoneName) => join(root, 'reports', assertZoneName(zoneName)),
   };

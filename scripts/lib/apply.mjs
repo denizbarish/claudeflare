@@ -14,6 +14,7 @@ import { assertWranglerOpPaths, classifyWranglerOp, DATA_LOSS_TYPES, SOURCE_KIND
 import { assertWranglerVersion, runWrangler } from './wrangler.mjs';
 import { computeSourceHash } from './source-hash.mjs';
 import { executeAccountOps } from './wrangler-exec.mjs';
+import { assertSecretFieldsEnv, executeRestOps } from './rest-exec.mjs';
 import { runHealthCheck } from './health-check.mjs';
 
 // Plans whose applied ops may still be reverted by a rollback plan. After an
@@ -110,20 +111,6 @@ function assertApproved(cwd, plan, now) {
       hint: `Ask the user to run /claudeflare:approve ${id}`,
     });
   }
-}
-
-async function executeOps(client, ops) {
-  const results = ops.map(() => null);
-  for (let i = 0; i < ops.length; i++) {
-    const { method, path, body } = ops[i];
-    try {
-      results[i] = (await client.request(method, path, { body })) ?? true;
-    } catch (err) {
-      const error = { op_index: i, code: err?.code || 'internal', message: String(err?.message ?? err) };
-      return { status: i === 0 ? 'failed' : 'partially_applied', results, error };
-    }
-  }
-  return { status: 'applied', results };
 }
 
 function consumeQuietly(cwd, id) {
@@ -250,8 +237,9 @@ async function applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchI
 }
 
 // The plan is read exactly once; that object is approval-checked and executed.
-// deps.runner runs wrangler, deps.fetchImpl and deps.sleep drive health checks.
-export async function applyPlan(cwd, client, id, now = new Date(), { runner = runWrangler, sleep, fetchImpl } = {}) {
+// deps.runner runs wrangler, deps.fetchImpl and deps.sleep drive health checks,
+// deps.env supplies secret_fields_from_env values.
+export async function applyPlan(cwd, client, id, now = new Date(), { runner = runWrangler, sleep, fetchImpl, env = process.env } = {}) {
   const plan = readPlan(cwd, id);
   assertDraft(plan);
   if (hasWranglerOps(plan)) return applyWranglerPlan(cwd, client, plan, now, { runner, sleep, fetchImpl });
@@ -262,14 +250,17 @@ export async function applyPlan(cwd, client, id, now = new Date(), { runner = ru
     validatePlanOps(plan.ops, plan);
   }
   assertApproved(cwd, plan, now);
+  // A missing secret env var refuses before any request, keeping the approval.
+  assertSecretFieldsEnv(plan, env);
   // Snapshot failures abort before any write and keep the approval.
   const snapshot = await captureSnapshot(client, plan);
   const file = writeApplySnapshot(cwd, plan, snapshot);
 
   // Consumed before the first write so the approval cannot be reused mid-run.
-  // executeOps records op failures instead of throwing.
+  // executeRestOps records op failures instead of throwing. Its `post` states
+  // are not part of the plan record.
   consumeQuietly(cwd, id);
-  const outcome = await executeOps(client, plan.ops ?? []);
+  const outcome = await executeRestOps({ client, plan, cwd, env });
   return recordOutcome(cwd, plan, outcome, file, now);
 }
 

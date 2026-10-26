@@ -52,6 +52,27 @@
 /** @type {ProductModule[]} */
 export const PRODUCTS = [];
 
+const SECRET_PATH_LISTS = ['secretFields', 'redact', 'secretSink'];
+
+// omitPaths and redactPaths cannot remove a value whose last path segment is
+// `*` or an array index, so such a path would leave the secret in place.
+// Redaction never touches `id`: delete_created inverses read it from results.
+function assertSecretPaths(module, entry) {
+  const fail = (why) => {
+    throw new TypeError(`Product ${module.product} kind ${entry?.kind} ${why}`);
+  };
+  for (const list of SECRET_PATH_LISTS) {
+    const value = entry?.[list];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.every((p) => typeof p === 'string' && p !== '')) fail(`${list} must be an array of field paths`);
+    for (const path of value) {
+      const last = path.split('.').pop();
+      if (last === '*' || /^\d+$/.test(last)) fail(`${list} path ${path}: the last segment must be a field name, not * or an index`);
+      if (list !== 'secretFields' && path === 'id') fail(`${list} must not name id (rollback reads it from the apply result)`);
+    }
+  }
+}
+
 // Returns a function that removes the module again (tests use it so
 // registrations do not leak between files).
 // Every kind pattern must be anchored at both ends, or a pattern could match a
@@ -69,6 +90,7 @@ export function registerProduct(module) {
     if (!source.startsWith('^') || !source.endsWith('$') || /(?:^|[^\\])(?:\\\\)*\\\$$/.test(source)) {
       throw new TypeError(`Product ${module.product} kind ${entry?.kind} needs a RegExp pattern anchored with ^ and $`);
     }
+    assertSecretPaths(module, entry);
   }
   PRODUCTS.push(module);
   return () => {
