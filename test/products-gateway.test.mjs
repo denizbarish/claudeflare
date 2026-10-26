@@ -41,7 +41,9 @@ const NEW_IDS = { rules: NEW_RULE, lists: NEW_LIST, locations: NEW_LOC };
 
 // In-memory account built from the recorded responses. Collections page by
 // page/per_page; list items live apart from the list, as in the API.
-function fakeApi({ rules = fx('rules'), org = fx('organization'), idps = fx('identity-providers'), deny = [] } = {}) {
+// shift: like an API that renumbers on a precedence collision, a rule
+// written at a taken precedence pushes the holder (and so on) one down.
+function fakeApi({ rules = fx('rules'), org = fx('organization'), idps = fx('identity-providers'), deny = [], shift = false } = {}) {
   const store = new Map();
   for (const rule of rules) store.set(`${GW}/rules/${rule.id}`, structuredClone(rule));
   for (const list of fx('lists')) store.set(`${GW}/lists/${list.id}`, structuredClone(list));
@@ -68,6 +70,14 @@ function fakeApi({ rules = fx('rules'), org = fx('organization'), idps = fx('ide
   };
   const at = '2026-10-26T10:00:00Z';
   const setItems = (id, list) => items.set(id, list.map((item) => ({ ...item, created_at: at })));
+  const makeRoom = (rule) => {
+    if (!shift || !Number.isInteger(rule.precedence)) return;
+    const holder = listOf(`${GW}/rules`).find((r) => r.id !== rule.id && r.filters?.[0] === rule.filters?.[0] && r.precedence === rule.precedence);
+    if (!holder) return;
+    const moved = { ...holder, precedence: holder.precedence + 1 };
+    makeRoom(moved);
+    store.set(`${GW}/rules/${holder.id}`, moved);
+  };
   return {
     store,
     items,
@@ -90,7 +100,10 @@ function fakeApi({ rules = fx('rules'), org = fx('organization'), idps = fx('ide
         const id = NEW_IDS[name];
         const { items: sent, ...body } = structuredClone(opts.body ?? {});
         const next = { ...body, id, created_at: at, updated_at: at };
-        if (name === 'rules') Object.assign(next, { traffic: reformat(next.traffic ?? ''), version: 1, read_only: false, deleted_at: null });
+        if (name === 'rules') {
+          Object.assign(next, { traffic: reformat(next.traffic ?? ''), version: 1, read_only: false, deleted_at: null });
+          makeRoom(next);
+        }
         if (name === 'lists') {
           setItems(id, sent ?? []);
           next.count = (sent ?? []).length;
@@ -117,7 +130,10 @@ function fakeApi({ rules = fx('rules'), org = fx('organization'), idps = fx('ide
           .filter((k) => k in old).map((k) => [k, old[k]]));
         const next = { ...body, ...kept, updated_at: at };
         if ('traffic' in next) next.traffic = reformat(next.traffic);
-        if (typeof next.version === 'number' && path.includes('/rules/')) next.version += 1;
+        if (typeof next.version === 'number' && path.includes('/rules/')) {
+          next.version += 1;
+          makeRoom(next);
+        }
         if (path.includes('/lists/')) {
           // A PUT replaces the items only when items is non-empty.
           if (Array.isArray(sent) && sent.length) setItems(old.id, sent);
@@ -175,7 +191,7 @@ async function preflight(ops, options) {
 
 test('every gateway kind classifies with its inverse; configuration PUT and list PATCH are not allowed', () => {
   const cases = [
-    ['POST', '/gateway/rules', 'gateway_rule_create', 'delete_created'],
+    ['POST', '/gateway/rules', 'gateway_rule_create', 'function'],
     ['PUT', `/gateway/rules/${R_ALLOW}`, 'gateway_rule_update', 'function'],
     ['DELETE', `/gateway/rules/${R_ALLOW}`, 'gateway_rule_delete', 'function'],
     ['POST', '/gateway/lists', 'gateway_list_create', 'delete_created'],
@@ -184,7 +200,7 @@ test('every gateway kind classifies with its inverse; configuration PUT and list
     ['POST', '/gateway/locations', 'gateway_location_create', 'delete_created'],
     ['PUT', `/gateway/locations/${LOC}`, 'gateway_location_update', 'put_before'],
     ['DELETE', `/gateway/locations/${LOC}`, 'gateway_location_delete', 'recreate'],
-    ['PATCH', '/gateway/configuration', 'gateway_config_patch', 'patch_before'],
+    ['PATCH', '/gateway/configuration', 'gateway_config_patch', 'function'],
   ];
   for (const [method, rest, kind, inverse] of cases) {
     const c = classifyProductOp({ method, path: `${BASE}${rest}` }, PLAN);
@@ -463,7 +479,7 @@ test('a list update that filled an empty list cannot be rolled back with PUT', (
   assert.deepEqual(inverseForProduct({ ...entry, op_body_keys: ['name'] }, {}), [{ method: 'PUT', path: entry.path, body: { name: 'Old office IPs' } }]);
 });
 
-test('location delete note names the DoH subdomain and IPs; TLS decryption on is a risk note, not a Lockout line', async () => {
+test('location delete note names the DoH subdomain and IPs; TLS decryption on is a Lockout line (Ruling 20)', async () => {
   const del = { method: 'DELETE', path: `${GW}/locations/${LOC}`, confirm_name: 'Head office' };
   const report = await preflight([del]);
   assert.deepEqual(report.checks.filter((c) => !c.ok), []);
@@ -473,9 +489,114 @@ test('location delete note names the DoH subdomain and IPs; TLS decryption on is
   assert.match(risk, /new DoH subdomain/);
   const tls = { method: 'PATCH', path: `${GW}/configuration`, body: { settings: { tls_decrypt: { enabled: true } } } };
   const tlsReport = await preflight([tls]);
-  assert.deepEqual(tlsReport.lockout_risks, []);
-  assert.match(withIrreversibleRisk('TLS', [tls], PLAN, tlsReport.ctx), /certificate pinning/);
+  assert.equal(tlsReport.lockout_risks.length, 1);
+  assert.match(tlsReport.lockout_risks[0], /^Lockout risk: turning on TLS decryption .*certificate pinning/);
   // Already on: no note.
   const off = { method: 'PATCH', path: `${GW}/configuration`, body: { settings: { tls_decrypt: { enabled: false } } } };
-  assert.doesNotMatch(withIrreversibleRisk('TLS', [off], PLAN, tlsReport.ctx), /certificate pinning/);
+  assert.deepEqual((await preflight([off])).lockout_risks, []);
+});
+
+// ---------- fix round 1 ----------
+
+const configPatch = (settings) => ({ method: 'PATCH', path: `${GW}/configuration`, body: { settings } });
+
+test('config rollback restores only the subcollections the op set, with the previous values', async (t) => {
+  const op = configPatch({ block_page: { enabled: true, footer_text: 'Blocked' } });
+  const { cwd, plan } = setup(t, [op]);
+  const api = fakeApi();
+  approve(cwd, plan);
+  assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+  const rollback = createRollbackPlan(cwd, plan.id, T1);
+  assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path}`), [`PATCH ${GW}/configuration`]);
+  assert.deepEqual(rollback.ops[0].body, { settings: { block_page: { enabled: false } } });
+  approve(cwd, rollback, T1);
+  assert.equal((await applyPlan(cwd, api, rollback.id, T1, fastVerify())).status, 'applied');
+  assert.deepEqual(api.store.get(`${GW}/configuration`).settings, fx('configuration').settings);
+});
+
+test('config rollback of a subcollection absent before sends its documented off value, else is not reversible', async () => {
+  const entry = (settings, keys = Object.keys(settings)) => ({
+    product: 'gateway', kind: 'gateway_config_patch', path: `${GW}/configuration`, invertible: true, op_body_keys: ['settings'],
+    before: { settings: Object.fromEntries(keys.map((k) => [k, settings[k] ?? null])) },
+  });
+  assert.deepEqual(inverseForProduct(entry({ tls_decrypt: null }), {}), [
+    { method: 'PATCH', path: `${GW}/configuration`, body: { settings: { tls_decrypt: { enabled: false } } } },
+  ]);
+  assert.deepEqual(inverseForProduct(entry({ tls_decrypt: { enabled: false }, protocol_detection: null }), {})[0].body, {
+    settings: { tls_decrypt: { enabled: false }, protocol_detection: { enabled: false } },
+  });
+  assert.throws(() => inverseForProduct(entry({ custom_certificate: null }), {}), (e) => e.code === 'rollback_ambiguous' && /custom_certificate/.test(e.message));
+  // The plan says so before approval.
+  const op = configPatch({ custom_certificate: { enabled: true, id: 'd1b364c5-1311-466e-a194-f0e943e0799f' } });
+  const report = await preflight([op]);
+  assert.match(withIrreversibleRisk('Custom certificate', [op], PLAN, report.ctx), /Not reversible: PATCH .*settings\.custom_certificate/);
+  const tls = configPatch({ tls_decrypt: { enabled: true } });
+  assert.doesNotMatch(withIrreversibleRisk('TLS', [tls], PLAN, report.ctx), /Not reversible/);
+});
+
+test('two rule moves in one phase roll back to the old order (phase precedence snapshot, Ruling 22)', async (t) => {
+  const ops = [
+    ruleUpdate(R_LISTED, { name: 'Block listed domains', traffic: fx('rules')[2].traffic, precedence: 15 }),
+    ruleUpdate(R_ALLOW, { name: 'Allow partner portal', action: 'allow', traffic: fx('rules')[0].traffic, precedence: 25 }),
+  ];
+  const api = fakeApi();
+  const report = await runProductPreflight(api, PLAN, ops);
+  const { cwd, plan } = setup(t, ops, { lockout_risks: report.lockout_risks });
+  approve(cwd, plan);
+  assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+  const rollback = createRollbackPlan(cwd, plan.id, T1);
+  assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path} ${o.body.precedence}`), [
+    `PUT ${GW}/rules/${R_ALLOW} 10`,
+    `PUT ${GW}/rules/${R_LISTED} 30`,
+  ]);
+  assert.ok(rollback.ops.every((o) => o.precheck.group === 'gateway-phase:dns' && !('phase_precedence' in o.body) && !('phase_rules' in o.body)));
+  approve(cwd, rollback, T1);
+  const ran = await applyPlan(cwd, api, rollback.id, T1, fastVerify());
+  assert.equal(ran.status, 'applied', JSON.stringify(ran.results));
+  const prec = (id) => api.store.get(`${GW}/rules/${id}`).precedence;
+  assert.deepEqual([prec(R_ALLOW), prec(R_THREAT), prec(R_LISTED)], [10, 20, 30]);
+});
+
+test('a rule the API shifted on a precedence collision is moved back; one moved after apply is rollback_drift', async (t) => {
+  const op = ruleUpdate(R_ALLOW, { name: 'Allow partner portal', action: 'allow', traffic: fx('rules')[0].traffic, precedence: 20 });
+  const run = async (afterApply) => {
+    const api = fakeApi({ shift: true });
+    const report = await runProductPreflight(api, PLAN, [op]);
+    const { cwd, plan } = setup(t, [op], { lockout_risks: report.lockout_risks });
+    approve(cwd, plan);
+    assert.equal((await applyPlan(cwd, api, plan.id, T0, fastVerify())).status, 'applied');
+    // The API pushed the threat rule from 20 to 21.
+    assert.equal(api.store.get(`${GW}/rules/${R_THREAT}`).precedence, 21);
+    afterApply(api);
+    const rollback = createRollbackPlan(cwd, plan.id, T1);
+    assert.deepEqual(rollback.ops.map((o) => `${o.method} ${o.path} ${o.body.precedence}`), [
+      `PUT ${GW}/rules/${R_ALLOW} 10`,
+      `PUT ${GW}/rules/${R_THREAT} 20`,
+    ]);
+    assert.equal(rollback.ops[1].precheck.read, `${GW}/rules/${R_THREAT}`);
+    assert.equal(rollback.ops[1].precheck.expect.precedence, 21);
+    assert.equal(rollback.ops[1].precheck.group, 'gateway-phase:dns');
+    approve(cwd, rollback, T1);
+    return { api, ran: await applyPlan(cwd, api, rollback.id, T1, fastVerify()) };
+  };
+  const clean = await run(() => {});
+  assert.equal(clean.ran.status, 'applied', JSON.stringify(clean.ran.results));
+  assert.equal(clean.api.store.get(`${GW}/rules/${R_THREAT}`).precedence, 20);
+  assert.equal(clean.api.store.get(`${GW}/rules/${R_ALLOW}`).precedence, 10);
+
+  const moved = await run((api) => {
+    api.store.set(`${GW}/rules/${R_THREAT}`, { ...api.store.get(`${GW}/rules/${R_THREAT}`), precedence: 99 });
+  });
+  assert.equal(moved.ran.status, 'partially_applied');
+  assert.equal(moved.ran.results[1].reason, 'rollback_drift');
+  assert.equal(moved.api.store.get(`${GW}/rules/${R_THREAT}`).precedence, 99);
+});
+
+test('a new block rule without precedence has an unknown place: variant line when it overlaps an allow rule', async () => {
+  const op = { method: 'POST', path: `${GW}/rules`, body: { name: 'Block example', action: 'block', enabled: true, filters: ['dns'], traffic: 'any(dns.domains[*] == "example.com")' } };
+  const report = await preflight([op]);
+  assert.equal(report.lockout_risks.length, 1);
+  assert.match(report.lockout_risks[0], /^Lockout risk: Gateway block rule Block example has no precedence, so it may run before allow rule Allow partner portal/);
+  const apart = { ...op, body: { ...op.body, traffic: 'any(dns.domains[*] == "example.net")' } };
+  assert.deepEqual((await preflight([apart])).lockout_risks, []);
 });

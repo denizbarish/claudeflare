@@ -104,7 +104,7 @@ export async function captureSnapshot(client, plan, { runner = runWrangler } = {
     // v3 product kinds take precedence over the v1 zone kinds.
     const product = classifyProductOp(op, plan);
     if (product) {
-      entries.push({ op_index: i, op_kind: 'product', ...(await captureProductEntry(client, op, product)) });
+      entries.push({ op_index: i, op_kind: 'product', ...(await captureProductEntry(client, op, product, plan)) });
       continue;
     }
     const { kind, invertible, readPath } = classify(op);
@@ -155,7 +155,7 @@ const INVERTERS = {
 // ops on the same ruleset, so they are not mistaken for this op's new rule.
 export function inverseFor(entry, applyResult, options = {}) {
   if (entry.op_kind === 'wrangler') return inverseForWrangler(entry, applyResult);
-  if (entry.op_kind === 'product') return inverseForProduct(entry, applyResult);
+  if (entry.op_kind === 'product') return inverseForProduct(entry, applyResult, options.record ?? null);
   const inverter = INVERTERS[entry.kind];
   if (!entry.invertible || !inverter) return [];
   return inverter(entry, applyResult, options);
@@ -182,7 +182,7 @@ export function buildRollbackOps(snapshot, results, { unresolved = [], post } = 
     const knownRuleIds = createdRuleIds.get(entry.path) ?? [];
     let inverse;
     try {
-      inverse = inverseFor(entry, result, { knownRuleIds });
+      inverse = inverseFor(entry, result, { knownRuleIds, record: post?.[entry.op_index] ?? null });
     } catch (err) {
       if (!PARTIAL_KINDS.has(entry.op_kind) || !(err instanceof CfError) || err.code !== 'rollback_ambiguous') throw err;
       unresolved.push(err.message);

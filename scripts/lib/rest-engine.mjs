@@ -28,7 +28,7 @@ function parentPath(path) {
 // `before` back read the resource; `none` and function inverses read only when
 // the kind names a read path. Any read error propagates so apply aborts before
 // any write.
-export async function captureProductEntry(client, op, classified) {
+export async function captureProductEntry(client, op, classified, plan) {
   const { entry, match, base } = classified;
   const path = String(op.path);
   const capture = typeof entry.capture === 'function' ? entry.capture : null;
@@ -37,8 +37,8 @@ export async function captureProductEntry(client, op, classified) {
   // Snapshots store only non-secret fields (spec 5.1): secret and redacted
   // paths are omitted, so default inverse bodies never carry them either. A
   // kind whose state spans more than one read (a Gateway list and its items)
-  // supplies its own capture.
-  const read = wantsRead ? await (capture ? capture(client, readPath) : client.request('GET', readPath)) : null;
+  // supplies its own capture; it also gets the op and the plan.
+  const read = wantsRead ? await (capture ? capture(client, readPath, op, plan) : client.request('GET', readPath)) : null;
   const before = read === null ? null : omitPaths(read, [...(entry.secretFields ?? []), ...(entry.redact ?? [])]);
   const out = {
     product: entry.product,
@@ -127,7 +127,8 @@ const POST_UNKNOWN = 'post-apply state unknown';
 // record is the entry's post file record { read, state } or null; state
 // { absent: true } marks a deleted resource. Only the first op re-reads the
 // resource: later ops of the same source would see the first op's own write,
-// so they carry just the group and skip together with it.
+// so they carry just the group and skip together with it, unless an op names
+// a baseline of its own in `drift`.
 export function withDriftPrecheck(entry, ops, record) {
   if (!ops.length) return ops;
   const kind = kindByName(entry.kind);
@@ -136,16 +137,22 @@ export function withDriftPrecheck(entry, ops, record) {
   const group = entry.group ?? tagged ?? (ops.length > 1 ? `op-${entry.op_index}` : undefined);
   const grouped = group === undefined ? {} : { group };
   const state = record?.state;
+  // Read-only and secret fields never take part in the comparison.
+  const ignore = kind ? [...new Set([...(kind.readOnlyFields ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])] : [];
   let first;
   if (!kind || !isPlainObject(state) || typeof record.read !== 'string' || record.op_index !== entry.op_index) {
     first = { kind: 'drift', unknown: true, ...grouped };
   } else {
-    // Read-only and secret fields never take part in the comparison.
-    const ignore = [...new Set([...(kind.readOnlyFields ?? []), ...(kind.secretFields ?? []), ...(kind.redact ?? []), ...(kind.secretSink ?? [])])];
     const expect = state.absent === true ? { absent: true } : omitPaths(state, ignore);
     first = { kind: 'drift', read: record.read, expect, ignore, ...grouped };
   }
-  return ops.map(({ group: _tag, ...op }, i) => ({ ...op, precheck: i === 0 ? first : { kind: 'drift', ...grouped } }));
+  // A later op on another resource may name its own baseline in `drift`
+  // ({ read, expect }: a Gateway rule the API moved during apply).
+  const own = (drift) => {
+    if (!kind || !isPlainObject(drift) || typeof drift.read !== 'string' || !isPlainObject(drift.expect)) return { kind: 'drift', ...grouped };
+    return { kind: 'drift', read: drift.read, expect: omitPaths(drift.expect, ignore), ignore, ...grouped };
+  };
+  return ops.map(({ group: _tag, drift, ...op }, i) => ({ ...op, precheck: i === 0 ? first : own(drift) }));
 }
 
 // Runs one drift precheck before its rollback op. Null when the op may run,
@@ -171,10 +178,12 @@ export async function driftDetail(client, precheck, { base } = {}) {
 
 // entry is a snapshot entry from captureProductEntry. A kind that is no longer
 // registered, or an inverse that cannot be built, throws rollback_ambiguous.
-export function inverseForProduct(entry, applyResult) {
+// record is the op's post file record ({ read, state }) or null; function
+// inverses get it to undo side effects the API made during apply.
+export function inverseForProduct(entry, applyResult, record = null) {
   const kind = kindByName(entry.kind);
   if (!kind) throw ambiguous(`Unknown product kind ${entry.kind} for ${entry.path}`);
-  if (typeof kind.inverse === 'function') return kind.inverse(entry, applyResult);
+  if (typeof kind.inverse === 'function') return kind.inverse(entry, applyResult, record);
   if (!entry.invertible) return [];
   const inverter = INVERSES[kind.inverse];
   if (!inverter) throw ambiguous(`Kind ${entry.kind} has no known inverse ${JSON.stringify(kind.inverse)}`);

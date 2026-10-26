@@ -22,15 +22,20 @@ import { TUNNEL } from './tunnel.mjs';
  *   Conflict key; null when the op names no existing resource (a create).
  * @property {(m: RegExpExecArray, base: string) => string} [read]        Before-read path.
  * @property {(m: RegExpExecArray, base: string) => string} [collection]  POST path for `recreate`.
- * @property {(client: object, readPath: string) => Promise<object>} [capture]  Builds the
- *   before state when one GET of readPath does not hold it all (a Gateway list and its
- *   items); the engine then always takes a snapshot. Post-apply and drift reads stay a
- *   plain GET of readPath.
+ * @property {(client: object, readPath: string, op: object, plan: object) => Promise<object>} [capture]
+ *   Builds the before state when one GET of readPath does not hold it all (a Gateway list
+ *   and its items, the rules of a phase); the engine then always takes a snapshot.
+ * @property {(client: object, readPath: string, op: object) => Promise<object>} [capturePost]
+ *   Builds the post-apply state instead of a plain GET of readPath (a Gateway rule plus the
+ *   other rules of its phase). Drift prechecks still re-read with a plain GET, so the extra
+ *   fields must be in readOnlyFields.
  * @property {string[]} readOnlyFields  Fields dropped from `before` when it is sent back.
  * @property {'delete_created'|'put_before'|'patch_before'|'recreate'|'none'|Function} inverse
- *   A function is called as inverse(snapshotEntry, applyResult) and returns ops. An op may
- *   carry `group` when its drift group depends on the apply result (a created id); the
- *   engine moves it into the drift precheck.
+ *   A function is called as inverse(snapshotEntry, applyResult, postRecord) and returns ops
+ *   (postRecord is { read, state } or null). An op may carry `group` when its drift group
+ *   depends on the apply result (a created id), and an op after the first may carry
+ *   `drift: { read, expect }` to be checked against its own resource; the engine moves both
+ *   into the drift precheck.
  * @property {boolean} [putFallback]    `patch_before` only: when the op set a key the
  *   resource did not have, roll back with PUT <path> and `before` instead of refusing.
  * @property {boolean} destructive      True when the op needs `confirm_name`.

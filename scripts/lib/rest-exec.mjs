@@ -228,7 +228,8 @@ export async function executeRestOps({ client, plan, cwd, env = process.env, bef
         if (readPath === null) continue;
         try {
           if (readPath === undefined) throw new Error('no usable id in the apply result');
-          const read = await client.request('GET', readPath);
+          // A kind may read more than the resource (Gateway: the rules of its phase).
+          const read = entry.capturePost ? await entry.capturePost(client, readPath, op) : await client.request('GET', readPath);
           collect(secrets, read, entry, plan);
           const stored = redactPaths(omitPaths(read, entry.secretFields ?? []), [...(entry.redact ?? []), ...(entry.secretSink ?? [])]);
           post[i] = scrubKeepingId(stored, [...secrets]);

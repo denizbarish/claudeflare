@@ -24,7 +24,12 @@ export const MAX_LIST_ITEMS = 1000;
 // in drift comparisons on purpose: a list GET may not hold the items, and
 // count is then the only sign that they changed; list restore bodies are
 // built field by field, so it is never sent back.
-const RULE_READ_ONLY = ['id', 'created_at', 'updated_at', 'deleted_at', 'version', 'read_only', 'source_account', 'warning_status'];
+// phase_precedence (snapshot) and phase_rules (post state) are claudeflare's
+// own records of the other rules of the phase (Ruling 22), never sent back.
+const RULE_READ_ONLY = [
+  'id', 'created_at', 'updated_at', 'deleted_at', 'version', 'read_only', 'source_account', 'warning_status', 'phase_precedence', 'phase_rules',
+];
+const RULE_ID = new RegExp(`^${ID}$`);
 const LIST_READ_ONLY = ['id', 'created_at', 'updated_at', 'items.*.created_at'];
 const LOCATION_READ_ONLY = ['id', 'created_at', 'updated_at', 'doh_subdomain', 'ip', 'ipv4_destination', 'ipv4_destination_backup'];
 const CONFIG_READ_ONLY = ['created_at', 'updated_at'];
@@ -116,8 +121,9 @@ function validateConfig(op) {
 // A list GET may not carry its items; they have their own paged endpoint,
 // which some API versions answer as a nested array.
 async function captureList(client, readPath) {
-  const current = await client.request('GET', readPath);
-  const items = (await listAll(client, `${readPath}/items`)).flat();
+  const current = await withPermission(PERM.gateway, readPath, () => client.request('GET', readPath));
+  const itemsPath = `${readPath}/items`;
+  const items = (await withPermission(PERM.gateway, itemsPath, () => listAll(client, itemsPath))).flat();
   return { ...current, items: items.map(itemBody) };
 }
 
@@ -125,31 +131,123 @@ function itemBody(item) {
   return nonEmpty(item?.description) ? { value: item.value, description: item.description } : { value: item?.value };
 }
 
+function ambiguous(message) {
+  return new CfError('rollback_ambiguous', message);
+}
+
 function requireBefore(entry) {
-  if (!isPlainObject(entry.before)) throw new CfError('rollback_ambiguous', `No before state recorded for ${entry.path}`);
+  if (!isPlainObject(entry.before)) throw ambiguous(`No before state recorded for ${entry.path}`);
   return entry.before;
 }
 
+const isRuleWrite = (p) => p?.kind === 'gateway_rule_create' || p?.kind === 'gateway_rule_update';
+
+// Spec 5.3 and Ruling 22: a rule write may make the API renumber other rules
+// of its phase. The snapshot keeps { id, precedence } of the rules of the
+// phase that no rule op of the plan targets. Only the plan's last rule write
+// per phase records them: its post state shows every move the plan caused.
+async function captureRule(client, readPath, op, plan) {
+  const create = String(op?.method).toUpperCase() === 'POST';
+  const current = create ? {} : await withPermission(PERM.gateway, readPath, () => client.request('GET', readPath));
+  const phases = [...new Set([current?.filters?.[0], op?.body?.filters?.[0]].filter(nonEmpty))];
+  const out = create ? { phase: phases[0] ?? null } : { ...current };
+  out.phase_precedence = [];
+  const ops = Array.isArray(plan?.ops) ? plan.ops : [op];
+  const index = ops.indexOf(op);
+  const later = index < 0 ? [] : ops.slice(index + 1);
+  const watched = phases.filter((phase) => !later.some((o) => isRuleWrite(parse(o)) && o.body?.filters?.[0] === phase));
+  if (!watched.length) return out;
+  const touched = new Set(ops.map(parse).filter((p) => p?.kind.startsWith('gateway_rule_') && p.id).map((p) => p.id));
+  const collection = create ? readPath : parentPath(readPath);
+  const rules = await withPermission(PERM.gateway, collection, () => listAll(client, collection));
+  out.phase_precedence = rules
+    .filter((r) => watched.includes(r?.filters?.[0]) && !touched.has(r.id) && r.id !== current?.id && Number.isInteger(r.precedence))
+    .map((r) => ({ id: r.id, precedence: r.precedence }));
+  return out;
+}
+
+// Post state of a rule write: the rule plus the other rules of its phase.
+async function capturePostRule(client, readPath) {
+  const rule = await client.request('GET', readPath);
+  const phase = rule?.filters?.[0];
+  const rules = nonEmpty(phase) ? await listAll(client, parentPath(readPath)) : [];
+  return { ...rule, phase_rules: rules.filter((r) => r?.id !== rule?.id && r?.filters?.[0] === phase) };
+}
+
+// Rules the API moved during apply, put back at their snapshot precedence.
+// Each restore checks its own rule for drift first: a rule someone moved
+// after apply is skipped with rollback_drift, never overwritten.
+function shiftedRestores(entry, record, collection) {
+  const snapshot = entry.before?.phase_precedence;
+  const after = record?.state?.phase_rules;
+  if (!Array.isArray(snapshot) || !Array.isArray(after)) return [];
+  return snapshot.flatMap(({ id, precedence }) => {
+    const now = after.find((r) => r?.id === id);
+    if (!isPlainObject(now) || now.precedence === precedence || !RULE_ID.test(String(id))) return [];
+    const path = `${collection}/${id}`;
+    return [{ method: 'PUT', path, body: { ...omitPaths(now, RULE_READ_ONLY), precedence }, drift: { read: path, expect: now } }];
+  });
+}
+
 // Precedence restores of one phase skip together on drift (spec 4.4).
-function phaseGroup(before) {
-  const phase = Array.isArray(before?.filters) ? before.filters[0] : null;
+function phaseGroup(phase) {
   return nonEmpty(phase) ? `gateway-phase:${phase}` : undefined;
 }
 
-function grouped(op, group) {
-  return group ? { ...op, group } : op;
+function grouped(ops, group) {
+  return group ? ops.map((op) => ({ ...op, group })) : ops;
 }
 
-// PUT back the rule as it was, precedence included.
-function restoreRule(entry) {
+// PUT back the rule as it was, precedence included, then every other rule
+// of the phase the API moved.
+function restoreRule(entry, applyResult, record) {
   const before = requireBefore(entry);
-  return [grouped({ method: 'PUT', path: entry.path, body: omitPaths(before, RULE_READ_ONLY) }, phaseGroup(before))];
+  const own = { method: 'PUT', path: entry.path, body: omitPaths(before, RULE_READ_ONLY) };
+  return grouped([own, ...shiftedRestores(entry, record, parentPath(entry.path))], phaseGroup(before.filters?.[0]));
+}
+
+// Delete the created rule, then put back the rules the API moved for it.
+function deleteCreatedRule(entry, applyResult, record) {
+  const id = applyResult?.id;
+  if (!RULE_ID.test(String(id ?? ''))) throw ambiguous(`No usable rule id in apply result for ${entry.path}`);
+  const ops = [{ method: 'DELETE', path: `${entry.path}/${id}` }, ...shiftedRestores(entry, record, entry.path)];
+  return grouped(ops, phaseGroup(entry.before?.phase));
 }
 
 // Re-create a deleted rule at its old precedence (new id).
 function recreateRule(entry) {
   const before = requireBefore(entry);
-  return [grouped({ method: 'POST', path: parentPath(entry.path), body: omitPaths(before, RULE_READ_ONLY) }, phaseGroup(before))];
+  return grouped([{ method: 'POST', path: parentPath(entry.path), body: omitPaths(before, RULE_READ_ONLY) }], phaseGroup(before.filters?.[0]));
+}
+
+// Configuration subcollections with a documented plain off state. Restoring
+// one that was absent before the op turns it off; any other absent
+// subcollection cannot be removed by PATCH.
+const CONFIG_OFF = {
+  tls_decrypt: { enabled: false },
+  protocol_detection: { enabled: false },
+  block_page: { enabled: false },
+  antivirus: { enabled_download_phase: false, enabled_upload_phase: false, fail_closed: false },
+  fips: { tls: false },
+};
+
+// Snapshot of only the subcollections the PATCH sets; null marks one the
+// account did not have.
+async function captureConfig(client, readPath, op) {
+  const current = await withPermission(PERM.gateway, readPath, () => client.request('GET', readPath));
+  const subs = Object.keys(isPlainObject(op?.body?.settings) ? op.body.settings : {});
+  return { settings: Object.fromEntries(subs.map((sub) => [sub, current?.settings?.[sub] ?? null])) };
+}
+
+function restoreConfig(entry) {
+  const before = requireBefore(entry);
+  const settings = {};
+  for (const [sub, value] of Object.entries(isPlainObject(before.settings) ? before.settings : {})) {
+    if (value !== null && value !== undefined) settings[sub] = value;
+    else if (CONFIG_OFF[sub]) settings[sub] = structuredClone(CONFIG_OFF[sub]);
+    else throw ambiguous(`PATCH ${entry.path} added settings.${sub}, absent before; it has no documented off value, so a rollback cannot remove it`);
+  }
+  return Object.keys(settings).length ? [{ method: 'PATCH', path: entry.path, body: { settings } }] : [];
 }
 
 function listBody(before, withType) {
@@ -190,11 +288,12 @@ const key = (type) => (m) => ({ type, id: m[1] });
 const KINDS = [
   {
     ...account, kind: 'gateway_rule_create', methods: ['POST'], pattern: /^\/gateway\/rules$/, resource: () => null,
-    readOnlyFields: RULE_READ_ONLY, inverse: 'delete_created', validate: validateRule,
+    readOnlyFields: RULE_READ_ONLY, capture: captureRule, capturePost: capturePostRule, inverse: deleteCreatedRule, validate: validateRule,
   },
   {
     ...account, kind: 'gateway_rule_update', methods: ['PUT'], pattern: one('rules'), resource: key('gateway_rule'),
-    read: (m, base) => `${base}/gateway/rules/${m[1]}`, readOnlyFields: RULE_READ_ONLY, inverse: restoreRule, validate: validateRule,
+    read: (m, base) => `${base}/gateway/rules/${m[1]}`, readOnlyFields: RULE_READ_ONLY, capture: captureRule, capturePost: capturePostRule,
+    inverse: restoreRule, validate: validateRule,
   },
   {
     ...account, kind: 'gateway_rule_delete', methods: ['DELETE'], pattern: one('rules'), resource: key('gateway_rule'),
@@ -230,7 +329,7 @@ const KINDS = [
   {
     ...account, kind: 'gateway_config_patch', methods: ['PATCH'], pattern: /^\/gateway\/configuration$/,
     resource: () => ({ type: 'gateway_config', id: 'configuration' }), readOnlyFields: CONFIG_READ_ONLY,
-    inverse: 'patch_before', validate: validateConfig, notes: (ctx, op) => notesConfig(ctx, op),
+    capture: captureConfig, inverse: restoreConfig, validate: validateConfig, notes: (ctx, op) => notesConfig(ctx, op),
   },
 ];
 
@@ -578,6 +677,7 @@ async function gather(client, base, ops) {
       ipv4_destination: l.ipv4_destination ?? null, ipv4_destination_backup: l.ipv4_destination_backup ?? null,
     })),
     tls_decrypt: configuration?.settings?.tls_decrypt?.enabled === true,
+    settings_keys: Object.keys(isPlainObject(configuration?.settings) ? configuration.settings : {}),
     protected_hosts: [...CLOUDFLARE_HOSTS, ...idps.flatMap(idpHosts)],
   };
   for (const id of listsToRead(ctx, ops)) {
@@ -673,6 +773,17 @@ function orderLines(ctx, ops, resolveBefore, resolveAfter) {
     const allowAfter = after.get(allow.id);
     for (const block of [...after.values()].filter((r) => isBlock(r) && r.phase === allow.phase && r.id !== allow.id)) {
       const blockBefore = before.get(block.id);
+      if (block.precedence === null || allow.precedence === null || allowAfter?.precedence === null) {
+        // Without a precedence the order after apply is unknown.
+        if (block === blockBefore && allowAfter === allow) continue;
+        const allowSel = analyze(allow.traffic, resolveBefore);
+        const blockSel = analyze(block.traffic, resolveAfter);
+        const shared = allowSel && blockSel ? overlap(allowSel, blockSel) : undefined;
+        if (shared === null) continue;
+        const why = shared === undefined ? 'one of their traffic expressions could not be analyzed' : `both match ${shared}`;
+        lines.push(`${LOCKOUT_PREFIX} Gateway block rule ${block.name} has no precedence, so it may run before allow rule ${allow.name}, and ${why}; set precedence so the allow rule keeps running first. ${ROLLBACK_HINT}`);
+        continue;
+      }
       const shieldedBefore = !(isBlock(blockBefore) && blockBefore.phase === allow.phase) || allow.precedence < blockBefore.precedence;
       const shieldedAfter = isAllow(allowAfter) && allowAfter.phase === block.phase && allowAfter.precedence < block.precedence;
       if (!shieldedBefore || shieldedAfter) continue;
@@ -727,6 +838,11 @@ function lockoutRisks(ctx, ops) {
     }
   });
   lines.push(...orderLines(ctx ?? {}, ops, resolveBefore, resolveAfter));
+  // Spec 5.3 (Ruling 20): TLS decryption turned on is a lockout line.
+  for (const op of ops) {
+    if (parse(op)?.kind !== 'gateway_config_patch' || op.body?.settings?.tls_decrypt?.enabled !== true || ctx?.tls_decrypt === true) continue;
+    lines.push(`${LOCKOUT_PREFIX} turning on TLS decryption breaks apps that use certificate pinning and devices without the Cloudflare root certificate: their HTTPS connections through Gateway fail. Add Do Not Inspect rules for them and install the certificate first. ${ROLLBACK_HINT}`);
+  }
   return [...new Set(lines)];
 }
 
@@ -775,10 +891,14 @@ function notesLocationDelete(ctx, op) {
   return [`Deleting Gateway location ${loc ? `${loc.name} (${id})` : id}: devices and routers that send DNS to its endpoints${old} stop being filtered. A rollback re-creates it with a new DoH subdomain and new IPs, so they must be reconfigured either way.`];
 }
 
-// Spec 5.3: TLS decryption on is a risk note, not a lockout line.
+// A subcollection the account does not have and that has no documented off
+// value cannot be removed again by a rollback PATCH.
 function notesConfig(ctx, op) {
-  if (op?.body?.settings?.tls_decrypt?.enabled !== true || ctx?.tls_decrypt === true) return [];
-  return ['Turning on TLS decryption breaks apps that use certificate pinning and devices without the Cloudflare root certificate; add Do Not Inspect rules for them and install the certificate first.'];
+  const keys = ctx?.settings_keys;
+  if (!Array.isArray(keys)) return [];
+  return Object.keys(isPlainObject(op?.body?.settings) ? op.body.settings : {})
+    .filter((sub) => !keys.includes(sub) && !CONFIG_OFF[sub])
+    .map((sub) => `Not reversible: ${op.method} ${op.path} adds settings.${sub}, which this account does not have yet; a rollback cannot remove it (no documented off value).`);
 }
 
 // ---------- verification (spec 8) ----------

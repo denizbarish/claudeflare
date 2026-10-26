@@ -59,6 +59,25 @@ test('listAll throws too_large beyond the page cap', async () => {
   assert.equal(client.calls.length, MAX_PAGES);
 });
 
+test('listAll stops when an endpoint ignores paging and repeats the same page (Ruling 23)', async () => {
+  // Every request returns the same 50 rows and claims more pages.
+  const client = pagedClient(() => ({ result: items(0, 50), result_info: { total_pages: 9 } }));
+  const all = await listAll(client, '/x');
+  assert.equal(all.length, 50);
+  assert.equal(client.calls.length, 2);
+  // Rows without an id (list items) are compared whole.
+  const valued = pagedClient(() => ({ result: Array.from({ length: 50 }, (_, i) => ({ value: `v${i}` })) }));
+  assert.equal((await listAll(valued, '/items')).length, 50);
+  assert.equal(valued.calls.length, 2);
+});
+
+test('listAll treats a page without result_info and more rows than per_page as the only page', async () => {
+  const client = pagedClient(() => ({ result: items(0, 120) }));
+  const all = await listAll(client, '/x');
+  assert.equal(all.length, 120);
+  assert.equal(client.calls.length, 1);
+});
+
 test('listAll refuses a response that is not an envelope with an array result', async () => {
   for (const reply of [{ result: null }, [], undefined, { result_info: {} }]) {
     const client = pagedClient(() => reply);
