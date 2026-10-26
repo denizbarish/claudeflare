@@ -358,3 +358,9 @@ test('assertWranglerVersion: missing binary, non-zero exit or no version -> wran
   process.env.CLAUDEFLARE_WRANGLER = join(dir, 'does-not-exist');
   await assert.rejects(assertWranglerVersion(dir, opts()), check);
 });
+
+test('failureMessage appends the API error code wrangler reports in its own field', () => {
+  const failed = (extra) => ({ code: 1, stderr: '', events: [{ type: 'command-failed', message: 'A request failed.', ...extra }] });
+  assert.equal(failureMessage(failed({ code: 10007 })), 'A request failed. [code: 10007]');
+  assert.equal(failureMessage(failed({})), 'A request failed.');
+});

@@ -175,7 +175,8 @@ test('first deploy of a Worker that does not exist inverts to deleting it', asyn
       code: 1,
       stdout: '',
       stderr: '',
-      events: [{ type: 'command-failed', message: 'This Worker does not exist on your account. [code: 10007]' }],
+      // Shape seen live with wrangler 4.152.0: the code is a separate field.
+      events: [{ type: 'command-failed', code: 10007, message: 'A request to the Cloudflare API (/accounts/x/workers/scripts/api/deployments) failed.' }],
     },
   });
   const entry = await captureWranglerEntry(runner, noClient, w(['deploy', '--name', 'api']), PLAN);

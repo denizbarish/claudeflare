@@ -221,7 +221,11 @@ export async function runWrangler(
 
 export function failureMessage(result) {
   const failed = (result?.events ?? []).filter((e) => e?.type === 'command-failed' && typeof e.message === 'string');
-  if (failed.length) return failed[failed.length - 1].message;
+  if (failed.length) {
+    // wrangler puts the API error code in its own field, not in the message.
+    const { message, code } = failed[failed.length - 1];
+    return Number.isInteger(code) && !message.includes(`code: ${code}`) ? `${message} [code: ${code}]` : message;
+  }
   const lines = String(result?.stderr ?? '')
     .split('\n')
     .filter((line) => line.trim());
