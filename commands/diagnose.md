@@ -1,11 +1,11 @@
 ---
-description: Diagnose a Cloudflare problem (5xx, 1xxx, redirect loop, cache miss, CORS, WAF false positive, Worker errors 1101, 1102, 1042, missing bindings, deploy or Pages build failures) from a symptom.
+description: Diagnose a Cloudflare problem (5xx, 1xxx, redirect loop, cache miss, CORS, WAF false positive, Worker errors 1101, 1102, 1042, missing bindings, deploy or Pages build failures, Access loops, 403s and JWT errors, Tunnel 1016, 1033 and 502, Gateway over-blocking, WARP private routes, Load Balancing and Spectrum) from a symptom.
 argument-hint: "[symptom]"
 ---
 
 Diagnose this Cloudflare problem: $ARGUMENTS
 
-Load `cf-core`, then `cf-troubleshoot` for zone symptoms or `cf-dev-troubleshoot` for Worker, Pages, binding and deploy symptoms (whichever exists). Then:
+Load `cf-core`, then `cf-troubleshoot` for zone symptoms, `cf-dev-troubleshoot` for Worker, Pages, binding and deploy symptoms, or `cf-zt-troubleshoot` for Access, Tunnel, Gateway, WARP, Load Balancing and Spectrum symptoms (whichever exists). Then:
 
 1. **Symptom.** Collect what is missing: error code, exact URL, when it started, and scope (all users or some). Ask only for what you cannot read yourself.
 2. **Outside evidence.** `curl -sI` the URL (look at `cf-ray`, `cf-cache-status`, `server`, `location`), check DNS resolution and the TLS handshake. Request the origin directly only if the user gives you the origin IP.

@@ -1,6 +1,6 @@
 ---
 name: cf-core
-description: Foundation for every Cloudflare task in claudeflare. Account and zone discovery, plan tier, which channel to use for reads and writes, the exact MCP execute code form the guard accepts (async wrapper, GET or GraphQL, return .result), and the full change protocol (plan, user approval, apply, verify, rollback) for zone plans and for account plans with wrangler ops (Workers, Pages, R2, D1, KV, Queues, secrets). Load this before any other cf-* skill and before any Cloudflare read or change.
+description: Foundation for every Cloudflare task in claudeflare. Account and zone discovery, plan tier, which channel to use for reads and writes, the exact MCP execute code form the guard accepts (async wrapper, GET or GraphQL, return .result), and the full change protocol (plan, user approval, apply, verify, rollback) for zone plans, account plans with wrangler ops (Workers, Pages, R2, D1, KV, Queues, secrets) and Zero Trust and network product plans (Access, Tunnel, Gateway, WARP devices, Load Balancing, Spectrum) with lockout lines, verification and tunnel tokens. Load this before any other cf-* skill and before any Cloudflare read or change.
 ---
 
 # cf-core: discovery, channels and the change protocol
@@ -24,6 +24,10 @@ If the shell cannot find `claudeflare` (exit code 127), run the same commands as
 | Developer platform reads | Read-only wrangler in the project: `wrangler deployments list --name <w> --json`, `wrangler versions list --name <w> --json`, `wrangler d1 migrations list <db> --remote`, `wrangler kv namespace list`, `wrangler secret list` and the other reads in cf-workers and cf-storage |
 | Live Worker logs | `claudeflare tail --worker <name> --seconds <1..60> [--status error]` (JSON summary: `events`, `outcomes`, `top_exceptions`, `samples`, secrets redacted) |
 | Developer platform writes | Account plan with `wrangler` ops (5.2.2), `claudeflare preflight`, then the same protocol |
+| Zero Trust and network writes | Product plan (5.2.4): account plans for Access, Tunnel, Gateway, Devices, pools and monitors; zone plans for load balancers and Spectrum |
+| Tunnel token for a connector | `claudeflare tunnel-token --account <account_id> --tunnel <tunnel_id> --env-path <file> [--var TUNNEL_TOKEN]` (5.2.4); never an MCP read of the token |
+
+Diagnosis skills: `cf-troubleshoot` (zone errors), `cf-dev-troubleshoot` (Workers and Pages), `cf-zt-troubleshoot` (Access, Tunnel, Gateway, WARP, Load Balancing, Spectrum).
 
 Never send a write any other way: no MCP write, no `curl` with a non-GET method to `api.cloudflare.com`, no direct `wrangler` write (`deploy`, `delete`, `secret put` and so on, also through `npx`, `pnpm`, `yarn`, `bunx` or a `package.json` script). The guard hook denies all of them. Never hand the user ready-to-run write commands either (curl, wget or API snippets with a non-GET method), and never suggest bypassing the protocol. If a change cannot be completed through the protocol, say why and stop; give dashboard steps only when the user explicitly asks to make the change manually. Never run commands on the origin server; give origin-side fixes as step-by-step instructions for the user.
 
@@ -147,11 +151,11 @@ One plan may not:
 }
 ```
 
-- `project_dir` is absolute; path arguments (`--config`, `--assets`, a Pages directory) must stay inside it.
+- An account plan may omit `project_dir` only when it holds no `wrangler` op (a product plan, 5.2.4, or a Pages rollback alone). With a `wrangler` op it is required and absolute, and path arguments (`--config`, `--assets`, a Pages directory) must stay inside it.
 - Allowed `args` (anything else is `invalid_op`): `deploy`, `versions upload`, `versions deploy`, `rollback`, `delete`, `pages deploy`, `d1 migrations apply <db> --remote`, `d1 time-travel restore`, `d1 create|delete`, `r2 bucket create|delete`, `r2 bucket dev-url enable|disable`, `kv namespace create|delete`, `queues create|delete`, `secret put|delete`. `--name` is required for Worker deploys, uploads, rollbacks, deletes and secrets. Never put `--yes`, `-y`, `--message`, `--dry-run` or `--outdir` in a draft; claudeflare adds what it needs.
 - Every delete op carries `"confirm_name": "<resource name>"`. R2 bucket deletes are refused unless the bucket is empty (`resource_not_empty`); KV, Queue and D1 deletes get a data-loss risk line.
 - `health_check` (optional, only on `deploy`, `versions deploy`, `rollback` and `pages deploy`): `url` must be `https`, `expect_status` (an integer, 100 to 599) defaults to 200. Redirects are not followed; a failure names the redirect target. Apply tries it 3 times, 5 seconds apart. `"on_failed_check": "rollback"` reverts that op right away when the check fails.
-- The only account REST op is a Pages rollback: `{ "method": "POST", "path": "/accounts/<account_id>/pages/projects/<project>/deployments/<deployment_id>/rollback" }`.
+- Besides the product ops in 5.2.4, the only account REST op is a Pages rollback: `{ "method": "POST", "path": "/accounts/<account_id>/pages/projects/<project>/deployments/<deployment_id>/rollback" }`. A plan never mixes product ops with `wrangler` ops (`plan_conflict`).
 - `source_hash`, `source_paths` and `pending_migrations` are computed by claudeflare; any value in the draft is replaced.
 
 Secrets: never ask the user to paste a secret into chat, a draft, a plan or a command line. A secret op names its source with `value_from_env`, which must equal the secret name:
@@ -170,6 +174,38 @@ claudeflare preflight --file /tmp/claudeflare-draft-deploy-api.json
 
 It prints `{ "ok", "checks": [{ "name", "ok", "detail" }], "upload_size"? (one build) or "upload_sizes"? (`[{ worker, size }]`, several), "source_hash"?, "pending_migrations"? }` and exits 1 when a check fails. Checks: ops, wrangler 4 present, the token can read the account, wrangler config (the op's `--config` and `--env`; found as wrangler finds it, and refused when it lies outside `project_dir`; for `deploy` and `versions upload` a redirected `.wrangler/deploy/config.json` is refused too, and the error names the `--config` to add), bindings exist (KV, R2, D1, Queues, Workers behind service and Durable Object bindings, Vectorize, Hyperdrive), a dry-run build (`deploy --dry-run`, which runs the project's own build locally), pending D1 migrations with their SQL, and the source hash. On a failed check, report it and stop; fix the cause before planning. Preflight writes nothing to Cloudflare.
 
+#### 5.2.4 Product plans (Zero Trust and network)
+
+Access, Tunnel, Gateway, Devices (WARP), Load Balancing and Spectrum ops keep the zone op shape `{ "method", "path", "body" }`; each product skill lists its exact paths, bodies and rollbacks. Scope per product:
+
+| Product | Plan | Paths |
+|---|---|---|
+| Access, Tunnel, Gateway, Devices | `"scope": "account"`, no `project_dir` | `/accounts/<account_id>/access/...`, `/cfd_tunnel/...`, `/teamnet/...`, `/gateway/...`, `/devices/...` |
+| Load Balancing monitors and pools | `"scope": "account"`, no `project_dir` | `/accounts/<account_id>/load_balancers/monitors/...`, `/pools/...` |
+| Load balancers, Spectrum apps | zone plan | `/zones/{zone_id}/load_balancers/...`, `/zones/{zone_id}/spectrum/apps/...` |
+
+One plan never mixes scopes (a tunnel config and its DNS CNAME are two plans) and never mixes product ops with `wrangler` ops. Zone-scoped Access paths (`/zones/<zone_id>/access/...`) are refused with `invalid_op`; use the account form. Unknown account write paths are `invalid_op`, and so is a zone op on a product collection with a method its kind does not take (for example a load balancer PATCH: PUT the whole resource).
+
+Optional op fields, all covered by the ops hash and so by the approval:
+
+- `confirm_name` (required on every delete): the live name of the resource, read again at preflight; a mismatch is `invalid_op`. Most resources use `name`. Exceptions: a Spectrum app uses `dns.name`, a tunnel route uses `network` (the CIDR), and a Load Balancing monitor uses its `description`, or its id when the description is empty.
+- `verify`: an extra check after apply, `{ "expect": "<check>", "url": "<http or https URL>" }`. `expect` is one of `access_login` (an unauthenticated GET answers 302 to `<team>.cloudflareaccess.com`), `status:<100-599>`, `tunnel_serving` (no error 1016 or 1033), `pool_healthy` (the pool reports healthy) or `tcp_open` (a TCP connect to the URL's host and port). `access_login`, `status:` and `tcp_open` need `url`. Example: `"verify": { "expect": "access_login", "url": "https://wiki.example.com/" }`.
+- `secret_fields_from_env`: a map of body field path to environment variable name, for a credential the body must carry, for example `{ "config.client_secret": "OKTA_CLIENT_SECRET" }` on an identity provider. Leave the field out of the body; a literal value in a secret field is `invalid_op`. Ask the user to export the variable in the shell that runs `claudeflare apply`; apply reads it, sends it and stores it nowhere (`secret_env_missing` when it is not set, before anything runs). Names starting with `CLOUDFLARE_`, `WRANGLER_`, `CLAUDEFLARE_` or `ANTHROPIC_`, and a value equal to the API token, are refused.
+
+`claudeflare preflight --file <draft>` and `plan new` run the product checks in this order, per product: entitlement (a Zero Trust organization, the Load Balancing add-on, the Spectrum protocol on the zone's plan; `not_entitled`), a permission probe (`missing_permission`, naming the permission from `docs/token-template.md`), the account reads, `confirm_name`, dependencies (a resource still used elsewhere: `resource_in_use`) and lockout analysis. A failed check makes `plan new` refuse with `preflight_failed`, its detail naming the code. The report adds `lockout_risks` and `dependencies`.
+
+Lockout lines: a change that can lock users or admins out (an Access app without a working allow policy, an app domain covering the team domain or an identity provider host, removing the only identity provider, a Gateway block rule matching all traffic or Cloudflare and identity provider domains, a block moved above an allow, a WARP split tunnel mode switch, `switch_locked` without admin override, a tunnel config that drops a hostname with a CNAME, a pool left without enabled origins) gets a risk line starting with `Lockout risk:`. These lines never refuse a plan; the plan stores them as `lockout_risks` and shows them first in its risk. Use the same prefix in your own words before a plan exists: when the user's request as asked would lock people out and you narrow it, or ask how to handle it, write that warning as a `Lockout risk:` line. Show every one to the user before approval, and ask the user to keep this terminal open until the change is verified: the API token still works when a dashboard login does not, so `claudeflare rollback` can restore access. Apply runs the analysis again on fresh reads (5.5).
+
+Secrets in responses: tunnel `token`, `credentials_file` and `tunnel_secret`, service token `client_secret` and identity provider secret fields are redacted by field path before anything is stored or printed; results show `[redacted]`. A service token create writes `{ client_id, client_secret }` to `.claudeflare/secrets/<plan id>-<op index>.json` (mode 0600, ignored by git) and the result names only that path. Never open, print or copy that file; tell the user to move the values into their secret store in their own terminal.
+
+Tunnel tokens never go through a plan or the chat:
+
+```
+claudeflare tunnel-token --account 0123456789abcdef0123456789abcdef --tunnel <tunnel id> --env-path ./cloudflared.env
+```
+
+It reads the token with the write token (the endpoint needs Cloudflare Tunnel Edit) and writes `TUNNEL_TOKEN=<value>` (or the `--var` name) into the file: created with mode 0600, an existing line replaced, other lines kept. It prints `{ "file", "variable", "gitignored" }` plus `gitignore_warning` when git does not ignore the file and `mode_warning` when group or others can read it; never the value. The flag is `--env-path`, not `--env-file`. The guard blocks reading the file back; the program that needs the token (`cloudflared` through `TUNNEL_TOKEN`, Docker Compose with `--env-file`) reads it.
+
 ### 5.3 Create the plan
 
 ```
@@ -184,6 +220,7 @@ Show the user, in their language:
 
 - plan id and summary,
 - a before and after table for each changed value (resource, current, proposed),
+- every `Lockout risk:` line first, word for word,
 - the risk note, and any op that cannot be rolled back,
 - what you will verify after apply.
 
@@ -210,6 +247,11 @@ Run it with a Bash timeout of 600000 ms: a wrangler op may take up to 5 minutes 
 - `partially_applied`: apply stopped at the first failed op. Report which ops succeeded and the error, then offer a rollback (5.7). Never retry silently.
 - `applied_check_failed`: the ops ran but a health check failed and nothing was reverted. Show the check result and offer a rollback plan.
 - `rolled_back_auto`: a health check failed and that op was reverted automatically (`on_failed_check`). Verify the revert; offer a rollback plan for earlier ops in the same plan.
+- `applied_verify_failed` (product plans): every op ran, but a verification check failed (5.6). Nothing was undone.
+
+Product plans, before any write: apply checks the `secret_fields_from_env` variables (`secret_env_missing`), then runs the product preflight again on fresh reads. A failed check stops with its own code (`not_entitled`, `missing_permission`, `resource_in_use`, `invalid_op`). A `Lockout risk:` line the plan did not show stops apply with `risk_changed` and prints the new line; nothing was written and the approval stays unused, but create a new plan with `claudeflare plan new` so the user approves with the line in view. Lines that disappeared do not stop apply.
+
+Secret file failure: when a service token create succeeded but its `.claudeflare/secrets/` file cannot be written (for example a symlink in place of the folder, or no write permission), apply stops at that op with `partially_applied` and the message `Op <i> applied but its secret file could not be written`. The token exists in Cloudflare but its one-time secret is lost and was never printed; later ops did not run, and the rollback still covers the op. Tell the user to fix the folder, then delete or rotate the token in the dashboard (rotation is not an op) or roll the plan back and create a new token.
 
 Wrangler op results carry `version_id` (deploys) or `resource_id` (KV namespace creates). A failed wrangler op is `wrangler_failed`; a timed-out deploy or a failed `d1 migrations apply` may have partly applied, so read the current state before anything else. Risk notes added during apply (`rollback_not_empty`, `rollback_ambiguous`, `kv_id_unknown`) appear in the plan's `risk_notes`; tell the user each one.
 
@@ -219,13 +261,27 @@ After apply, show the user every `advisory_lockout` line of the printed result: 
 
 Re-read each changed resource through MCP (GET) and compare with the plan. Where useful, check live behavior with `curl -sI` (for example a redirect now returns 301 to the right target). Report the result with evidence.
 
+Product ops are verified by apply itself, report only: each op's module checks (a read-back of the resource, plus the product's live check such as the Access login redirect, tunnel serving, pool health or a Spectrum TCP connect) and the op's `verify` run after the ops, retried every 5 seconds for up to 60 seconds per op. Each result carries `verify: { ok, checks: [{ name, ok, detail }] }`. A failed check never undoes anything:
+
+- On a normal plan whose ops all ran, the status becomes `applied_verify_failed` and apply creates a rollback draft (status `draft`, needs its own approval). The plan records it as `rollback_draft`; the error hint names it. If the draft could not be built, `rollback_draft_error` says why; run `claudeflare rollback <id>` after fixing the cause.
+- A `partially_applied` plan keeps that status; its checks are still recorded, and the hint adds the rollback draft.
+- A rollback plan is verified the same way and may end `applied_verify_failed`, but never gets a rollback draft of its own.
+
+Show the user every failed check with its detail, then the rollback draft id and its risk. Say plainly what a read-back cannot show: Gateway filtering and WARP behavior are only verified from a device behind them.
+
 ### 5.7 Rollback
 
 ```
 claudeflare rollback <plan-id>
 ```
 
-This only creates a new draft rollback plan from the snapshot's inverse ops; it changes nothing yet. Present it (5.4), get a new `/claudeflare:approve <rollback-plan-id>` from the user, then `claudeflare apply <rollback-plan-id>` and verify. Only applied or partially applied plans can be rolled back.
+This only creates a new draft rollback plan from the snapshot's inverse ops; it changes nothing yet. Present it (5.4), get a new `/claudeflare:approve <rollback-plan-id>` from the user, then `claudeflare apply <rollback-plan-id>` and verify. Only plans with applied ops can be rolled back: `applied`, `partially_applied`, `applied_check_failed`, `rolled_back_auto` and `applied_verify_failed` (except a rollback plan that ended `applied_verify_failed`). After a fully applied rollback the source plan's status is `rolled_back`.
+
+Product rollbacks:
+
+- The rollback plan gets its `Lockout risk:` lines when it is created (apply does not analyze it again). If the analysis cannot run, the plan carries a `Lockout risk: lockout analysis could not run ...` line instead; review its ops before approving.
+- Drift precheck: before each inverse, apply re-reads the resource and compares it with the state recorded right after the original apply. If someone changed it since, that inverse is skipped with `rollback_drift` and a detail, and so are the other inverses of its group (the precedence restores of one Gateway phase, a device profile mode change and its lists, a tunnel's connection cleanup and delete). The rollback then ends `partially_applied` and the source plan is not marked `rolled_back`. Read the current state and draft a fresh plan for what still differs.
+- Re-creating a deleted resource gives it a new id (an Access app also a new AUD, a Gateway location a new DoH subdomain); the rollback risk names what changes.
 
 - Rollback restores the values in the snapshot taken before the original plan ran, even if later plans changed the same resource since. Read the current state first and tell the user which later changes it would undo.
 - If a rollback plan ends `partially_applied`, do not roll back the rollback or retry it. Read the current state of every touched resource and draft a fresh plan for what still differs.
@@ -245,7 +301,15 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 |---|---|
 | `permission` (Cloudflare 9109 or 10000) | Name the missing permission from the hint and point to `docs/token-template.md`. Do not guess or retry. |
 | `missing_token` | Writes and `claudeflare get` need `CLOUDFLARE_API_TOKEN`. Point the user to `/claudeflare:setup`. Never ask the user to paste a token into chat. |
-| `plan_conflict` | Two ops in one plan touch the same resource; split into separate plans (5.2). |
+| `plan_conflict` | Two ops in one plan touch the same resource, product ops are mixed with `wrangler` ops, or a product order rule is broken (Gateway precedence changes of one phase out of order, a WARP list PUT before its mode change, a tunnel delete without an earlier connections delete); split or reorder as the message says (5.2, product skills). |
+| `not_entitled` | The account or zone lacks the product: no Zero Trust organization (the user creates one in the Zero Trust dashboard; the Free plan is enough), no Load Balancing add-on, or a Spectrum protocol the zone's plan does not include. Say so plainly and offer the option the plan allows. |
+| `missing_permission` | The token cannot read the product; the message names the permission. Point to `docs/token-template.md`. Nothing was written. |
+| `resource_in_use` | The resource is still used (an Access policy by an app, a group or service token by a policy, a Gateway list by a rule, a posture rule by a policy, a pool or monitor by a load balancer or pool, a virtual network by routes). Remove the use first, in an earlier op of the same plan or a separate plan. |
+| `too_large` | A Gateway list body above 1000 items, or a list endpoint with more than 200 pages that cannot be scanned whole. Split the list, or narrow the change. |
+| `risk_changed` | Apply found a `Lockout risk:` line the plan did not show; nothing was written and the approval is unused. Create a new plan, show the line and get a new approval. |
+| `rollback_drift` (op result) | A rollback inverse was skipped because the resource changed after the original apply (5.7). Read the current state and draft a fresh plan for what still differs. |
+| `applied_verify_failed` (status) | Every op ran but a verification check failed; show the failed checks and the `rollback_draft` id (5.6). |
+| `write_failed` / `invalid_response` (`tunnel-token`) | The env file could not be written (path, permissions, a symlink) or the API returned no usable token; the message never holds the value. Fix the path and run `claudeflare tunnel-token` again. |
 | `not_draft` | The plan already ran or was rolled back; create a new plan for further changes. |
 | `not_approved` | Ask the user for a fresh `/claudeflare:approve <plan-id>`. |
 | `apply_failed` | Report the status and failed op. `partially_applied`: offer `claudeflare rollback <id>`. `failed`: no write was made; fix the cause and create a new plan. |
@@ -254,15 +318,15 @@ Errors print as `{ "error": { "code", "message", "hint" } }` on stderr.
 | `not_applied` | Only applied or partially applied plans can be rolled back; check `claudeflare plan show <id>`. |
 | `snapshot_exists` | Apply already started for this plan once; do not retry (see the recovery note below). |
 | `invalid_zone` | Fix `zone_id` (32 hex chars) or `zone_name` from discovery and create the plan again. |
-| `invalid_op` | An op leaves the plan's zone, creates a Page Rule, keeps a placeholder or uses an odd method; fix the draft with real ids under `/zones/{zone_id}/`. |
+| `invalid_op` | An op leaves the plan's zone, creates a Page Rule, keeps a placeholder or uses an odd method; fix the draft with real ids under `/zones/{zone_id}/`. On product ops also: a path no product kind matches, zone-scoped Access, a body the kind refuses, a literal secret field, a bad `verify`, or a `confirm_name` that does not match the live name. |
 | `rollback_stale` | The source plan was already rolled back; read the current state and draft a fresh plan if a change is still needed. |
 | `bad_key` | The approval key file is damaged; tell the user to delete the file named in the hint, then approve again. |
 | `rate_limit` | Cloudflare kept returning 429 after retries; wait a minute, then retry the read. Never retry an apply; check the plan status first. |
-| `invalid_account` | Fix `account_id` (32 hex chars), `account_name` or `project_dir` (absolute path to an existing directory) and create the plan again. |
+| `invalid_account` | Fix `account_id` (32 hex chars), `account_name` or `project_dir` (absolute path to an existing directory; it may be left out only when the plan holds no `wrangler` op) and create the plan again. |
 | `preflight_failed` | Run `claudeflare preflight --file <draft>` for the full report; fix each failed check before planning again. |
 | `source_changed` | The project changed after approval. Create and approve a new plan for the current code. |
 | `source_hash_missing` | A deploy, Pages deploy or migration op has no source hash; create the plan with `claudeflare plan new`, never by hand. |
-| `secret_env_missing` | Ask the user to export the named variable in the shell that runs `claudeflare apply`. Never ask for the value. |
+| `secret_env_missing` | Ask the user to export the named variable (`value_from_env` or `secret_fields_from_env`) in the shell that runs `claudeflare apply`. Never ask for the value. Nothing was written and the approval is kept. |
 | `account_mismatch` | The token cannot read the plan's account; use a token for that account. |
 | `wrangler_missing` / `wrangler_version` | Ask the user to add wrangler 4 to the project (`npm i -D wrangler@4`). |
 | `wrangler_failed` | Report the wrangler error from the message. Read the current state before planning again; never retry an apply. |

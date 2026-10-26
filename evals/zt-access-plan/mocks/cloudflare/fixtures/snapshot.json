@@ -1,0 +1,32 @@
+{
+  "GET /accounts": [
+    { "id": "0123456789abcdef0123456789abcdef", "name": "Acme", "type": "standard" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef": { "id": "0123456789abcdef0123456789abcdef", "name": "Acme" },
+  "GET /zones (query name=example.com, or no query)": [
+    { "id": "fedcba9876543210fedcba9876543210", "name": "example.com", "status": "active", "plan": { "legacy_id": "free" }, "account": { "id": "0123456789abcdef0123456789abcdef", "name": "Acme" } }
+  ],
+  "GET /zones/fedcba9876543210fedcba9876543210/dns_records": [
+    { "id": "66666666666666666666666666666661", "name": "wiki.example.com", "type": "A", "content": "192.0.2.10", "proxied": true, "ttl": 1 },
+    { "id": "66666666666666666666666666666662", "name": "git.example.com", "type": "A", "content": "192.0.2.11", "proxied": true, "ttl": 1 },
+    { "id": "66666666666666666666666666666663", "name": "grafana.example.com", "type": "A", "content": "192.0.2.12", "proxied": true, "ttl": 1 },
+    { "id": "66666666666666666666666666666664", "name": "sso.example.com", "type": "A", "content": "192.0.2.20", "proxied": true, "ttl": 1 },
+    { "id": "66666666666666666666666666666665", "name": "example.com", "type": "A", "content": "192.0.2.30", "proxied": true, "ttl": 1 }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/organizations": {
+    "auth_domain": "example-team.cloudflareaccess.com", "name": "Example Team", "is_ui_read_only": false, "auto_redirect_to_identity": false,
+    "session_duration": "24h", "created_at": "2026-01-10T09:00:00Z", "updated_at": "2026-09-01T12:00:00Z"
+  },
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/apps": [],
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/policies": [
+    { "id": "bbbbbbbb-0000-4000-8000-000000000001", "name": "Employees", "decision": "allow", "include": [{ "email_domain": { "domain": "example.com" } }], "exclude": [], "require": [], "session_duration": "24h", "reusable": true, "app_count": 0, "created_at": "2026-02-01T09:00:00Z", "updated_at": "2026-02-01T09:00:00Z" },
+    { "id": "bbbbbbbb-0000-4000-8000-000000000002", "name": "Contractors", "decision": "allow", "include": [{ "group": { "id": "dddddddd-0000-4000-8000-000000000001" } }], "exclude": [], "require": [], "reusable": true, "app_count": 0, "created_at": "2026-03-01T09:00:00Z", "updated_at": "2026-03-01T09:00:00Z" }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/identity_providers": [
+    { "id": "eeeeeeee-0000-4000-8000-000000000001", "name": "Okta", "type": "okta", "config": { "client_id": "0oa000000000000000000", "okta_account": "https://example-org.okta.com", "claims": [] }, "scim_config": { "enabled": false } },
+    { "id": "eeeeeeee-0000-4000-8000-000000000002", "name": "Corporate SSO", "type": "oidc", "config": { "client_id": "claudeflare-test-client", "auth_url": "https://sso.example.com/oauth2/authorize", "token_url": "https://sso.example.com/oauth2/token", "certs_url": "https://sso.example.com/oauth2/keys", "scopes": ["openid", "email"] }, "scim_config": { "enabled": false } }
+  ],
+  "GET /accounts/0123456789abcdef0123456789abcdef/access/groups": [
+    { "id": "dddddddd-0000-4000-8000-000000000001", "name": "Contractors", "include": [{ "email_domain": { "domain": "contractor.example" } }], "exclude": [], "require": [], "created_at": "2026-02-10T09:00:00Z", "updated_at": "2026-02-10T09:00:00Z" }
+  ]
+}

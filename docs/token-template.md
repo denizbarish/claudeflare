@@ -5,6 +5,7 @@ claudeflare reads through the official Cloudflare MCP server and writes only thr
 - **Read set:** for `claudeflare get` (the read fallback when MCP is unavailable). Audits and diagnosis through MCP need no token at all.
 - **Write set:** for `claudeflare apply`. Create this token only when you want to apply changes.
 - **Developer platform sets:** for Workers, Pages and storage. wrangler uses the same token for preflight, `claudeflare tail` and account plans.
+- **Zero Trust and network sets:** for Access, Tunnel, Gateway, WARP devices, Load Balancing and Spectrum, including `claudeflare tunnel-token`.
 
 Create the token in the Cloudflare dashboard under **My Profile > API Tokens > Create Token > Create Custom Token**. Scope zone permissions to the zones you want claudeflare to manage (**Zone Resources > Include > Specific zone**) and account permissions to the account that owns them.
 
@@ -111,6 +112,28 @@ Write (account plans), the read rows plus:
 | Zone | Workers Routes Edit (API: Workers Routes Write) | Deploys that change `routes` in the wrangler config |
 
 claudeflare passes the account id to wrangler (`CLOUDFLARE_ACCOUNT_ID`), so the token needs no Memberships permission.
+
+## Zero Trust and network sets
+
+For Access, Tunnel, Gateway, WARP devices, Load Balancing and Spectrum. Add only the products you use. Put the Read form on the read token and the Edit form on the write token (the API reference calls the edit forms "Write"). Preflight probes one read per product a plan touches; a 403 stops with `missing_permission` and names the permission from this table. These names follow the [permissions page](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) as read on 2026-10-26; they were not yet checked against a live token.
+
+| Scope | Read token | Write token | Used for |
+|---|---|---|---|
+| Account | Access: Apps and Policies Read | Access: Apps and Policies Edit | Access applications, reusable and app-scoped policies; Devices reads Access apps and policies for posture checks |
+| Account | Access: Organizations, Identity Providers, and Groups Read | Access: Organizations, Identity Providers, and Groups Edit | Zero Trust organization (team domain), identity providers, groups; Gateway and Devices read identity providers for lockout checks |
+| Account | Access: Service Tokens Read | Access: Service Tokens Edit | Service tokens |
+| Account | Cloudflare Tunnel Read | Cloudflare Tunnel Edit | Tunnels, ingress configurations, connections, and `claudeflare tunnel-token` (the token endpoint needs Edit). Newer accounts may show it as Cloudflare One Connectors |
+| Account | Cloudflare One Networks Read | Cloudflare One Networks Edit | Private network routes and virtual networks (`/teamnet/...`). claudeflare's permission hint for route ops names Cloudflare Tunnel; add both |
+| Account | Zero Trust Read | Zero Trust Edit | Gateway rules, lists, locations and configuration; WARP device profiles, split tunnel lists, posture rules and device settings |
+| Account | Load Balancing: Monitors and Pools Read | Load Balancing: Monitors and Pools Edit | Monitors, pools, pool health, `references` and `preview` |
+| Zone | Load Balancers Read | Load Balancers Edit | Load balancers of a zone (zone plans) |
+| Zone | Zone Settings Read | Zone Settings Edit | Spectrum apps (zone plans) |
+| Zone | Zone Read | Zone Read | Zone plan tier for the Spectrum protocol check, zone list for tunnel CNAME scans |
+| Zone | DNS Read | DNS Write | Tunnel CNAMEs to `<uuid>.cfargotunnel.com` (reads in Tunnel preflight, writes in separate zone plans) |
+
+The Zero Trust organization itself cannot be created through the API. If preflight reports `not_entitled` for Access, Gateway or Devices, create the organization in the Zero Trust dashboard first (the Free plan is enough). Load Balancing is a paid add-on and Spectrum needs a paid zone plan; preflight reports `not_entitled` without them.
+
+Not needed and never used: Dashboard SSO, account members and roles, billing.
 
 ## Sources
 

@@ -1,9 +1,9 @@
 ---
 name: cf-audit
-description: Scored Cloudflare zone and developer platform audit. Defines the shared finding format and severity scale, runs one cf-auditor per domain in parallel, merges and deduplicates findings, and writes the report with claudeflare report. Use for audits, health checks, security or performance reviews of a zone, and whenever findings need the shared format.
+description: Scored Cloudflare audit of a zone, a developer platform account, or an account's Zero Trust and network products (Access, Tunnel, Gateway, WARP devices, Load Balancing, Spectrum). Defines the shared finding format and severity scale, runs one cf-auditor per domain in parallel, merges and deduplicates findings, and writes the report with claudeflare report. Use for audits, health checks, security or performance reviews, and whenever findings need the shared format.
 ---
 
-# cf-audit: scored zone audit
+# cf-audit: scored audit
 
 Load `cf-core` first; it covers zone discovery and the change protocol. An audit is read-only. Nothing changes until the user picks findings to fix and approves a plan.
 
@@ -12,6 +12,8 @@ Load `cf-core` first; it covers zone discovery and the change protocol. An audit
 Use cf-core discovery to get `zone_id`, `zone_name` and the plan tier (`plan.legacy_id`). If the user did not name a zone and more than one exists, ask. Run `claudeflare init` (safe to run every time).
 
 For the developer platform domains (`workers`, `pages`, `storage`) the target is an account, not a zone: get the account `id` and `name`, and the project directory with the wrangler config when the user works in one. Audit them when the user asks for a Workers, Pages or storage audit, or for a full audit of an account. A full zone audit does not include them unless the user asks.
+
+Zero Trust and network domains, in short. A full account audit includes `access`, `tunnel`, `gateway` and `devices` (`tunnel` always; the other three when a Zero Trust organization exists), plus the account half of `load_balancing` when the account has pools. A full zone audit includes `load_balancing` and `spectrum` when the zone has load balancers or Spectrum apps. A domain whose product is not in use is left out, not scored 100; say so in the summary. Each domain's `fix` ops follow the scope rules of cf-core 5.2.4, so fixes from one audit may need an account plan and a separate zone plan. The details per domain:
 
 The `tunnel` domain audits an account too: its tunnels, connectors, ingress configs, routes and the CNAMEs to `<uuid>.cfargotunnel.com` in the account's zones. A full account audit includes it. Its `fix` ops use `/accounts/{account_id}/...` for tunnel writes (an account plan) and `/zones/{zone_id}/...` for DNS fixes (a separate zone plan).
 
@@ -46,7 +48,7 @@ The full audit covers these domains, each checked against the skill with the sam
 | gateway (account) | `cf-gateway` |
 | devices (account) | `cf-devices` |
 | load_balancing (account and zone) | `cf-load-balancing` |
-| spectrum | `cf-spectrum` |
+| spectrum (zone) | `cf-spectrum` |
 
 A command may ask for a subset (for example performance, cache and ssl). Audit only domains whose skill folder exists next to this skill (`<plugin skills dir>/cf-<domain>/SKILL.md`). Tell the user which requested domains were skipped because their skill is missing.
 
@@ -147,4 +149,4 @@ In the user's language:
 - the report path (`file`),
 - domains skipped or not audited, and why (for not audited domains, the `unread` entries).
 
-Then ask which findings to fix. Selected findings with a non-empty `fix` become plans through the cf-core change protocol. Group compatible fixes into one plan, and split where cf-core's plan limits require it (same DNS record or rule twice, more than one rule delete per ruleset, same phase entrypoint twice). Findings with an empty `fix` get step-by-step instructions instead.
+Then ask which findings to fix. Selected findings with a non-empty `fix` become plans through the cf-core change protocol. Group compatible fixes into one plan, and split where cf-core's plan limits require it (same DNS record or rule twice, more than one rule delete per ruleset, same phase entrypoint twice, account and zone ops, product and `wrangler` ops). Findings with an empty `fix` get step-by-step instructions instead.
