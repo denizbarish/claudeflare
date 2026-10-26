@@ -1,0 +1,149 @@
+{
+  "GET /accounts": [
+    {
+      "id": "9a7806061c88ada191ed06f989cc3dac",
+      "name": "Example Ltd",
+      "type": "standard"
+    }
+  ],
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac/workers/scripts": [
+    {
+      "id": "api",
+      "created_on": "2025-11-02T09:00:00Z",
+      "modified_on": "2026-10-25T14:02:11Z",
+      "usage_model": "standard",
+      "compatibility_date": "2026-06-01",
+      "handlers": [
+        "fetch"
+      ]
+    }
+  ],
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac/workers/scripts/api/settings": {
+    "compatibility_date": "2026-06-01",
+    "compatibility_flags": [],
+    "limits": {},
+    "observability": {
+      "enabled": true
+    },
+    "bindings": [
+      {
+        "name": "AVATARS",
+        "type": "r2_bucket",
+        "bucket_name": "avatars"
+      }
+    ]
+  },
+  "GET /accounts/9a7806061c88ada191ed06f989cc3dac/workers/scripts/api/deployments": {
+    "deployments": [
+      {
+        "id": "dep-2",
+        "created_on": "2026-10-25T14:02:11Z",
+        "source": "wrangler",
+        "versions": [
+          {
+            "version_id": "44444444-4444-4444-8444-444444444444",
+            "percentage": 100
+          }
+        ],
+        "annotations": {
+          "workers/message": "avatar resize in worker"
+        }
+      },
+      {
+        "id": "dep-1",
+        "created_on": "2026-10-20T08:30:00Z",
+        "source": "wrangler",
+        "versions": [
+          {
+            "version_id": "22222222-2222-4222-8222-222222222222",
+            "percentage": 100
+          }
+        ]
+      }
+    ]
+  },
+  "POST /client/v4/graphql (workersInvocationsAdaptive for scriptName api, by hour and status, 2026-10-25 10:00 to 2026-10-26 10:00 UTC)": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "workersInvocationsAdaptive": [
+              {
+                "dimensions": {
+                  "datetimeHour": "2026-10-25T13:00:00Z",
+                  "status": "success"
+                },
+                "sum": {
+                  "requests": 5210,
+                  "errors": 0
+                },
+                "quantiles": {
+                  "cpuTimeP50": 1800,
+                  "cpuTimeP99": 4100
+                }
+              },
+              {
+                "dimensions": {
+                  "datetimeHour": "2026-10-25T14:00:00Z",
+                  "status": "success"
+                },
+                "sum": {
+                  "requests": 4380,
+                  "errors": 0
+                },
+                "quantiles": {
+                  "cpuTimeP50": 6900,
+                  "cpuTimeP99": 9800
+                }
+              },
+              {
+                "dimensions": {
+                  "datetimeHour": "2026-10-25T14:00:00Z",
+                  "status": "exceededResources"
+                },
+                "sum": {
+                  "requests": 912,
+                  "errors": 912
+                },
+                "quantiles": {
+                  "cpuTimeP50": 10400,
+                  "cpuTimeP99": 14200
+                }
+              },
+              {
+                "dimensions": {
+                  "datetimeHour": "2026-10-26T09:00:00Z",
+                  "status": "success"
+                },
+                "sum": {
+                  "requests": 4720,
+                  "errors": 0
+                },
+                "quantiles": {
+                  "cpuTimeP50": 7100,
+                  "cpuTimeP99": 9900
+                }
+              },
+              {
+                "dimensions": {
+                  "datetimeHour": "2026-10-26T09:00:00Z",
+                  "status": "exceededResources"
+                },
+                "sum": {
+                  "requests": 1034,
+                  "errors": 1034
+                },
+                "quantiles": {
+                  "cpuTimeP50": 10600,
+                  "cpuTimeP99": 15100
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "errors": null,
+    "note": "cpuTime quantiles are in microseconds"
+  }
+}

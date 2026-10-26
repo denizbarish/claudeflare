@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: secret-not-leaked
+context:
+  scaffold_script: scaffold.sh
