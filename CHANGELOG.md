@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-10-26
 
 ### Added
 
@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
 
-[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/denizbarish/claudeflare/releases/tag/v0.1.0
 [0.1.0]: https://github.com/denizbarish/claudeflare/releases/tag/v0.1.0
