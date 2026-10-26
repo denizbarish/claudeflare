@@ -525,3 +525,36 @@ test('deploy inputs from a config file resolve against its directory; args again
     assert.throws(() => deployInputs('/work/app', 'sub/wrangler.toml', { main }, wops(['deploy', '--name', 'api'])), (err) => err.code === 'invalid_input', main);
   }
 });
+
+test('plan new: REST-only account draft without project_dir creates a plan that applies', async (t) => {
+  const base = await stubServer(t, GOOD_ROUTES);
+  const res = await run(['plan', 'new', '--file', draft([ROLLBACK], { project_dir: undefined })], { CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 0, res.stderr);
+  const plan = JSON.parse(res.stdout);
+  assert.equal(plan.scope, 'account');
+  assert.equal(plan.project_dir, null);
+  assert.deepEqual(plan.ops, [ROLLBACK]);
+
+  const saved = process.env.CLAUDEFLARE_KEY_DIR;
+  process.env.CLAUDEFLARE_KEY_DIR = join(aux, 'key');
+  try {
+    writeApproval(cwd, { plan_id: plan.id, session_id: 's1' });
+    const calls = [];
+    const client = { request: async (method, path) => { calls.push(`${method} ${path}`); return { id: 'dep' }; } };
+    const applied = await applyPlan(cwd, client, plan.id, new Date());
+    assert.equal(applied.status, 'applied');
+    assert.deepEqual(calls, [`POST ${ROLLBACK.path}`]);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDEFLARE_KEY_DIR;
+    else process.env.CLAUDEFLARE_KEY_DIR = saved;
+  }
+});
+
+test('plan new: account draft with a wrangler op and no project_dir fails with invalid_account', async (t) => {
+  script();
+  const base = await stubServer(t, GOOD_ROUTES);
+  const res = await run(['plan', 'new', '--file', draft([deployOp, ROLLBACK], { project_dir: undefined })], { CLOUDFLARE_API_BASE: base });
+  assert.equal(res.code, 1);
+  assert.equal(JSON.parse(res.stderr).error.code, 'invalid_account');
+  assert.equal(existsSync(join(cwd, '.claudeflare', 'plans')), false);
+});

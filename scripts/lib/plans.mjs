@@ -85,22 +85,30 @@ function isDirectory(path) {
   }
 }
 
-export function accountTarget({ account_id, account_name, project_dir }) {
+// project_dir may be omitted (stored as null) only when requireProjectDir is
+// false, that is for account plans without wrangler ops. A given one is
+// always validated.
+export function accountTarget({ account_id, account_name, project_dir }, { requireProjectDir = true } = {}) {
   const invalid = (what, value) => new CfError('invalid_account', `Invalid ${what}: ${JSON.stringify(value)}`);
   if (typeof account_id !== 'string' || !CF_ID_PATTERN.test(account_id)) throw invalid('account id', account_id);
   const account_slug = typeof account_name === 'string' ? slugify(account_name) : '';
   if (!account_slug) throw invalid('account name', account_name);
+  if (!requireProjectDir && project_dir == null) return { account_id, account_name, account_slug, project_dir: null };
   if (typeof project_dir !== 'string' || !isAbsolute(project_dir) || !isDirectory(project_dir)) {
     throw invalid('project_dir (must be an absolute path to an existing directory)', project_dir);
   }
   return { account_id, account_name, account_slug, project_dir: realpathSync(project_dir) };
 }
 
+export function needsProjectDir(ops) {
+  return Array.isArray(ops) && ops.some((op) => op?.kind === 'wrangler');
+}
+
 export function createPlan(cwd, fields, now = new Date()) {
   const { scope = 'zone', summary, risk, ops, slug } = fields;
   if (!SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
   const account = scope === 'account';
-  const target = account ? accountTarget(fields) : zoneTarget(fields);
+  const target = account ? accountTarget(fields, { requireProjectDir: needsProjectDir(ops) }) : zoneTarget(fields);
   const id = assertPlanId(makePlanId(account ? target.account_slug : target.zone_name, slug, now));
   const resolved = account ? ops : resolveOps(ops, target.zone_id);
   const plan = {

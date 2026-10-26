@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { createClient, redact } from './lib/api.mjs';
 import { CfError } from './lib/errors.mjs';
 import { paths } from './lib/paths.mjs';
-import { accountTarget, createPlan, listPlans, readPlan, slugify, updatePlan } from './lib/plans.mjs';
+import { accountTarget, createPlan, listPlans, needsProjectDir, readPlan, slugify, updatePlan } from './lib/plans.mjs';
 import { validateOpTargets, validatePlanOps } from './lib/resources.mjs';
 import { captureSnapshot } from './lib/snapshot.mjs';
 import { applyPlan, assertDraft, createRollbackPlan, withIrreversibleRisk, writePreviewSnapshot } from './lib/apply.mjs';
@@ -136,7 +136,7 @@ function readDraft(cwd, flags) {
   const scope = draft.scope ?? 'zone';
   if (!PLAN_SCOPES.has(scope)) throw new CfError('invalid_input', `Invalid plan scope: ${JSON.stringify(scope)}`);
   if (scope === 'account') {
-    const { account_id, project_dir } = accountTarget(draft);
+    const { account_id, project_dir } = accountTarget(draft, { requireProjectDir: needsProjectDir(draft.ops) });
     return { draft, target: { scope, account_id, project_dir }, resolved: draft.ops };
   }
   const zoneId = String(draft.zone_id);

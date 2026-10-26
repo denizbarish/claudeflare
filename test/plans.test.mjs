@@ -14,6 +14,7 @@ import {
   updatePlan,
   planStateName,
   hashPlan,
+  accountTarget,
 } from '../scripts/lib/plans.mjs';
 import { CfError } from '../scripts/lib/errors.mjs';
 
@@ -234,6 +235,38 @@ test('createPlan rejects bad account fields with invalid_account before writing 
     assert.throws(() => createPlan(cwd, accountPlan(cwd, overrides), NOW), isInvalid, JSON.stringify(overrides));
   }
   assert.ok(!existsSync(paths(cwd).root));
+});
+
+const PAGES_ROLLBACK = { method: 'POST', path: `/accounts/${AID}/pages/projects/site/deployments/d1/rollback` };
+
+test('accountTarget accepts a missing project_dir when not required', () => {
+  const t = accountTarget({ account_id: AID, account_name: 'Acme' }, { requireProjectDir: false });
+  assert.equal(t.project_dir, null);
+  assert.equal(t.account_slug, 'acme');
+  assert.equal(accountTarget({ account_id: AID, account_name: 'Acme', project_dir: null }, { requireProjectDir: false }).project_dir, null);
+});
+
+test('accountTarget still requires project_dir by default', () => {
+  assert.throws(() => accountTarget({ account_id: AID, account_name: 'Acme' }), { code: 'invalid_account' });
+  assert.throws(() => accountTarget({ account_id: AID, account_name: 'Acme', project_dir: null }), { code: 'invalid_account' });
+});
+
+test('accountTarget validates a given project_dir even when not required', (t) => {
+  const cwd = tempDir(t);
+  assert.throws(() => accountTarget({ account_id: AID, account_name: 'Acme', project_dir: 'relative/dir' }, { requireProjectDir: false }), { code: 'invalid_account' });
+  assert.throws(() => accountTarget({ account_id: AID, account_name: 'Acme', project_dir: join(cwd, 'missing') }, { requireProjectDir: false }), { code: 'invalid_account' });
+  assert.equal(accountTarget({ account_id: AID, account_name: 'Acme', project_dir: cwd }, { requireProjectDir: false }).project_dir, realpathSync(cwd));
+});
+
+test('createPlan stores project_dir null on a REST-only account plan and still requires it with a wrangler op', (t) => {
+  const cwd = tempDir(t);
+  for (const project_dir of [undefined, null]) {
+    const plan = createPlan(cwd, accountPlan(project_dir, { ops: [PAGES_ROLLBACK], slug: `rest ${project_dir}` }), NOW);
+    assert.equal(plan.project_dir, null);
+    assert.equal(plan.ops_hash, hashPlan(plan));
+    assert.deepEqual(readPlan(cwd, plan.id), plan);
+  }
+  assert.throws(() => createPlan(cwd, accountPlan(undefined, { ops: [{ kind: 'wrangler', args: ['deploy'] }, PAGES_ROLLBACK] }), NOW), { code: 'invalid_account' });
 });
 
 test('createPlan rejects an unknown scope', (t) => {
