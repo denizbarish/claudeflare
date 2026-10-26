@@ -563,12 +563,13 @@ const WRANGLER_WRITES = [
   'd1 migrations apply db --remote', 'd1 time-travel restore db --bookmark b', 'd1 create db', 'd1 delete db',
   'r2 bucket create b', 'r2 bucket delete b', 'r2 object put b/k --file f', 'r2 object delete b/k', 'kv namespace create n',
   'kv namespace delete --namespace-id x', 'kv key put k v --namespace-id x', 'kv key delete k', 'kv bulk put f.json', 'kv bulk delete f.json',
-  'queues create q', 'queues delete q', 'pages deploy dist', 'pages project delete p', 'login', 'init app', '--env prod deploy', 'something-new',
+  'queues create q', 'queues delete q', 'pages deploy dist', 'pages project delete p', 'init app', '--env prod deploy', 'something-new',
 ];
 const WRANGLER_READS = [
   '', '--version', 'deploy --help', 'whoami', 'deployments list --name api', 'deployments status', 'versions list', 'versions view v1', 'tail api --format json',
   'd1 list', 'd1 info db', 'd1 migrations list db --remote', 'd1 time-travel info db', 'd1 execute db --command x', 'd1 migrations apply db --local',
   'r2 bucket list', 'r2 bucket info b', 'kv namespace list', 'queues list', 'pages project list', 'pages deployment list', 'secret list --name api', 'dev', 'types',
+  'pages deployment tail', 'versions secret list --name api', 'login', '--log-level debug whoami',
 ];
 
 test('decideWrangler denies every write subcommand behind every runner prefix', () => {
@@ -582,7 +583,7 @@ test('decideWrangler denies every write subcommand behind every runner prefix', 
 
 test('decideWrangler allows read and local subcommands and ignores non-wrangler commands', () => {
   for (const sub of WRANGLER_READS) assert.equal(decideWrangler(`npx wrangler ${sub}`.trim()), null, sub);
-  for (const cmd of ['grep wrangler package.json', 'cat wrangler.toml', 'npm run build', 'ls node_modules/.bin/wrangler', 'echo use wrangler deploy later', 'grep -rn "wrangler deploy" docs', 'npx wrangler d1 execute db --command "SELECT 1"', 'git log --grep wrangler']) {
+  for (const cmd of ['grep wrangler package.json', 'cat wrangler.toml', 'npm run build', 'ls node_modules/.bin/wrangler', 'echo use wrangler deploy later', 'grep -rn "wrangler deploy" docs', 'npx wrangler d1 execute db --command "SELECT 1"', 'git log --grep wrangler', 'git commit -m "docs: wrangler deploy goes through the plan"', 'rg "wrangler deploy" docs', 'gh pr create --body "run wrangler deploy"']) {
     assert.equal(decideWrangler(cmd), null, cmd);
   }
 });
@@ -606,7 +607,7 @@ test('decideWrangler finds wrangler inside chains, subshells, quotes and env pre
     'bash -c \'echo hi && npx wrangler versions deploy v@100%\'',
     'echo "$(wrangler delete --name api)"',
     'w\\\nrangler deploy',
-    'rg --pre "npx wrangler deploy" x .',
+    'node_modules/wrangler/bin/wrangler.js deploy',
     [1, 2, 3, 4, 5].reduce((cmd) => `sh -c ${JSON.stringify(cmd)}`, 'npx wrangler deploy'),
   ]) {
     assert.equal(decideWrangler(cmd), WRANGLER_REASON, cmd);
@@ -620,4 +621,21 @@ test('guard denies direct wrangler writes, stays silent on reads and keeps claud
   writeApproval(ctx.cwd, { plan_id: PLAN_ID, session_id: 'sess-1' });
   assert.equal(guard(ctx, bash(`claudeflare apply ${PLAN_ID}`)).permissionDecision, 'ask');
   assertDeny(guard(ctx, bash(`claudeflare apply ${PLAN_ID} && wrangler deploy`)), WRANGLER_REASON);
+});
+
+test('decideWrangler checks package.json scripts that npm, pnpm, yarn and bun would run, following cd', (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'claudeflare-pkg-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'app'));
+  const pkg = { scripts: { deploy: 'wrangler deploy', 'deploy:prod': 'npm run deploy -- --env production', build: 'tsc', predev: 'echo hi', dev: 'wrangler dev', postbuild: 'wrangler versions upload', start: 'wrangler deploy' } };
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg));
+  writeFileSync(join(dir, 'app', 'package.json'), JSON.stringify(pkg));
+  for (const cmd of ['npm run deploy', 'pnpm run deploy', 'pnpm deploy', 'yarn deploy', 'bun run deploy', 'npm run deploy:prod', 'npm start', 'npm run build', 'npm --prefix app run deploy']) {
+    assert.equal(decideWrangler(cmd, { cwd: dir }), WRANGLER_REASON, cmd);
+  }
+  assert.equal(decideWrangler('cd app && npm run deploy', { cwd: join(tmpdir()) }), null);
+  assert.equal(decideWrangler(`cd ${join(dir, 'app')} && npm run deploy`, { cwd: tmpdir() }), WRANGLER_REASON);
+  for (const cmd of ['npm run dev', 'npm install', 'npm run missing', 'yarn', 'pnpm test']) {
+    assert.equal(decideWrangler(cmd, { cwd: dir }), null, cmd);
+  }
 });

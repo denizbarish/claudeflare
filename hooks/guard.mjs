@@ -166,7 +166,7 @@ function decideBash(toolInput, cwd) {
     ...applyDecisions(cwd, command),
     isApiWrite(command) ? deny(PROTOCOL_REASON) : null,
   ].filter(Boolean);
-  const wrangler = decideWrangler(command);
+  const wrangler = decideWrangler(command, { cwd });
   if (wrangler) decisions.push(deny(wrangler));
   if (decisions.length === 0) return null;
   // Any deny wins, so an ask for a valid apply never hides another part of the command.
