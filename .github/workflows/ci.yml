@@ -49,8 +49,7 @@ jobs:
       - name: Install Claude Code
         if: ${{ env.ANTHROPIC_API_KEY != '' }}
         run: |
-          curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
       - name: Run plugin evals
         if: ${{ env.ANTHROPIC_API_KEY != '' }}
         run: >-
