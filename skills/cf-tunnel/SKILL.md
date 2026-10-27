@@ -65,7 +65,7 @@ Use the change protocol from cf-core: draft, `claudeflare preflight --file draft
 |---|---|---|
 | Create tunnel | POST `/cfd_tunnel`, body only `name` and `"config_src": "cloudflare"` | Deletes the connections, then the tunnel |
 | Rename | PATCH `/cfd_tunnel/TUNNEL_ID`, body only `name` | Restores the name |
-| Put ingress config | PUT `/cfd_tunnel/TUNNEL_ID/configurations`, body `{ "config": { ... } }` | Puts the previous config back |
+| Put ingress config | PUT `/cfd_tunnel/TUNNEL_ID/configurations`, body `{ "config": { ... } }` | Puts the previous config back; a tunnel that had none gets a catch-all-only config (`http_status:404`), since the API refuses an empty one |
 | Drop connections | DELETE `/cfd_tunnel/TUNNEL_ID/connections` | Not reversible |
 | Delete tunnel | DELETE `/cfd_tunnel/TUNNEL_ID` with `confirm_name` | Not reversible |
 | Route create, update, delete | POST `/teamnet/routes`, PATCH or DELETE `/teamnet/routes/ROUTE_ID` (delete takes `confirm_name` = `network`) | Delete, restore, re-create (new id) |

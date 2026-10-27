@@ -7,6 +7,7 @@
 import { CfError } from '../errors.mjs';
 import { LOCKOUT_PREFIX } from '../lockout-text.mjs';
 import { listAll } from '../paginate.mjs';
+import { omitPaths } from './fields.mjs';
 import { matchKind, opTarget } from './match.mjs';
 import { readbackCheck, tunnelServingCheck } from '../verify.mjs';
 
@@ -102,6 +103,20 @@ function deleteCreatedTunnel(entry, applyResult) {
     { method: 'DELETE', path: `${path}/connections`, group },
     { method: 'DELETE', path, group },
   ];
+}
+
+// Puts the config back. A tunnel that had none (`config: null`) gets a
+// catch-all-only config: the API refuses a config without ingress rules.
+function restoreConfig(entry) {
+  if (!isPlainObject(entry.before)) {
+    throw new CfError('rollback_ambiguous', `No before state recorded for ${entry.path}`);
+  }
+  const body = omitPaths(entry.before, CONFIG_READ_ONLY);
+  const config = isPlainObject(body.config) ? body.config : {};
+  if (!Array.isArray(config.ingress) || config.ingress.length === 0) {
+    body.config = { ...config, ingress: [{ service: 'http_status:404' }] };
+  }
+  return [{ method: 'PUT', path: entry.path, body }];
 }
 
 function hostMatches(pattern, host) {
@@ -216,7 +231,8 @@ const KINDS = [
     pattern: new RegExp(`^/cfd_tunnel/${UUID}/configurations$`),
     resource: (m) => ({ type: 'tunnel_config', id: m[1] }),
     readOnlyFields: CONFIG_READ_ONLY,
-    inverse: 'put_before',
+    capture: (client, readPath) => client.request('GET', readPath),
+    inverse: restoreConfig,
     validate: validateConfig,
     notes: notesConfig,
   },
