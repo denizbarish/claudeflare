@@ -9,6 +9,8 @@ A Claude Code plugin that turns Claude into a senior Cloudflare engineer. It aud
 - **Zero Trust and network:** audits, diagnoses and changes Access, Tunnel, Gateway, WARP devices, Load Balancing and Spectrum, with `Lockout risk:` lines before approval and verification after apply (see [Zero Trust and network](#zero-trust-and-network)).
 - **Change safely:** every write is planned, approved by you, snapshotted, applied, verified and reversible.
 
+claudeflare is an independent open source project. It is not made, endorsed or supported by Cloudflare, Inc.; Cloudflare is a trademark of Cloudflare, Inc.
+
 claudeflare never runs commands on your origin server. Origin-side fixes (nginx, certificates, firewall) come as step-by-step instructions.
 
 ## Requirements
