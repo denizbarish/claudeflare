@@ -1,7 +1,7 @@
 {
   "name": "claudeflare",
   "version": "0.3.1",
-  "description": "Turns Claude into a senior Cloudflare engineer: audits, optimizes and troubleshoots zones with approved, reversible changes.",
+  "description": "Turns Claude into a senior Cloudflare engineer: audits, optimizes and troubleshoots zones, Workers and Zero Trust with approved, reversible changes.",
   "author": {
     "name": "Deniz Barış"
   },
@@ -14,8 +14,14 @@
     "cdn",
     "security",
     "performance",
-    "audit"
+    "audit",
+    "workers",
+    "zero-trust"
   ],
   "icon": ".claude-plugin/icon.png",
-  "privacyPolicyUrl": "https://github.com/denizbarish/claudeflare/blob/main/PRIVACY.md"
+  "privacyPolicyUrl": "https://github.com/denizbarish/claudeflare/blob/main/PRIVACY.md",
+  "homepage": "https://github.com/denizbarish/claudeflare",
+  "supportUrl": "https://github.com/denizbarish/claudeflare/issues",
+  "documentationUrl": "https://github.com/denizbarish/claudeflare#readme",
+  "termsOfServiceUrl": "https://github.com/denizbarish/claudeflare/blob/main/LICENSE"
 }
