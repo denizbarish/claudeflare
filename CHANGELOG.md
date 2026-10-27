@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-27
+
 ### Fixed
 
 - A 403 on a product write at apply now stops with `missing_permission` and names the edit permission the token lacks. Preflight probes reads only, so a read-only token passed preflight and failed with a bare "Authentication error". Found in the v0.3.0 live test.
@@ -99,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
 
-[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/denizbarish/claudeflare/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/denizbarish/claudeflare/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/denizbarish/claudeflare/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...v0.2.0
