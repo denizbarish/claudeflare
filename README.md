@@ -293,7 +293,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHA
 
 ## Privacy
 
-claudeflare collects no data. See [PRIVACY.md](PRIVACY.md).
+claudeflare collects no data and has no server. It sends requests only to Cloudflare (the API, the MCP server and your local `wrangler`) and, for verification, credential-free HTTPS requests to your own hostnames. Plans and snapshots stay in `.claudeflare/` on your machine and can include Access policy emails. See [PRIVACY.md](PRIVACY.md).
 
 ## License
 
