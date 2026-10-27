@@ -115,7 +115,7 @@ claudeflare passes the account id to wrangler (`CLOUDFLARE_ACCOUNT_ID`), so the 
 
 ## Zero Trust and network sets
 
-For Access, Tunnel, Gateway, WARP devices, Load Balancing and Spectrum. Add only the products you use. Put the Read form on the read token and the Edit form on the write token (the API reference calls the edit forms "Write"). Preflight probes one read per product a plan touches; a 403 stops with `missing_permission` and names the permission from this table. These names follow the [permissions page](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) as read on 2026-10-26; they were not yet checked against a live token.
+For Access, Tunnel, Gateway, WARP devices, Load Balancing and Spectrum. Add only the products you use. Put the Read form on the read token and the Edit form on the write token (the API reference calls the edit forms "Write"). Preflight probes one read per product a plan touches; a 403 stops with `missing_permission` and names the permission from this table. The probe reads only: a token without the Edit form passes preflight and stops at apply with `missing_permission` naming the Edit permission. These names follow the [permissions page](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) as read on 2026-10-26; they were not yet checked against a live token.
 
 | Scope | Read token | Write token | Used for |
 |---|---|---|---|

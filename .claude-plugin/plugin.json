@@ -1,6 +1,6 @@
 {
   "name": "claudeflare",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Turns Claude into a senior Cloudflare engineer: audits, optimizes and troubleshoots zones with approved, reversible changes.",
   "author": {
     "name": "Deniz Barış"

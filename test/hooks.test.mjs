@@ -130,6 +130,15 @@ test('approve ignores "please /claudeflare:approve x" mid-sentence', (t) => {
   assert.equal(existsSync(approvalFile(ctx.cwd)), false);
 });
 
+test('approve says so when a near-exact approval records nothing', (t) => {
+  const ctx = setup(t);
+  for (const prompt of [`/claudeflare:approve ${PLAN_ID}:`, `/claudeflare:approve ${PLAN_ID}.`, `/claudeflare:approve ${PLAN_ID} now`]) {
+    const out = runHook(APPROVE, ctx, { prompt, cwd: ctx.cwd, session_id: 'sess-1' });
+    assert.match(out.systemMessage, /^Approval not recorded: type exactly \/claudeflare:approve <plan id>/, prompt);
+    assert.equal(existsSync(approvalFile(ctx.cwd)), false, prompt);
+  }
+});
+
 test('approve ignores unrelated prompts', (t) => {
   const ctx = setup(t);
   assert.equal(runHook(APPROVE, ctx, { prompt: 'audit example.com' }), null);

@@ -312,6 +312,17 @@ test('a failing post read is recorded as post_error and does not fail the apply'
   assertNoSecret(out, 'outcome');
 });
 
+test('a 403 on a product write is missing_permission naming the edit permission', async () => {
+  const plan = { id: 'acme-1-zt', scope: 'account', account_id: A, ops: [{ method: 'POST', path: `${BASE}/cfd_tunnel`, body: { name: 'home', config_src: 'cloudflare' } }] };
+  const client = fakeClient({
+    [`POST ${BASE}/cfd_tunnel`]: () => { throw new CfError('permission', 'Authentication error', { status: 403 }); },
+  });
+  const out = await executeRestOps({ client, plan, cwd: tmpdir(), env: {} });
+  assert.equal(out.status, 'failed');
+  assert.equal(out.error.code, 'missing_permission');
+  assert.equal(out.error.message, 'Authentication error: the token needs "Cloudflare Tunnel Edit"');
+});
+
 test('a product DELETE sends no post read', async () => {
   const op = { method: 'DELETE', path: `${BASE}/sx/things/${ID}`, confirm_name: 'x' };
   const plan = { id: 'acme-1-zt', scope: 'account', account_id: A, ops: [op] };

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-27
+
+### Fixed
+
+- A 403 on a product write at apply now stops with `missing_permission` and names the edit permission the token lacks. Preflight probes reads only, so a read-only token passed preflight and failed with a bare "Authentication error". Found in the v0.3.0 live test.
+- Rolling back the first ingress config of a tunnel now puts a catch-all-only config (`http_status:404`). It sent `{ "config": null }`, which the API refuses, so the rollback stopped as `partially_applied`. Found in the v0.3.0 live test.
+- `/claudeflare:approve <id>` with anything after the id (a trailing colon or period) now says the approval was not recorded instead of staying silent. Found in the v0.3.0 live test.
+
+### Verified
+
+- Live test on a real Zero Trust organization (Free plan): tunnel create, `tunnel-token` into an env file and a running connector (4 connections), CNAME, ingress config (`tunnel_serving` 200, status `healthy`), Access app with a reusable policy (unauthenticated GET answered 302 to the team domain), Gateway DNS rule and WARP custom profile create (readback), then rollback of every plan. The account ended in its prior state. Load Balancing and Spectrum were not live-tested (no add-on, Free zone plan).
+
 ## [0.3.0] - 2026-10-26
 
 ### Added
@@ -89,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Unit tests (`npm test`, no dependencies), four `claude plugin eval` behavior cases, and GitHub Actions CI.
 - Docs: README, API token template, contributing guide and security policy.
 
-[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/denizbarish/claudeflare/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/denizbarish/claudeflare/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/denizbarish/claudeflare/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/denizbarish/claudeflare/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/denizbarish/claudeflare/compare/v0.1.0...v0.2.0

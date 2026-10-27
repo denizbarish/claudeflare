@@ -9,6 +9,10 @@ import { readPlan } from '../scripts/lib/plans.mjs';
 import { lockoutLead, splitRisk, trimPeriod } from './lib/plan-text.mjs';
 
 const APPROVE_PATTERN = /^\s*\/claudeflare:approve\s+([a-z0-9-]+)\s*$/;
+// A prompt that starts like an approval but is not exact (a trailing colon or
+// period, a second word) records nothing; say so instead of staying silent.
+const NEAR_MISS_PATTERN = /^\s*\/claudeflare:approve\b/;
+const NEAR_MISS_MESSAGE = 'Approval not recorded: type exactly /claudeflare:approve <plan id> with nothing else on the line.';
 const HASH_PREVIEW_LENGTH = 12;
 
 function readInput() {
@@ -46,14 +50,19 @@ function approve(cwd, planId, sessionId) {
 
 function main() {
   const input = readInput();
-  const match = typeof input?.prompt === 'string' ? APPROVE_PATTERN.exec(input.prompt) : null;
-  if (!match) return;
-  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
+  const prompt = typeof input?.prompt === 'string' ? input.prompt : '';
+  const match = APPROVE_PATTERN.exec(prompt);
   let message;
-  try {
-    message = approve(cwd, match[1], input.session_id ?? null);
-  } catch (err) {
-    message = `Approval for ${match[1]} was not recorded: ${err.message}`;
+  if (!match) {
+    if (!NEAR_MISS_PATTERN.test(prompt)) return;
+    message = NEAR_MISS_MESSAGE;
+  } else {
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
+    try {
+      message = approve(cwd, match[1], input.session_id ?? null);
+    } catch (err) {
+      message = `Approval for ${match[1]} was not recorded: ${err.message}`;
+    }
   }
   process.stdout.write(
     `${JSON.stringify({

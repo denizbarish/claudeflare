@@ -136,12 +136,24 @@ const configOp = (ingress, id = T1) => ({ method: 'PUT', path: `${BASE}/cfd_tunn
 const rule = (hostname, service = 'http://localhost:3000') => ({ hostname, service });
 const CATCH_ALL = { service: 'http_status:404' };
 
+test('config rollback of a tunnel without a config puts a catch-all-only config', () => {
+  const op = configOp([rule('app.example.com'), CATCH_ALL]);
+  const { entry } = classifyProductOp(op, PLAN);
+  const restore = (before) => entry.inverse({ path: op.path, before });
+  const catchAllOnly = { config: { ingress: [{ service: 'http_status:404' }] } };
+  assert.deepEqual(restore({ tunnel_id: T1, version: 0, config: null }), [{ method: 'PUT', path: op.path, body: catchAllOnly }]);
+  assert.deepEqual(restore({ config: { 'warp-routing': { enabled: true } } })[0].body, { config: { 'warp-routing': { enabled: true }, ingress: [{ service: 'http_status:404' }] } });
+  const kept = { config: { ingress: [rule('old.example.com'), CATCH_ALL] } };
+  assert.deepEqual(restore({ ...kept, version: 3, source: 'cloudflare' })[0].body, kept);
+  assert.throws(() => restore(undefined), (err) => err instanceof CfError && err.code === 'rollback_ambiguous');
+});
+
 test('every tunnel kind classifies with its inverse', () => {
   const cases = [
     ['POST', '/cfd_tunnel', 'tunnel_create', 'function'],
     ['PATCH', `/cfd_tunnel/${T1}`, 'tunnel_rename', 'patch_before'],
     ['DELETE', `/cfd_tunnel/${T1}`, 'tunnel_delete', 'none'],
-    ['PUT', `/cfd_tunnel/${T1}/configurations`, 'tunnel_config_put', 'put_before'],
+    ['PUT', `/cfd_tunnel/${T1}/configurations`, 'tunnel_config_put', 'function'],
     ['DELETE', `/cfd_tunnel/${T1}/connections`, 'tunnel_connections_delete', 'none'],
     ['POST', '/teamnet/routes', 'route_create', 'delete_created'],
     ['PATCH', `/teamnet/routes/${R1}`, 'route_update', 'patch_before'],
